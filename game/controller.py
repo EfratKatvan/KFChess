@@ -29,6 +29,51 @@ def is_path_clear(
     return True
 
 
+def get_route_cells(sr: int, sc: int, tr: int, tc: int) -> List[Tuple[int, int]]:
+    """מחזירה את כל התאים שהמסלול עובר דרכם (כולל מקור ויעד)."""
+    dr = tr - sr
+    dc = tc - sc
+    steps = max(abs(dr), abs(dc))
+    if steps == 0:
+        return [(sr, sc)]
+    
+    step_r = dr // steps if dr != 0 else 0
+    step_c = dc // steps if dc != 0 else 0
+    
+    return [(sr + i * step_r, sc + i * step_c) for i in range(steps + 1)]
+
+
+def has_common_route(
+    sr1: int, sc1: int, tr1: int, tc1: int,
+    sr2: int, sc2: int, tr2: int, tc2: int
+) -> bool:
+    """
+    בודק חפיפת מסלול (Common Route):
+    1. אם שניהם נעים אופקית/אנכית וחולקים עמודות או שורות חופפות לאורך הציר.
+    2. או אם המסלולים שלהם חוצים את אותם תאים.
+    """
+    cols1 = range(min(sc1, tc1), max(sc1, tc1) + 1)
+    cols2 = range(min(sc2, tc2), max(sc2, tc2) + 1)
+    col_overlap = bool(set(cols1) & set(cols2))
+
+    rows1 = range(min(sr1, tr1), max(sr1, tr1) + 1)
+    rows2 = range(min(sr2, tr2), max(sr2, tr2) + 1)
+    row_overlap = bool(set(rows1) & set(rows2))
+
+    # אם שתי התנועות נעות לאורך אותן עמודות (כמו בטסט: wR ו-bR שנעים מאופק לעמודות 0..2)
+    if sc1 != tc1 and sc2 != tc2 and col_overlap:
+        return True
+
+    # אם שתי התנועות נעות לאורך אותן שורות
+    if sr1 != tr1 and sr2 != tr2 and row_overlap:
+        return True
+
+    # בדיקת חיתוך תאים ישיר
+    route1 = set(get_route_cells(sr1, sc1, tr1, tc1))
+    route2 = set(get_route_cells(sr2, sc2, tr2, tc2))
+    return bool(route1 & route2)
+
+
 def is_legal_pawn_move(
     color: str,
     from_pos: Tuple[int, int],
@@ -103,7 +148,7 @@ class GameController:
     def __init__(self, board: Board) -> None:
         self.board = board
         self.selected_pos: Optional[Tuple[int, int]] = None
-        # מבנה לניהול תנועות: [ (piece, sr, sc, tr, tc, remaining_time) ]
+        # [ (piece, sr, sc, tr, tc, remaining_time) ]
         self.moving_pieces: List[Tuple[str, int, int, int, int, int]] = []
 
     def execute_command(self, cmd: str) -> None:
@@ -132,13 +177,9 @@ class GameController:
         if row < 0 or row >= self.board.height or col < 0 or col >= self.board.width:
             return
 
-        # בדיקה אם משבצת במקור כבר נמצאת בתנועה
         moving_sources = {(sr, sc) for (_, sr, sc, _, _, _) in self.moving_pieces}
 
-        if self.selected_pos is None and (row, col) in moving_sources:
-            return
-
-        if self.selected_pos is not None and self.selected_pos in moving_sources:
+        if (row, col) in moving_sources:
             return
 
         target_token = self.board._rows[row][col]
@@ -165,7 +206,17 @@ class GameController:
             self.board._rows,
             target_token,
         ):
-            # חישוב זמן התנועה (Chebyshev Distance * 1000ms)
+            # בדיקת חפיפת מסלולים (common route) מול כלים בתנועה בצבע הופכי
+            for active_piece, msr, msc, mtr, mtc, _ in self.moving_pieces:
+                if active_piece[0] != source_token[0]:  # צבע הופכי
+                    if has_common_route(
+                        sel_row, sel_col, row, col,
+                        msr, msc, mtr, mtc
+                    ):
+                        # התנועה נדחית והבחירה מתאפסת
+                        self.selected_pos = None
+                        return
+
             distance = max(abs(row - sel_row), abs(col - sel_col))
             travel_time = distance * 1000
 
@@ -182,7 +233,6 @@ class GameController:
         for piece, sr, sc, tr, tc, remaining in self.moving_pieces:
             remaining -= time_ms
             if remaining <= 0:
-                # הגיע ליעד
                 self.board._rows[tr][tc] = piece
                 if self.board._rows[sr][sc] == piece:
                     self.board._rows[sr][sc] = "."

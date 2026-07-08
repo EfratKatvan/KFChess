@@ -209,3 +209,55 @@ def test_piece_arrives_after_wait_time():
 
     assert board._rows[0][0] == "."
     assert board._rows[0][2] == "wR"
+
+# ==========================================
+# איטרציה 7: מניעת שינוי מסלול ותנועה מיידית ללא Cooldown
+# ==========================================
+
+def test_cannot_redirect_piece_while_moving():
+    """בדיקה שלא ניתן להסיט כלי ממסלולו או לבחור אותו מחדש תוך כדי תנועה."""
+    board = Board.from_rows([
+        ["wR", ".", ".", "."],
+        [".", ".", ".", "."]
+    ])
+    controller = GameController(board)
+
+    # מתחילים תנועה מ-(0,0) ל-(0,3) - זמן דרוש: 3000ms
+    controller.execute_command("click 50 50")
+    controller.execute_command("click 350 50")
+
+    # מחכים 1000ms - הכלי באמצע הדרך
+    controller.execute_command("wait 1000")
+
+    # ניסיון לבחור שוב את המשבצת המקורית ולתת פקודת תנועה ל-(0,1)
+    controller.execute_command("click 50 50")
+    controller.execute_command("click 150 50")
+
+    # מציגים המתנה ליתרת הזמן המקורית (עוד 2000ms)
+    controller.execute_command("wait 2000")
+
+    # הכלי היה אמור להגיע ליעד המקורי (0,3) ולא להיעצר ב-(0,1)
+    assert board._rows[0] == [".", ".", ".", "wR"]
+
+
+def test_immediate_move_after_arrival_no_cooldown():
+    """בדיקה שמיד ברגע שהכלי מגיע ליעדו ניתן לבחור ולהניע אותו שוב ללא השהייה."""
+    board = Board.from_rows([
+        ["wR", ".", "."],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+
+    # תנועה 1: מ-(0,0) ל-(0,2) -> דורש 2000ms
+    controller.execute_command("click 50 50")
+    controller.execute_command("click 250 50")
+    controller.execute_command("wait 2000")
+
+    assert board._rows[0] == [".", ".", "wR"]
+
+    # תנועה 2 מיידית (ללא השהייה): מ-(0,2) חזרה ל-(0,0) -> דורש 2000ms
+    controller.execute_command("click 250 50")
+    controller.execute_command("click 50 50")
+    controller.execute_command("wait 2000")
+
+    assert board._rows[0] == ["wR", ".", "."]
