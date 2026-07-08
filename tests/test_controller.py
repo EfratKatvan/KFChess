@@ -309,3 +309,74 @@ def test_invalid_premove_handling():
 
     # wR נשאר ב-(0,0), bR הגיע ל-(0,2)
     assert board._rows[0] == ["wR", ".", "bR"]
+
+# ==========================================
+# איטרציה 9: סיום משחק בלכידת מלך (Game Over & King Capture)
+# ==========================================
+
+def test_game_over_on_king_capture():
+    """בדיקה שבביצוע אכילה של מלך, המשחק מסתיים והדגל game_over מופעל."""
+    board = Board.from_rows([
+        ["wR", ".", "bK"],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+
+    # wR נע מ-(0,0) ל-(0,2) שבו נמצא bK
+    controller.execute_command("click 50 50")
+    controller.execute_command("click 250 50")
+    controller.execute_command("wait 2000")
+
+    # המלך שחור נאכל, wR עומד בתא (0,2) והמשחק מסתיים
+    assert board._rows[0] == [".", ".", "wR"]
+    assert controller.game_over is True
+
+
+def test_no_commands_processed_after_game_over():
+    """בדיקה ולאחר שהמשחק הסתיים, פקודות click נוספות נדחות לחלוטין."""
+    board = Board.from_rows([
+        ["wR", "bK", "bR"],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+
+    # 1. wR אוכל את bK ב-(0,1)
+    controller.execute_command("click 50 50")
+    controller.execute_command("click 150 50")
+    controller.execute_command("wait 1000")
+
+    assert controller.game_over is True
+    assert board._rows[0] == [".", "wR", "bR"]
+
+    # 2. ניסיון לבצע תנועה נוספת עם bR לאחר סיום המשחק
+    controller.execute_command("click 250 50")
+    controller.execute_command("click 50 50")
+    controller.execute_command("wait 2000")
+
+    # bR לא אמור לנוע כי המשחק כבר הסתיים
+    assert board._rows[0] == [".", "wR", "bR"]
+
+
+def test_ongoing_move_cancelled_if_king_captured_first():
+    """בדיקה שאם מלך נלכד, תנועות פעילות אחרות שטרם הסתיימו מבוטלות ולא מתממשות."""
+    board = Board.from_rows([
+        ["wR", ".", "bK"],
+        [".", ".", "."],
+        ["bR", ".", "."]
+    ])
+    controller = GameController(board)
+
+    # 1. bR ב-(2,0) נע ל-(2,2) -> מרחק 2, לוקח 2000ms
+    controller.execute_command("click 50 250")   # בחירת bR ב-(2,0)
+    controller.execute_command("click 250 250")  # יעד (2,2)
+
+    # 2. wR ב-(0,0) נע אנכית/אופקית ישירות לאכול את bK ב-(0,2) -> לוקח 2000ms
+    controller.execute_command("click 50 50")    # בחירת wR ב-(0,0)
+    controller.execute_command("click 250 50")   # יעד bK ב-(0,2)
+
+    # מריצים את ה-wait לזמן סיום התנועה
+    controller.execute_command("wait 2000")
+
+    # ברגע ש-wR לוכד את bK, המשחק מסתיים מיד וכל התנועות הנוספות מוצררות/מופסקות
+    assert controller.game_over is True
+    assert board._rows[0] == [".", ".", "wR"]

@@ -48,20 +48,6 @@ def has_common_route(
     sr2: int, sc2: int, tr2: int, tc2: int
 ) -> bool:
     """בודק חפיפת מסלול (Common Route) בין שתי תנועות."""
-    cols1 = range(min(sc1, tc1), max(sc1, tc1) + 1)
-    cols2 = range(min(sc2, tc2), max(sc2, tc2) + 1)
-    col_overlap = bool(set(cols1) & set(cols2))
-
-    rows1 = range(min(sr1, tr1), max(sr1, tr1) + 1)
-    rows2 = range(min(sr2, tr2), max(sr2, tr2) + 1)
-    row_overlap = bool(set(rows1) & set(rows2))
-
-    if sc1 != tc1 and sc2 != tc2 and col_overlap:
-        return True
-
-    if sr1 != tr1 and sr2 != tr2 and row_overlap:
-        return True
-
     route1 = set(get_route_cells(sr1, sc1, tr1, tc1))
     route2 = set(get_route_cells(sr2, sc2, tr2, tc2))
     return bool(route1 & route2)
@@ -143,10 +129,15 @@ class GameController:
         self.selected_pos: Optional[Tuple[int, int]] = None
         # [ (piece, sr, sc, tr, tc, remaining_time) ]
         self.moving_pieces: List[Tuple[str, int, int, int, int, int]] = []
+        self.game_over: bool = False  # דגל לסיום המשחק (איטרציה 9)
 
     def execute_command(self, cmd: str) -> None:
         cmd = cmd.strip()
         if not cmd:
+            return
+
+        # אם המשחק הסתיים, לא מעבדים פקודות חדשות פרט להדפסה אם נדרש
+        if self.game_over and not cmd.startswith("print"):
             return
 
         parts = cmd.split()
@@ -164,6 +155,9 @@ class GameController:
             self._handle_print_board()
 
     def _handle_click(self, x: int, y: int) -> None:
+        if self.game_over:
+            return
+
         col = x // 100
         row = y // 100
 
@@ -172,7 +166,6 @@ class GameController:
 
         moving_sources = {(sr, sc) for (_, sr, sc, _, _, _) in self.moving_pieces}
 
-        # מניעת בחירה או מתן פקודה לכלי שכרגע נמצא בתנועה
         if (row, col) in moving_sources:
             return
 
@@ -189,22 +182,17 @@ class GameController:
         if (sel_row, sel_col) == (row, col):
             return
 
-        # שינוי בחירה לכלי אחר מאותו צבע
         if target_token != "." and target_token[0] == source_token[0]:
             self.selected_pos = (row, col)
             return
 
-        # --- איטרציה 8: בדיקות נחיתה וקונפליקטים מתקדמות ---
-        
-        # 1. בדיקה אם כלי ידידותי זז כרגע ומתוכנן לנחות בתא היעד (row, col)
+        # בדיקת קונפליקט נחיתה עם כלי ידידותי
         for active_piece, msr, msc, mtr, mtc, _ in self.moving_pieces:
-            if active_piece[0] == source_token[0]:  # אותו צבע (ידידותי)
+            if active_piece[0] == source_token[0]:
                 if (mtr, mtc) == (row, col):
-                    # התנגשות נחיתה עם כלי ידידותי - התנועה מבוטלת
                     self.selected_pos = None
                     return
 
-        # 2. בדיקת חוקיות התנועה הבסיסית
         if is_legal_piece_move(
             source_token,
             (sel_row, sel_col),
@@ -212,9 +200,8 @@ class GameController:
             self.board._rows,
             target_token,
         ):
-            # 3. בדיקת חפיפת מסלולים מול כלים בתנועה בצבע הופכי
             for active_piece, msr, msc, mtr, mtc, _ in self.moving_pieces:
-                if active_piece[0] != source_token[0]:  # צבע הופכי
+                if active_piece[0] != source_token[0]:
                     if has_common_route(
                         sel_row, sel_col, row, col,
                         msr, msc, mtr, mtc
@@ -231,17 +218,28 @@ class GameController:
             self.selected_pos = None
 
     def _handle_wait(self, time_ms: int) -> None:
-        if not self.moving_pieces:
+        if self.game_over or not self.moving_pieces:
             return
 
         new_moving = []
         for piece, sr, sc, tr, tc, remaining in self.moving_pieces:
             remaining -= time_ms
             if remaining <= 0:
-                # הגיע ליעד
-                self.board._rows[tr][tc] = piece
+                # בדיקה אם היעד מכיל מלך
+                captured_token = self.board._rows[tr][tc]
+                
+                # פינוי תא המקור
                 if self.board._rows[sr][sc] == piece:
                     self.board._rows[sr][sc] = "."
+
+                # הנחת הכלי בתא היעד
+                self.board._rows[tr][tc] = piece
+
+                # אם נלכד מלך, נפעיל סיום משחק
+                if captured_token != "." and captured_token[1] == "K":
+                    self.game_over = True
+                    self.moving_pieces = []
+                    return
             else:
                 new_moving.append((piece, sr, sc, tr, tc, remaining))
 
