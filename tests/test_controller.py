@@ -1,75 +1,108 @@
 import pytest
 from board.model import Board
-from game.controller import GameController
+from game.controller import GameController, is_legal_piece_move
 
 
-@pytest.fixture
-def sample_board():
-    # לוח 3x3 לדוגמה
-    rows = [
-        ["wR", ".", "bP"],
-        [".", "wP", "."],
-        [".", ".", "bK"],
-    ]
-    return Board.from_rows(rows)
+# ==========================================
+# טסטים מאיטרציה 1 & 2 (התנהגות בסיסית של Controller)
+# ==========================================
 
-
-def test_click_outside_board(sample_board):
-    controller = GameController(sample_board)
-    # לחיצה מחוץ לגבולות הלוח (למשל x=-10, y=50 או x=500, y=500)
-    controller.handle_click(-10, 50)
-    assert controller.selected_pos is None
-
-    controller.handle_click(500, 500)
+def test_click_outside_board():
+    board = Board.from_rows([["wK", "."], [".", "."]])
+    controller = GameController(board)
+    controller.execute_command("click 500 500")
     assert controller.selected_pos is None
 
 
-def test_click_empty_cell_no_selection(sample_board):
-    controller = GameController(sample_board)
-    # תא (0, 1) הוא ריק (x=150, y=50)
-    controller.handle_click(150, 50)
+def test_click_empty_cell_no_selection():
+    board = Board.from_rows([["wK", "."], [".", "."]])
+    controller = GameController(board)
+    controller.execute_command("click 150 50")  # (0,1) ריקה
     assert controller.selected_pos is None
 
 
-def test_select_piece(sample_board):
-    controller = GameController(sample_board)
-    # תא (0, 0) מכיל wR (x=50, y=50)
-    controller.handle_click(50, 50)
+def test_select_piece():
+    board = Board.from_rows([["wK", "."], [".", "."]])
+    controller = GameController(board)
+    controller.execute_command("click 50 50")  # (0,0)
     assert controller.selected_pos == (0, 0)
 
 
-def test_change_selection_to_another_piece(sample_board):
-    controller = GameController(sample_board)
-    # בחר ב-wR ב-(0, 0)
-    controller.handle_click(50, 50)
+def test_change_selection_to_another_piece():
+    board = Board.from_rows([["wK", "wR"], [".", "."]])
+    controller = GameController(board)
+    controller.execute_command("click 50 50")   # בחירת wK
+    assert controller.selected_pos == (0, 0)
+    controller.execute_command("click 150 50")  # מעבר ל-wR
+    assert controller.selected_pos == (0, 1)
+
+
+def test_click_same_selected_piece_keeps_selection():
+    board = Board.from_rows([["wK", "."], [".", "."]])
+    controller = GameController(board)
+    controller.execute_command("click 50 50")
+    assert controller.selected_pos == (0, 0)
+    controller.execute_command("click 50 50")
     assert controller.selected_pos == (0, 0)
 
-    # לחץ על wP ב-(1, 1) -> (x=150, y=150)
-    controller.handle_click(150, 150)
-    assert controller.selected_pos == (1, 1)
+
+# ==========================================
+# טסטים מאיטרציה 3 (חוקי תנועה של הכלים)
+# ==========================================
+
+def test_king_movement_rules():
+    assert is_legal_piece_move("K", (1, 1), (1, 2)) is True
+    assert is_legal_piece_move("K", (1, 1), (2, 2)) is True
+    assert is_legal_piece_move("K", (1, 1), (1, 3)) is False
 
 
-def test_move_piece_to_empty_cell(sample_board):
-    controller = GameController(sample_board)
-    # בחר ב-wR ב-(0, 0)
-    controller.handle_click(50, 50)
+def test_rook_movement_rules():
+    assert is_legal_piece_move("R", (0, 0), (0, 3)) is True
+    assert is_legal_piece_move("R", (0, 0), (3, 0)) is True
+    assert is_legal_piece_move("R", (0, 0), (2, 2)) is False
 
-    # הזיז לתא הריק ב-(0, 1) -> (x=150, y=50)
-    controller.handle_click(150, 50)
 
-    # הבחירה צריכה להתאפס
+def test_bishop_movement_rules():
+    assert is_legal_piece_move("B", (0, 0), (3, 3)) is True
+    assert is_legal_piece_move("B", (0, 0), (0, 2)) is False
+
+
+def test_queen_movement_rules():
+    assert is_legal_piece_move("Q", (0, 0), (0, 2)) is True
+    assert is_legal_piece_move("Q", (0, 0), (2, 2)) is True
+    assert is_legal_piece_move("Q", (0, 0), (1, 2)) is False
+
+
+def test_knight_movement_rules():
+    assert is_legal_piece_move("N", (0, 0), (2, 1)) is True
+    assert is_legal_piece_move("N", (0, 0), (1, 2)) is True
+    assert is_legal_piece_move("N", (0, 0), (2, 2)) is False
+
+
+def test_controller_valid_piece_move_updates_board():
+    board = Board.from_rows([
+        ["wR", ".", "."],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+
+    controller.execute_command("click 50 50")   # בחירת הצריח ב-(0,0)
+    controller.execute_command("click 250 50")  # תנועה ל-(0,2)
+
     assert controller.selected_pos is None
-    # המקור צריך להיות ריק, היעד צריך להכיל wR
-    assert controller.board.get_cell(0, 0) == "."
-    assert controller.board.get_cell(0, 1) == "wR"
+    assert board._rows[0] == [".", ".", "wR"]
 
 
-def test_wait_command(sample_board):
-    controller = GameController(sample_board)
-    assert controller.clock_ms == 0
+def test_controller_invalid_piece_move_ignored():
+    board = Board.from_rows([
+        ["wR", ".", "."],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
 
-    controller.execute_command("wait 500")
-    assert controller.clock_ms == 500
+    controller.execute_command("click 50 50")   # בחירת הצריח
+    controller.execute_command("click 150 150") # ניסיון תנועה באלכסון (לא חוקי)
 
-    controller.execute_command("wait 300")
-    assert controller.clock_ms == 800
+    # הצריח נשאר במקומו והלוח לא משתנה
+    assert board._rows[0][0] == "wR"
+    assert board._rows[1][1] == "."

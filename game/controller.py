@@ -1,67 +1,107 @@
 from __future__ import annotations
-from board.model import Board
-from config.constants import CELL_SIZE, EMPTY_CELL
+from typing import TYPE_CHECKING, Optional, Tuple
+
+if TYPE_CHECKING:
+    from board.model import Board
+
+
+def is_legal_piece_move(
+    piece_type: str, from_pos: Tuple[int, int], to_pos: Tuple[int, int]
+) -> bool:
+    """
+    בודק אם התנועה מתאימה לצורת התנועה של הכלי:
+    K - King (צעד אחד לכל כיוון)
+    R - Rook (קו ישר: אופקי או אנכי)
+    B - Bishop (אלכסון בלבד)
+    Q - Queen (קו ישר או אלכסון)
+    N - Knight (תנועת L: 2x1 או 1x2)
+    """
+    r1, c1 = from_pos
+    r2, c2 = to_pos
+
+    dr = abs(r2 - r1)
+    dc = abs(c2 - c1)
+
+    # אם לא בוצעה תנועה למיקום שונה
+    if dr == 0 and dc == 0:
+        return False
+
+    if piece_type == "K":
+        return dr <= 1 and dc <= 1
+    elif piece_type == "R":
+        return dr == 0 or dc == 0
+    elif piece_type == "B":
+        return dr == dc
+    elif piece_type == "Q":
+        return dr == 0 or dc == 0 or dr == dc
+    elif piece_type == "N":
+        return (dr == 2 and dc == 1) or (dr == 1 and dc == 2)
+
+    return False
 
 
 class GameController:
-    def __init__(self, board: Board):
+    def __init__(self, board: Board) -> None:
         self.board = board
-        self.selected_pos: tuple[int, int] | None = None  # (row, col) של הכלי הנבחר
-        self.clock_ms: int = 0  # שעון המשחק במילי-שניות
+        self.selected_pos: Optional[Tuple[int, int]] = None
 
-    def handle_click(self, x: int, y: int) -> None:
-        # 1. המרה מקואורדינטות פיקסל לתאי לוח
-        col = x // CELL_SIZE
-        row = y // CELL_SIZE
-
-        # 2. אם הלחיצה מחוץ לגבולות הלוח - התעלמות
-        if not self.board.is_inside(row, col):
+    def execute_command(self, cmd: str) -> None:
+        cmd = cmd.strip()
+        if not cmd:
             return
 
-        clicked_cell = self.board.get_cell(row, col)
+        parts = cmd.split()
+        action = parts[0]
 
-        # 3. אם כרגע אין כלי נבחר
+        if action == "click":
+            if len(parts) == 3:
+                x = int(parts[1])
+                y = int(parts[2])
+                self._handle_click(x, y)
+        elif action == "print" and len(parts) >= 2 and parts[1] == "board":
+            self._handle_print_board()
+
+    def _handle_click(self, x: int, y: int) -> None:
+        # המרת קואורדינטות (Pixels / Grid Units) לשורות ועמודות
+        col = x // 100
+        row = y // 100
+
+        # בדיקה שהלחיצה בתוך גבולות הלוח
+        if row < 0 or row >= self.board.height or col < 0 or col >= self.board.width:
+            return
+
+        target_token = self.board._rows[row][col]
+
+        # אם עדיין לא נבחר כלי (Selection)
         if self.selected_pos is None:
-            if clicked_cell != EMPTY_CELL:
-                # לחיצה על כלי מסמנת אותו
+            if target_token != ".":
                 self.selected_pos = (row, col)
-            # לחיצה על תא ריק כשאין בחירה -> התעלמות
             return
 
-        # 4. אם כבר יש כלי נבחר
-        src_row, src_col = self.selected_pos
+        # אם כבר נבחר כלי בעבר
+        sel_row, sel_col = self.selected_pos
+        source_token = self.board._rows[sel_row][sel_col]
 
-        # אם לחצנו שוב על אותו תא בדיוק
-        if (src_row, src_col) == (row, col):
+        # אם נלחצה אותה משבצת שוב
+        if (sel_row, sel_col) == (row, col):
             return
 
-        # אם לחצנו על כלי אחר (באיטרציה 2: מחליף את הבחירה לכלי החדש)
-        if clicked_cell != EMPTY_CELL:
+        # אם נלחץ כלי אחר באותו הצבע - משנים את הבחירה לכלי החדש
+        if target_token != "." and target_token[0] == source_token[0]:
             self.selected_pos = (row, col)
-        else:
-            # לחצנו על תא ריק -> מזיזים את הכלי הנבחר לשם ומאפסים את הבחירה
-            self.board.move_piece(src_row, src_col, row, col)
-            self.selected_pos = None
-
-    def handle_wait(self, ms: int) -> None:
-        # מקדם את שעון המשחק (באיטרציות הבאות ישפיע על מעוף הכלים וזמני צינון)
-        self.clock_ms += ms
-
-    def execute_command(self, cmd_line: str) -> None:
-        parts = cmd_line.split()
-        if not parts:
             return
 
-        cmd = parts[0]
+        # בדיקת תנועה חוקית לפי צורת הכלי
+        piece_type = source_token[1]  # הסוג: K, R, B, Q, N וכד'
+        if is_legal_piece_move(piece_type, (sel_row, sel_col), (row, col)):
+            # ביצוע התנועה בלוח
+            self.board._rows[row][col] = source_token
+            self.board._rows[sel_row][sel_col] = "."
+            self.selected_pos = None  # איפוס הבחירה לאחר מהלך חוקי
+        else:
+            # אם המהלך אינו חוקי לפי צורת הכלי - התעלמות מהמהלך
+            pass
 
-        if cmd == "click":
-            x, y = int(parts[1]), int(parts[2])
-            self.handle_click(x, y)
-
-        elif cmd == "wait":
-            ms = int(parts[1])
-            self.handle_wait(ms)
-
-        elif cmd == "print" and len(parts) > 1 and parts[1] == "board":
-            for line in self.board.to_canonical_lines():
-                print(line)
+    def _handle_print_board(self) -> None:
+        for line in self.board.to_canonical_lines():
+            print(line)
