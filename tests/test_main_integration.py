@@ -47,6 +47,7 @@ def test_full_flow_iteration_2(monkeypatch, capsys):
                     Commands:
                     click 50 50
                     click 150 50
+                    wait 1000
                     print board
                     """
     monkeypatch.setattr("sys.stdin", io.StringIO(input_data))
@@ -54,6 +55,5 @@ def test_full_flow_iteration_2(monkeypatch, capsys):
     main()
 
     captured = capsys.readouterr()
-    # ה-wR זז מ-(0,0) ל-(0,1) ולכן ההדפסה צריכה להיות:
     expected_output = ". wR\n. bK\n"
     assert captured.out == expected_output
