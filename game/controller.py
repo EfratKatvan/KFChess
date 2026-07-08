@@ -36,10 +36,10 @@ def get_route_cells(sr: int, sc: int, tr: int, tc: int) -> List[Tuple[int, int]]
     steps = max(abs(dr), abs(dc))
     if steps == 0:
         return [(sr, sc)]
-    
+
     step_r = dr // steps if dr != 0 else 0
     step_c = dc // steps if dc != 0 else 0
-    
+
     return [(sr + i * step_r, sc + i * step_c) for i in range(steps + 1)]
 
 
@@ -47,11 +47,7 @@ def has_common_route(
     sr1: int, sc1: int, tr1: int, tc1: int,
     sr2: int, sc2: int, tr2: int, tc2: int
 ) -> bool:
-    """
-    בודק חפיפת מסלול (Common Route):
-    1. אם שניהם נעים אופקית/אנכית וחולקים עמודות או שורות חופפות לאורך הציר.
-    2. או אם המסלולים שלהם חוצים את אותם תאים.
-    """
+    """בודק חפיפת מסלול (Common Route) בין שתי תנועות."""
     cols1 = range(min(sc1, tc1), max(sc1, tc1) + 1)
     cols2 = range(min(sc2, tc2), max(sc2, tc2) + 1)
     col_overlap = bool(set(cols1) & set(cols2))
@@ -60,15 +56,12 @@ def has_common_route(
     rows2 = range(min(sr2, tr2), max(sr2, tr2) + 1)
     row_overlap = bool(set(rows1) & set(rows2))
 
-    # אם שתי התנועות נעות לאורך אותן עמודות (כמו בטסט: wR ו-bR שנעים מאופק לעמודות 0..2)
     if sc1 != tc1 and sc2 != tc2 and col_overlap:
         return True
 
-    # אם שתי התנועות נעות לאורך אותן שורות
     if sr1 != tr1 and sr2 != tr2 and row_overlap:
         return True
 
-    # בדיקת חיתוך תאים ישיר
     route1 = set(get_route_cells(sr1, sc1, tr1, tc1))
     route2 = set(get_route_cells(sr2, sc2, tr2, tc2))
     return bool(route1 & route2)
@@ -179,6 +172,7 @@ class GameController:
 
         moving_sources = {(sr, sc) for (_, sr, sc, _, _, _) in self.moving_pieces}
 
+        # מניעת בחירה או מתן פקודה לכלי שכרגע נמצא בתנועה
         if (row, col) in moving_sources:
             return
 
@@ -195,10 +189,22 @@ class GameController:
         if (sel_row, sel_col) == (row, col):
             return
 
+        # שינוי בחירה לכלי אחר מאותו צבע
         if target_token != "." and target_token[0] == source_token[0]:
             self.selected_pos = (row, col)
             return
 
+        # --- איטרציה 8: בדיקות נחיתה וקונפליקטים מתקדמות ---
+        
+        # 1. בדיקה אם כלי ידידותי זז כרגע ומתוכנן לנחות בתא היעד (row, col)
+        for active_piece, msr, msc, mtr, mtc, _ in self.moving_pieces:
+            if active_piece[0] == source_token[0]:  # אותו צבע (ידידותי)
+                if (mtr, mtc) == (row, col):
+                    # התנגשות נחיתה עם כלי ידידותי - התנועה מבוטלת
+                    self.selected_pos = None
+                    return
+
+        # 2. בדיקת חוקיות התנועה הבסיסית
         if is_legal_piece_move(
             source_token,
             (sel_row, sel_col),
@@ -206,14 +212,13 @@ class GameController:
             self.board._rows,
             target_token,
         ):
-            # בדיקת חפיפת מסלולים (common route) מול כלים בתנועה בצבע הופכי
+            # 3. בדיקת חפיפת מסלולים מול כלים בתנועה בצבע הופכי
             for active_piece, msr, msc, mtr, mtc, _ in self.moving_pieces:
                 if active_piece[0] != source_token[0]:  # צבע הופכי
                     if has_common_route(
                         sel_row, sel_col, row, col,
                         msr, msc, mtr, mtc
                     ):
-                        # התנועה נדחית והבחירה מתאפסת
                         self.selected_pos = None
                         return
 
@@ -233,6 +238,7 @@ class GameController:
         for piece, sr, sc, tr, tc, remaining in self.moving_pieces:
             remaining -= time_ms
             if remaining <= 0:
+                # הגיע ליעד
                 self.board._rows[tr][tc] = piece
                 if self.board._rows[sr][sc] == piece:
                     self.board._rows[sr][sc] = "."

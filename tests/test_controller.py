@@ -261,3 +261,51 @@ def test_immediate_move_after_arrival_no_cooldown():
     controller.execute_command("wait 2000")
 
     assert board._rows[0] == ["wR", ".", "."]
+
+# ==========================================
+# איטרציה 8: אינטראקציות מתקדמות בזמן אמת
+# ==========================================
+
+def test_friendly_piece_landing_conflict():
+    """בדיקה שלא ניתן להורות לכלי לנוע לתא שבו מתוכנן לנחות כלי ידידותי."""
+    board = Board.from_rows([
+        ["wR", ".", "wB"],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+
+    # 1. wR מתחיל לנוע מ-(0,0) ל-(0,1) -> יגיע עוד 1000ms
+    controller.execute_command("click 50 50")
+    controller.execute_command("click 150 50")
+
+    # 2. wB ב-(0,2) מנסה לנוע ל-(0,1) [איפה ש-wR אמור לנחות]
+    controller.execute_command("click 250 50")
+    controller.execute_command("click 150 50")
+
+    # מריצים את הזמן עד סיום התנועה
+    controller.execute_command("wait 1000")
+
+    # wR אמור להגיע ל-(0,1), ואילו wB אמור להישאר ב-(0,2) כי התנועה שלו נדחתה
+    assert board._rows[0] == [".", "wR", "wB"]
+
+
+def test_invalid_premove_handling():
+    """בדיקה שפקודה לא חוקית שניתנת בזמן שכלים נעים נדחית כראוי."""
+    board = Board.from_rows([
+        ["wR", "bR", "."],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+
+    # bR נע מ-(0,1) ל-(0,2)
+    controller.execute_command("click 150 50")
+    controller.execute_command("click 250 50")
+
+    # בזמן התנועה, wR מנסה לדלג מעל bR (מהלך לא חוקי)
+    controller.execute_command("click 50 50")
+    controller.execute_command("click 250 50")
+
+    controller.execute_command("wait 1000")
+
+    # wR נשאר ב-(0,0), bR הגיע ל-(0,2)
+    assert board._rows[0] == ["wR", ".", "bR"]
