@@ -165,3 +165,35 @@ def test_cannot_capture_own_piece():
     assert controller.selected_pos == (0, 2)
     assert board._rows[0][0] == "wR"
     assert board._rows[0][2] == "wK"
+
+# ==========================================
+# טסטים מאיטרציה 5 (חוקי תנועת רגלי - Pawn)
+# ==========================================
+
+def test_king_movement_rules():
+  assert is_legal_piece_move("wK", (1, 1), (1, 2)) is True
+  assert is_legal_piece_move("wK", (1, 1), (2, 2)) is True
+  assert is_legal_piece_move("wK", (1, 1), (1, 3)) is False
+
+
+def test_rook_movement_rules():
+  assert is_legal_piece_move("wR", (0, 0), (0, 3)) is True
+  assert is_legal_piece_move("wR", (0, 0), (3, 0)) is True
+  assert is_legal_piece_move("wR", (0, 0), (2, 2)) is False
+
+
+def test_bishop_movement_rules():
+  assert is_legal_piece_move("wB", (0, 0), (3, 3)) is True
+  assert is_legal_piece_move("wB", (0, 0), (0, 2)) is False
+
+
+def test_queen_movement_rules():
+  assert is_legal_piece_move("wQ", (0, 0), (0, 2)) is True
+  assert is_legal_piece_move("wQ", (0, 0), (2, 2)) is True
+  assert is_legal_piece_move("wQ", (0, 0), (1, 2)) is False
+
+
+def test_knight_movement_rules():
+  assert is_legal_piece_move("wN", (0, 0), (2, 1)) is True
+  assert is_legal_piece_move("wN", (0, 0), (1, 2)) is True
+  assert is_legal_piece_move("wN", (0, 0), (2, 2)) is False

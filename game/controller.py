@@ -10,7 +10,7 @@ def is_path_clear(
 ) -> bool:
     """
     בודקת אם המסלול בין משבצת המוצא למשבצת היעד פנוי מכלים.
-    אינה בודקת את משבצת היעד עצמה (מכיוון ששם מותרת אכילה).
+    אינה בודקת את משבצת היעד עצמה.
     """
     r1, c1 = from_pos
     r2, c2 = to_pos
@@ -18,67 +18,99 @@ def is_path_clear(
     dr = r2 - r1
     dc = c2 - c1
 
-    # חישוב כיוון הצעד (-1, 0, או 1)
     step_r = 0 if dr == 0 else (1 if dr > 0 else -1)
     step_c = 0 if dc == 0 else (1 if dc > 0 else -1)
 
     curr_r = r1 + step_r
     curr_c = c1 + step_c
 
-    # מתקדמים צעד-צעד עד שמגיעים ליעד (לא כולל היעד)
     while (curr_r, curr_c) != (r2, c2):
         if board_rows[curr_r][curr_c] != ".":
-            return False  # יש כלי שחוסם את הדרך
+            return False
         curr_r += step_r
         curr_c += step_c
 
     return True
 
 
-def is_legal_piece_move(
-    piece_type: str,
+def is_legal_pawn_move(
+    color: str,
     from_pos: Tuple[int, int],
     to_pos: Tuple[int, int],
-    board_rows: Optional[list[list[str]]] = None,
+    target_token: str,
 ) -> bool:
     """
-    בודק חוקיות תנועה כולל חסימות ומסלולים:
-    - צורת תנועה לפי הכלי (K, R, B, Q, N)
-    - בדיקת מסלול פנוי (עבור R, B, Q)
+    לוגיקת תנועה ייעודית לרגלי (Pawn):
+    - לבן זז למעלה (r2 - r1 == -1)
+    - שחור זז למטה (r2 - r1 == 1)
+    - צעד ישר 1 בלבד למשבצת ריקה
+    - צעד אלכסוני 1 בלבד לאכילת כלי יריב
     """
     r1, c1 = from_pos
     r2, c2 = to_pos
 
-    dr = abs(r2 - r1)
+    dr = r2 - r1
     dc = abs(c2 - c1)
 
-    # ללא תנועה
-    if dr == 0 and dc == 0:
-        return False
+    # בדיקת כיוון לפי צבע הקידומת
+    expected_dr = -1 if color == "w" else 1
 
-    # 1. בדיקת צורת התנועה הבסיסית
-    shape_valid = False
-    if piece_type == "K":
+    if dr != expected_dr:
+        return False  # כיוון לא חוקי או יותר מצעד אחד
+
+    # 1. תנועה קדימה בלבד (משבצת ריקה)
+    if dc == 0:
+        return target_token == "."
+
+    # 2. אכילה באלכסון (חייב להיות כלי יריב)
+    if dc == 1:
+        return target_token != "." and target_token[0] != color
+
+    return False
+
+
+def is_legal_piece_move(
+    source_token: str,
+    from_pos: Tuple[int, int],
+    to_pos: Tuple[int, int],
+    board_rows: Optional[list[list[str]]] = None,
+    target_token: str = ".",
+    ) -> bool:
+      r1, c1 = from_pos
+      r2, c2 = to_pos
+    
+      dr = abs(r2 - r1)
+      dc = abs(c2 - c1)
+    
+      if dr == 0 and dc == 0:
+        return False
+    
+      color = source_token[0]
+      piece_type = source_token[1]
+    
+      if piece_type == "P":
+        return is_legal_pawn_move(color, from_pos, to_pos, target_token)
+    
+      shape_valid = False
+      if piece_type == "K":
         shape_valid = dr <= 1 and dc <= 1
-    elif piece_type == "R":
+      elif piece_type == "R":
         shape_valid = dr == 0 or dc == 0
-    elif piece_type == "B":
+      elif piece_type == "B":
         shape_valid = dr == dc
-    elif piece_type == "Q":
+      elif piece_type == "Q":
         shape_valid = dr == 0 or dc == 0 or dr == dc
-    elif piece_type == "N":
+      elif piece_type == "N":
         shape_valid = (dr == 2 and dc == 1) or (dr == 1 and dc == 2)
-
-    if not shape_valid:
+    
+      if not shape_valid:
         return False
-
-    # 2. בדיקת מסלול פנוי עבור כלים שנעים בקו ישר/אלכסון (R, B, Q)
-    if piece_type in ("R", "B", "Q") and board_rows is not None:
+    
+      if piece_type in ("R", "B", "Q") and board_rows is not None:
         if not is_path_clear(board_rows, from_pos, to_pos):
-            return False
-
-    return True
-
+          return False
+    
+      return True
 
 class GameController:
     def __init__(self, board: Board) -> None:
@@ -105,40 +137,38 @@ class GameController:
         col = x // 100
         row = y // 100
 
-        # בדיקה שהלחיצה בתוך גבולות הלוח
         if row < 0 or row >= self.board.height or col < 0 or col >= self.board.width:
             return
 
         target_token = self.board._rows[row][col]
 
-        # 1. אם עדיין לא נבחר כלי
         if self.selected_pos is None:
             if target_token != ".":
                 self.selected_pos = (row, col)
             return
 
-        # 2. אם כבר נבחר כלי בעבר
         sel_row, sel_col = self.selected_pos
         source_token = self.board._rows[sel_row][sel_col]
 
-        # לחיצה שוב על אותה המשבצת
         if (sel_row, sel_col) == (row, col):
             return
 
-        # לחיצה על כלי מאותו הצבע -> העברת הבחירה לכלי החדש
+        # לחיצה על כלי מאותו צבע -> העברת הבחירה
         if target_token != "." and target_token[0] == source_token[0]:
             self.selected_pos = (row, col)
             return
 
-        # 3. בדיקת חוקיות תנועה (צורת כלי + מסלול חופשי)
-        piece_type = source_token[1]
+        # בדיקת חוקיות מהלך
         if is_legal_piece_move(
-            piece_type, (sel_row, sel_col), (row, col), self.board._rows
+            source_token,
+            (sel_row, sel_col),
+            (row, col),
+            self.board._rows,
+            target_token,
         ):
-            # ביצוע התנועה / האכילה (כלי יריב מוחלף, משבצת המקור מתרוקנת)
             self.board._rows[row][col] = source_token
             self.board._rows[sel_row][sel_col] = "."
-            self.selected_pos = None  # איפוס הבחירה
+            self.selected_pos = None
 
     def _handle_print_board(self) -> None:
         for line in self.board.to_canonical_lines():
