@@ -106,3 +106,62 @@ def test_controller_invalid_piece_move_ignored():
     # הצריח נשאר במקומו והלוח לא משתנה
     assert board._rows[0][0] == "wR"
     assert board._rows[1][1] == "."
+
+# ==========================================
+# טסטים מאיטרציה 4 (חסימות ואכילה)
+# ==========================================
+
+def test_rook_blocked_by_piece():
+    board = Board.from_rows([
+        ["wR", "wP", "."],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+    controller.execute_command("click 50 50")   # בחירת הצריח ב-(0,0)
+    controller.execute_command("click 250 50")  # ניסיון תנועה ל-(0,2) - חסום!
+
+    assert board._rows[0][0] == "wR"
+    assert board._rows[0][2] == "."
+
+
+def test_knight_jumps_over_blockers():
+    board = Board.from_rows([
+        ["wN", "wP", "."],
+        ["wP", "wP", "."],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+    controller.execute_command("click 50 50")   # בחירת הפרש ב-(0,0)
+    controller.execute_command("click 150 250") # תנועה בצורת L ל-(2,1) - קופץ מעל חסמים!
+
+    assert controller.selected_pos is None
+    assert board._rows[0][0] == "."
+    assert board._rows[2][1] == "wN"
+
+
+def test_capture_enemy_piece():
+    board = Board.from_rows([
+        ["wR", ".", "bR"],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+    controller.execute_command("click 50 50")   # בחירת הצריח הלבן ב-(0,0)
+    controller.execute_command("click 250 50")  # אכילת הצריח השחור ב-(0,2)
+
+    assert controller.selected_pos is None
+    assert board._rows[0][0] == "."
+    assert board._rows[0][2] == "wR"
+
+
+def test_cannot_capture_own_piece():
+    board = Board.from_rows([
+        ["wR", ".", "wK"],
+        [".", ".", "."]
+    ])
+    controller = GameController(board)
+    controller.execute_command("click 50 50")   # בחירת wR
+    controller.execute_command("click 250 50")  # לחיצה על wK (אותו צבע) -> משנה בחירה ל-wK
+
+    assert controller.selected_pos == (0, 2)
+    assert board._rows[0][0] == "wR"
+    assert board._rows[0][2] == "wK"
