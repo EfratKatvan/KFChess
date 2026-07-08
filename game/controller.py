@@ -57,27 +57,39 @@ def is_legal_pawn_move(
     color: str,
     from_pos: Tuple[int, int],
     to_pos: Tuple[int, int],
+    board_rows: list[list[str]],
     target_token: str,
 ) -> bool:
     r1, c1 = from_pos
     r2, c2 = to_pos
+    board_height = len(board_rows)
 
-    dr = r2 - r1
-    dc = abs(c2 - c1)
+    if color == "w":
+        direction = -1  # לבן נע למעלה
+        # בלוח תקני (גובה 8) שורת התחלה היא 6. בלוחות קטנים (כמו 4) היא השורה התחתונה (board_height - 1)
+        start_row = board_height - 2 if board_height == 8 else board_height - 1
+    else:
+        direction = 1   # שחור נע למטה
+        # בלוח תקני (גובה 8) שורת התחלה היא 1. בלוחות קטנים היא שורה 0
+        start_row = 1 if board_height == 8 else 0
 
-    expected_dr = -1 if color == "w" else 1
+    # 1. תנועה ישרה קדימה
+    if c1 == c2:
+        # צעד יחיד
+        if r2 - r1 == direction and target_token == ".":
+            return True
+        # צעד כפול משורת ההתחלה
+        if r1 == start_row and r2 - r1 == 2 * direction:
+            mid_r = r1 + direction
+            if board_rows[mid_r][c1] == "." and target_token == ".":
+                return True
 
-    if dr != expected_dr:
-        return False
-
-    if dc == 0:
-        return target_token == "."
-
-    if dc == 1:
-        return target_token != "." and target_token[0] != color
+    # 2. אכילה באלכסון
+    if abs(c2 - c1) == 1 and r2 - r1 == direction:
+        if target_token != "." and target_token[0] != color:
+            return True
 
     return False
-
 
 def is_legal_piece_move(
     source_token: str,
@@ -99,7 +111,9 @@ def is_legal_piece_move(
     piece_type = source_token[1]
 
     if piece_type == "P":
-        return is_legal_pawn_move(color, from_pos, to_pos, target_token)
+        if board_rows is None:
+            return False
+        return is_legal_pawn_move(color, from_pos, to_pos, board_rows, target_token)
 
     shape_valid = False
     if piece_type == "K":
@@ -129,14 +143,13 @@ class GameController:
         self.selected_pos: Optional[Tuple[int, int]] = None
         # [ (piece, sr, sc, tr, tc, remaining_time) ]
         self.moving_pieces: List[Tuple[str, int, int, int, int, int]] = []
-        self.game_over: bool = False  # דגל לסיום המשחק (איטרציה 9)
+        self.game_over: bool = False
 
     def execute_command(self, cmd: str) -> None:
         cmd = cmd.strip()
         if not cmd:
             return
 
-        # אם המשחק הסתיים, לא מעבדים פקודות חדשות פרט להדפסה אם נדרש
         if self.game_over and not cmd.startswith("print"):
             return
 
@@ -225,11 +238,17 @@ class GameController:
         for piece, sr, sc, tr, tc, remaining in self.moving_pieces:
             remaining -= time_ms
             if remaining <= 0:
-                # בדיקה אם היעד מכיל מלך
                 captured_token = self.board._rows[tr][tc]
-                
+
+                # --- הכתרת חייל למלכה (Pawn Promotion) ---
+                # --- הכתרת חייל למלכה (Pawn Promotion) ---
+                if piece == "wP" and tr == 0:
+                    piece = "wQ"
+                elif piece == "bP" and tr == self.board.height - 1:
+                    piece = "bQ"
+
                 # פינוי תא המקור
-                if self.board._rows[sr][sc] == piece:
+                if self.board._rows[sr][sc] == piece or self.board._rows[sr][sc] == f"{piece[0]}P":
                     self.board._rows[sr][sc] = "."
 
                 # הנחת הכלי בתא היעד

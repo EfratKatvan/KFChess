@@ -380,3 +380,69 @@ def test_ongoing_move_cancelled_if_king_captured_first():
     # ברגע ש-wR לוכד את bK, המשחק מסתיים מיד וכל התנועות הנוספות מוצררות/מופסקות
     assert controller.game_over is True
     assert board._rows[0] == [".", ".", "wR"]
+
+# ==========================================
+# איטרציה 10: חוקי תנועה והכתרה של חייל (Pawn Rules)
+# ==========================================
+
+def test_pawn_single_step_forward():
+    board = [
+        [".", "."],
+        [".", "."],
+        [".", "."],
+        ["wP", "."]  # לבן בשורה 3 (תחתית)
+    ]
+    # צעד בודד למעלה משורה 3 לשורה 2
+    assert is_legal_piece_move("wP", (3, 0), (2, 0), board, ".") is True
+
+
+def test_pawn_double_step_from_start_row():
+    board = [
+        [".", "."],
+        [".", "."],
+        [".", "."],
+        ["wP", "."]  # שורת ההתחלה של לבן בלוח קטן היא 3
+    ]
+    # צעד כפול משורת ההתחלה (שורה 3 -> שורה 1)
+    assert is_legal_piece_move("wP", (3, 0), (1, 0), board, ".") is True
+
+
+def test_pawn_double_step_blocked():
+    board = [
+        [".", "."],
+        [".", "."],
+        ["bP", "."],  # חסום בשורה 2
+        ["wP", "."]
+    ]
+    assert is_legal_piece_move("wP", (3, 0), (1, 0), board, ".") is False
+
+def test_pawn_diagonal_capture():
+    board = [
+        [".", "."],
+        [".", "bP"], # אויב באלכסון בשורה 1
+        ["wP", "."],
+        [".", "."]
+    ]
+    # אכילת אויב באלכסון למעלה (2,0) -> (1,1)
+    assert is_legal_piece_move("wP", (2, 0), (1, 1), board, "bP") is True
+    # תנועה באלכסון לתא ריק - לא חוקית
+    assert is_legal_piece_move("wP", (2, 0), (1, 1), board, ".") is False
+
+
+def test_pawn_promotion_to_queen():
+    board = Board.from_rows([
+        [".", "."],
+        ["wP", "."],  # wP בשורה 1 (צעד אחד משורה 0)
+        [".", "."],
+        [".", "."]
+    ])
+    controller = GameController(board)
+
+    # wP ב-(1,0) נע למעלה ל-(0,0) (השורה הראשונה/עליונה)
+    controller.execute_command("click 50 150")
+    controller.execute_command("click 50 50")
+    controller.execute_command("wait 1000")
+
+    # החייל הופך למלכה wQ בסיום התנועה בשורה 0
+    assert board._rows[0][0] == "wQ"
+    assert board._rows[1][0] == "."
