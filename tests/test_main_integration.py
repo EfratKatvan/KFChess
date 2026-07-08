@@ -35,3 +35,25 @@ def test_unknown_token_prints_error():
 def test_no_commands_marker_reads_to_end():
     stdin_text = "Board:\nwK . .\nbK . .\n"
     assert run_main(stdin_text) == "wK . .\nbK . .\n"
+
+import io
+from main import main
+
+
+def test_full_flow_iteration_2(monkeypatch, capsys):
+    input_data = """Board:
+                    wR .
+                    . bK
+                    Commands:
+                    click 50 50
+                    click 150 50
+                    print board
+                    """
+    monkeypatch.setattr("sys.stdin", io.StringIO(input_data))
+
+    main()
+
+    captured = capsys.readouterr()
+    # ה-wR זז מ-(0,0) ל-(0,1) ולכן ההדפסה צריכה להיות:
+    expected_output = ". wR\n. bK\n"
+    assert captured.out == expected_output

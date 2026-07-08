@@ -31,3 +31,25 @@ def test_parse_board_section_no_commands_marker():
     lines = ["Board:", "wK . .", "bK . ."]
     rows = parse_board_section(lines)
     assert rows == [["wK", ".", "."], ["bK", ".", "."]]
+
+from board.board_io import parse_commands_section
+
+
+def test_parse_commands_section():
+    lines = [
+        "Board:",
+        "wK .",
+        ". bK",
+        "Commands:",
+        "click 50 50",
+        "wait 100",
+        "print board",
+    ]
+    commands = parse_commands_section(lines)
+    assert commands == ["click 50 50", "wait 100", "print board"]
+
+
+def test_parse_commands_section_empty():
+    lines = ["Board:", "wK .", "Commands:"]
+    commands = parse_commands_section(lines)
+    assert commands == []

@@ -15,3 +15,12 @@ def parse_board_section(lines: list[str]) -> list[list[str]]:
             rows.append(lines[i].split())
         i += 1
     return rows
+
+
+# --- תוספת לאיטרציה 2 ---
+def parse_commands_section(lines: list[str]) -> list[str]:
+    """מחזירה את שורות הפקודות שמופיעות אחרי המרקר Commands:"""
+    if COMMANDS_MARKER not in lines:
+        return []
+    start = lines.index(COMMANDS_MARKER) + 1
+    return [line for line in lines[start:] if line]
