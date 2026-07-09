@@ -34,12 +34,11 @@ EXPECTED_OUTPUT = {
 }
 
 
-def run_script(filename: str):
-    """מריץ קובץ .kfc דרך הנתיב הציבורי בלבד (בלי תת-תהליך) ומחזיר את שורות ה-print board."""
-    path = os.path.join(SCRIPTS_DIR, filename)
-    with open(path, encoding="utf-8") as stream:
-        lines = read_input_lines(stream)
-
+def run_lines(lines):
+    """מריץ תוכן DSL (Board:/Commands:) דרך הנתיב הציבורי המלא בלבד
+    (build_board -> RuleEngine/RealTimeArbiter/GameEngine/Controller ->
+    script_runner.run_commands) ומחזיר את שורות ה-print board. אין כאן
+    שום קיצור דרך - זה בדיוק מה ש-app.py עושה, בלי תת-תהליך."""
     board = build_board(parse_board_section(lines))
     commands = parse_commands_section(lines)
 
@@ -54,9 +53,95 @@ def run_script(filename: str):
     return printed
 
 
+def run_script(filename: str):
+    path = os.path.join(SCRIPTS_DIR, filename)
+    with open(path, encoding="utf-8") as stream:
+        lines = read_input_lines(stream)
+    return run_lines(lines)
+
+
+def run_inline(text: str):
+    return run_lines(read_input_lines(io.StringIO(text)))
+
+
 @pytest.mark.parametrize("filename", sorted(EXPECTED_OUTPUT))
 def test_kfc_script_produces_expected_board(filename):
     assert run_script(filename) == EXPECTED_OUTPUT[filename]
+
+
+# ==========================================
+# תרחיש קליק->wait->print board קטן לכל סוג כלי (מקצה לקצה, דרך הנתיב
+# הציבורי המלא) - Rook כבר מכוסה ע"י 03_rook_moves.kfc למעלה.
+# ==========================================
+
+def test_bishop_end_to_end_click_wait_print():
+    text = """Board:
+wB . .
+. . .
+. . .
+Commands:
+click 50 50
+click 250 250
+wait 2000
+print board
+"""
+    assert run_inline(text) == [". . .", ". . .", ". . wB"]
+
+
+def test_queen_end_to_end_click_wait_print():
+    text = """Board:
+wQ . .
+. . .
+. . .
+Commands:
+click 50 50
+click 250 250
+wait 2000
+print board
+"""
+    assert run_inline(text) == [". . .", ". . .", ". . wQ"]
+
+
+def test_knight_end_to_end_click_wait_print():
+    text = """Board:
+wN wP .
+wP wP .
+. . .
+Commands:
+click 50 50
+click 150 250
+wait 2000
+print board
+"""
+    assert run_inline(text) == [". wP .", "wP wP .", ". wN ."]
+
+
+def test_king_end_to_end_click_wait_print():
+    text = """Board:
+wK . .
+. . .
+Commands:
+click 50 50
+click 150 50
+wait 1000
+print board
+"""
+    assert run_inline(text) == [". wK .", ". . ."]
+
+
+def test_pawn_end_to_end_click_wait_print():
+    text = """Board:
+. . .
+. . .
+wP . .
+. . .
+Commands:
+click 50 250
+click 50 150
+wait 1000
+print board
+"""
+    assert run_inline(text) == [". . .", "wP . .", ". . .", ". . ."]
 
 
 def run_app(stdin_text: str) -> str:
