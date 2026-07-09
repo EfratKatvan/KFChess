@@ -73,10 +73,30 @@ def test_is_same_color_false_when_either_cell_is_empty():
     assert engine.is_same_color(Position(0, 0), Position(0, 1)) is False
 
 
-def test_try_move_looks_up_the_piece_itself():
+def test_request_move_looks_up_the_piece_itself():
     _, _, engine, _ = make_stack([["wR", ".", "."]])
-    result = engine.try_move(Position(0, 0), Position(0, 2))
-    assert result == "started"
+    result = engine.request_move(Position(0, 0), Position(0, 2))
+    assert result.started is True
+    assert result.reason == "started"
+
+
+def test_request_move_checks_game_over_before_asking_rule_engine():
+    _, controller, engine, _ = make_stack([["wR", "bK"]])
+    controller.handle_click(50, 50)   # בחירת wR
+    controller.handle_click(150, 50)  # wR אוכל את bK
+    engine.wait(1000)
+    assert engine.is_game_over() is True
+
+    result = engine.request_move(Position(0, 1), Position(0, 0))
+    assert result.started is False
+    assert result.reason == "game_over"
+
+
+def test_request_move_reports_the_rule_engine_reason_when_invalid():
+    _, _, engine, _ = make_stack([["wR", ".", "."], [".", ".", "."]])
+    result = engine.request_move(Position(0, 0), Position(1, 1))
+    assert result.started is False
+    assert result.reason == "illegal_piece_move"
 
 
 # ==========================================

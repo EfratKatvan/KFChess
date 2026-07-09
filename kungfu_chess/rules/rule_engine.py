@@ -1,18 +1,44 @@
 from __future__ import annotations
+from dataclasses import dataclass
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.position import Position
-from kungfu_chess.rules.piece_rules import is_legal_piece_move
+from kungfu_chess.rules.piece_rules import rules_for
+
+REASON_OK = "ok"
+REASON_OUTSIDE_BOARD = "outside_board"
+REASON_EMPTY_SOURCE = "empty_source"
+REASON_FRIENDLY_DESTINATION = "friendly_destination"
+REASON_ILLEGAL_PIECE_MOVE = "illegal_piece_move"
+
+
+@dataclass
+class MoveValidation:
+    is_valid: bool
+    reason: str
 
 
 class RuleEngine:
-    """ולידציה בלבד (read-only) של מהלך מבוקש, מול המצב הנוכחי של הלוח."""
+    """קריאה-בלבד: בהינתן תא מקור ותא יעד, האם הפקודה הזו חוקית כרגע?
+    לא נוגע בלוח, לא מזיז כלים, לא יודע כלום על game_over."""
 
     def __init__(self, board: Board) -> None:
         self._board = board
 
-    def is_legal_move(self, from_pos: Position, to_pos: Position) -> bool:
+    def validate_move(self, from_pos: Position, to_pos: Position) -> MoveValidation:
+        if not self._board.is_inside(from_pos) or not self._board.is_inside(to_pos):
+            return MoveValidation(False, REASON_OUTSIDE_BOARD)
+
         piece = self._board.piece_at(from_pos)
         if piece is None:
-            return False
-        return is_legal_piece_move(piece, from_pos, to_pos, self._board)
+            return MoveValidation(False, REASON_EMPTY_SOURCE)
+
+        target = self._board.piece_at(to_pos)
+        if target is not None and target.color == piece.color:
+            return MoveValidation(False, REASON_FRIENDLY_DESTINATION)
+
+        rules = rules_for(piece.kind)
+        if to_pos not in rules.legal_destinations(self._board, piece):
+            return MoveValidation(False, REASON_ILLEGAL_PIECE_MOVE)
+
+        return MoveValidation(True, REASON_OK)

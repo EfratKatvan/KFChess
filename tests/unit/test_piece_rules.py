@@ -1,108 +1,191 @@
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.position import Position
 from kungfu_chess.model.piece import Piece, WHITE, BLACK, KING, QUEEN, ROOK, BISHOP, KNIGHT, PAWN
-from kungfu_chess.rules.piece_rules import is_legal_piece_move
+from kungfu_chess.rules.piece_rules import (
+    RookRules,
+    BishopRules,
+    QueenRules,
+    KnightRules,
+    KingRules,
+    PawnRules,
+    rules_for,
+)
 
 
 def piece(kind, color=WHITE, row=0, col=0):
-    return Piece(id=f"{color}-{kind}", color=color, kind=kind, cell=Position(row, col))
+    return Piece(id=f"{color}-{kind}-{row}-{col}", color=color, kind=kind, cell=Position(row, col))
+
+
+def board_with(*pieces, width=8, height=8):
+    board = Board(width=width, height=height)
+    for p in pieces:
+        board.add_piece(p)
+    return board
 
 
 # ==========================================
-# חוקי תנועה בסיסיים לכל הכלים (ללא לוח - גיאומטריה טהורה)
+# 1. Rook
 # ==========================================
 
-def test_king_movement_rules():
-    king = piece(KING)
-    assert is_legal_piece_move(king, Position(1, 1), Position(1, 2)) is True
-    assert is_legal_piece_move(king, Position(1, 1), Position(2, 2)) is True
-    assert is_legal_piece_move(king, Position(1, 1), Position(1, 3)) is False
+def test_rook_moves_across_empty_row_and_column():
+    rook = piece(ROOK, row=0, col=0)
+    board = board_with(rook)
+    destinations = RookRules.legal_destinations(board, rook)
+    assert Position(0, 7) in destinations  # לאורך השורה
+    assert Position(7, 0) in destinations  # לאורך העמודה
+    assert Position(1, 1) not in destinations  # לא אלכסון
 
 
-def test_rook_movement_rules():
-    rook = piece(ROOK)
-    assert is_legal_piece_move(rook, Position(0, 0), Position(0, 3)) is True
-    assert is_legal_piece_move(rook, Position(0, 0), Position(3, 0)) is True
-    assert is_legal_piece_move(rook, Position(0, 0), Position(2, 2)) is False
+def test_rook_stops_before_a_friendly_blocker():
+    rook = piece(ROOK, WHITE, 0, 0)
+    blocker = piece(ROOK, WHITE, 0, 3)
+    board = board_with(rook, blocker)
+    destinations = RookRules.legal_destinations(board, rook)
+    assert Position(0, 2) in destinations
+    assert Position(0, 3) not in destinations  # תא הכלי הידידותי עצמו
+    assert Position(0, 4) not in destinations  # מעבר לו
 
 
-def test_bishop_movement_rules():
-    bishop = piece(BISHOP)
-    assert is_legal_piece_move(bishop, Position(0, 0), Position(3, 3)) is True
-    assert is_legal_piece_move(bishop, Position(0, 0), Position(0, 2)) is False
-
-
-def test_queen_movement_rules():
-    queen = piece(QUEEN)
-    assert is_legal_piece_move(queen, Position(0, 0), Position(0, 2)) is True
-    assert is_legal_piece_move(queen, Position(0, 0), Position(2, 2)) is True
-    assert is_legal_piece_move(queen, Position(0, 0), Position(1, 2)) is False
-
-
-def test_knight_movement_rules():
-    knight = piece(KNIGHT)
-    assert is_legal_piece_move(knight, Position(0, 0), Position(2, 1)) is True
-    assert is_legal_piece_move(knight, Position(0, 0), Position(1, 2)) is True
-    assert is_legal_piece_move(knight, Position(0, 0), Position(2, 2)) is False
-
-
-def test_moving_onto_own_color_piece_is_rejected():
-    rook = piece(ROOK, color=WHITE, row=0, col=0)
-    board = Board(width=3, height=1)
-    board.add_piece(rook)
-    board.add_piece(piece(BISHOP, color=WHITE, row=0, col=2))
-    assert is_legal_piece_move(rook, Position(0, 0), Position(0, 2), board) is False
-
-
-def test_rook_blocked_by_piece_in_path():
-    rook = piece(ROOK, color=WHITE, row=0, col=0)
-    board = Board(width=3, height=1)
-    board.add_piece(rook)
-    board.add_piece(piece(PAWN, color=WHITE, row=0, col=1))
-    assert is_legal_piece_move(rook, Position(0, 0), Position(0, 2), board) is False
+def test_rook_captures_an_enemy_blocker_but_does_not_pass_it():
+    rook = piece(ROOK, WHITE, 0, 0)
+    enemy = piece(ROOK, BLACK, 0, 3)
+    board = board_with(rook, enemy)
+    destinations = RookRules.legal_destinations(board, rook)
+    assert Position(0, 3) in destinations  # אכילה
+    assert Position(0, 4) not in destinations  # לא ממשיך אחרי האכילה
 
 
 # ==========================================
-# חוקי תנועה והכתרה של חייל (Pawn Rules)
+# 2. Bishop
 # ==========================================
 
-def test_pawn_single_step_forward():
-    board = Board(width=1, height=4)
-    pawn = piece(PAWN, color=WHITE, row=3, col=0)
-    board.add_piece(pawn)
-    # צעד בודד למעלה משורה 3 לשורה 2
-    assert is_legal_piece_move(pawn, Position(3, 0), Position(2, 0), board) is True
+def test_bishop_moves_diagonally_and_not_straight():
+    bishop = piece(BISHOP, row=0, col=0)
+    board = board_with(bishop)
+    destinations = BishopRules.legal_destinations(board, bishop)
+    assert Position(3, 3) in destinations
+    assert Position(0, 3) not in destinations  # ישר - לא חוקי לרץ
 
 
-def test_pawn_double_step_from_start_row():
-    board = Board(width=1, height=4)
-    pawn = piece(PAWN, color=WHITE, row=3, col=0)
-    board.add_piece(pawn)
-    # צעד כפול משורת ההתחלה (שורה 3 -> שורה 1)
-    assert is_legal_piece_move(pawn, Position(3, 0), Position(1, 0), board) is True
+# ==========================================
+# 3. Queen
+# ==========================================
+
+def test_queen_combines_rook_and_bishop_movement():
+    queen = piece(QUEEN, row=0, col=0)
+    board = board_with(queen)
+    destinations = QueenRules.legal_destinations(board, queen)
+    assert Position(0, 5) in destinations  # ישר כמו צריח
+    assert Position(5, 5) in destinations  # אלכסון כמו רץ
+    assert Position(1, 2) not in destinations  # לא ישר ולא אלכסון
 
 
-def test_pawn_double_step_blocked():
-    board = Board(width=1, height=4)
-    pawn = piece(PAWN, color=WHITE, row=3, col=0)
-    board.add_piece(pawn)
-    board.add_piece(piece(PAWN, color=BLACK, row=2, col=0))  # חוסם בשורה 2
-    assert is_legal_piece_move(pawn, Position(3, 0), Position(1, 0), board) is False
+# ==========================================
+# 4. Knight
+# ==========================================
+
+def test_knight_jumps_over_blockers():
+    knight = piece(KNIGHT, WHITE, 0, 0)
+    board = board_with(
+        knight,
+        piece(PAWN, WHITE, 0, 1),
+        piece(PAWN, WHITE, 1, 0),
+        piece(PAWN, WHITE, 1, 1),
+    )
+    destinations = KnightRules.legal_destinations(board, knight)
+    assert Position(2, 1) in destinations
+    assert Position(1, 2) in destinations
 
 
-def test_pawn_diagonal_capture():
-    board = Board(width=2, height=4)
-    pawn = piece(PAWN, color=WHITE, row=2, col=0)
-    board.add_piece(pawn)
-    board.add_piece(piece(PAWN, color=BLACK, row=1, col=1))  # אויב באלכסון
+# ==========================================
+# 5. King
+# ==========================================
 
-    # אכילת אויב באלכסון למעלה (2,0) -> (1,1)
-    assert is_legal_piece_move(pawn, Position(2, 0), Position(1, 1), board) is True
+def test_king_moves_one_cell_only():
+    king = piece(KING, row=4, col=4)
+    board = board_with(king)
+    destinations = KingRules.legal_destinations(board, king)
+    assert Position(4, 5) in destinations
+    assert Position(3, 3) in destinations
+    assert Position(4, 6) not in destinations
+    assert len(destinations) == 8
 
 
-def test_pawn_diagonal_move_to_empty_cell_is_illegal():
-    board = Board(width=2, height=4)
-    pawn = piece(PAWN, color=WHITE, row=2, col=0)
-    board.add_piece(pawn)
-    # תא (1,1) ריק - תנועה באלכסון לתא ריק לא חוקית
-    assert is_legal_piece_move(pawn, Position(2, 0), Position(1, 1), board) is False
+# ==========================================
+# 6. Pawn - תנועה מפושטת בלבד
+# ==========================================
+
+def test_pawn_moves_one_step_forward():
+    pawn = piece(PAWN, WHITE, 3, 0)
+    board = board_with(pawn)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(2, 0) in destinations
+
+
+def test_pawn_can_double_step_from_start_row():
+    pawn = piece(PAWN, WHITE, 6, 0)  # שורת ההתחלה בלוח 8x8
+    board = board_with(pawn, width=8, height=8)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(4, 0) in destinations
+
+
+def test_pawn_cannot_double_step_when_not_on_start_row():
+    pawn = piece(PAWN, WHITE, 5, 0)  # כבר זז פעם - לא בשורת ההתחלה
+    board = board_with(pawn, width=8, height=8)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(3, 0) not in destinations
+
+
+def test_pawn_double_step_blocked_by_piece_in_between():
+    pawn = piece(PAWN, WHITE, 6, 0)
+    blocker = piece(PAWN, BLACK, 5, 0)
+    board = board_with(pawn, blocker, width=8, height=8)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(4, 0) not in destinations
+
+
+def test_pawn_double_step_blocked_by_piece_on_destination():
+    pawn = piece(PAWN, WHITE, 6, 0)
+    blocker = piece(PAWN, BLACK, 4, 0)
+    board = board_with(pawn, blocker, width=8, height=8)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(4, 0) not in destinations
+
+
+def test_pawn_captures_diagonally():
+    pawn = piece(PAWN, WHITE, 2, 0)
+    enemy = piece(PAWN, BLACK, 1, 1)
+    board = board_with(pawn, enemy)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(1, 1) in destinations
+
+
+def test_pawn_cannot_move_diagonally_onto_empty_cell():
+    pawn = piece(PAWN, WHITE, 2, 0)
+    board = board_with(pawn)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(1, 1) not in destinations
+
+
+def test_pawn_cannot_capture_straight_ahead():
+    pawn = piece(PAWN, WHITE, 2, 0)
+    enemy = piece(PAWN, BLACK, 1, 0)
+    board = board_with(pawn, enemy)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(1, 0) not in destinations
+
+
+def test_black_pawn_moves_downward():
+    pawn = piece(PAWN, BLACK, 1, 0)
+    board = board_with(pawn)
+    destinations = PawnRules.legal_destinations(board, pawn)
+    assert Position(2, 0) in destinations
+
+
+# ==========================================
+# rules_for - הפניה לפי סוג כלי
+# ==========================================
+
+def test_rules_for_returns_the_matching_rule_class():
+    assert rules_for(ROOK) is RookRules
+    assert rules_for(PAWN) is PawnRules

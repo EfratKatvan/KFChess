@@ -3,7 +3,7 @@ from typing import Optional
 
 from kungfu_chess.model.position import Position
 from kungfu_chess.input.board_mapper import BoardMapper
-from kungfu_chess.engine.game_engine import GameEngine, MOVE_STARTED, MOVE_DESTINATION_RESERVED
+from kungfu_chess.engine.game_engine import GameEngine, REASON_STARTED, REASON_DESTINATION_RESERVED
 
 
 class Controller:
@@ -37,9 +37,9 @@ class Controller:
                 self.selected_pos = cell
             return
 
-        # game_over וחוקיות המהלך נבדקים שניהם בתוך try_move - שער יחיד
-        result = self._engine.try_move(self.selected_pos, cell)
-        if result in (MOVE_STARTED, MOVE_DESTINATION_RESERVED):
+        # game_over וחוקיות המהלך נבדקים שניהם בתוך request_move - שער יחיד
+        result = self._engine.request_move(self.selected_pos, cell)
+        if result.reason in (REASON_STARTED, REASON_DESTINATION_RESERVED):
             self.selected_pos = None
         # אם המהלך לא חוקי - הבחירה נשארת כפי שהיא
 

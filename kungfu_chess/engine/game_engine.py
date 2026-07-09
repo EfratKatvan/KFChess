@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dataclasses import dataclass
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.game_state import GameState
@@ -6,9 +7,15 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 
-MOVE_STARTED = "started"
-MOVE_ILLEGAL = "illegal"
-MOVE_DESTINATION_RESERVED = "reserved"
+REASON_STARTED = "started"
+REASON_GAME_OVER = "game_over"
+REASON_DESTINATION_RESERVED = "destination_reserved"
+
+
+@dataclass
+class MoveResult:
+    started: bool
+    reason: str
 
 
 class GameEngine:
@@ -42,19 +49,23 @@ class GameEngine:
             return False
         return self.has_piece(position) and not self.is_busy(position)
 
-    def try_move(self, from_pos: Position, to_pos: Position) -> str:
+    def request_move(self, from_pos: Position, to_pos: Position) -> MoveResult:
+        """מהלך = בקשה. קודם game_over (לא נוגעים ב-RuleEngine אם המשחק כבר נגמר),
+        אחר כך ולידציה טהורה דרך RuleEngine, ורק אם היא תקינה - הביצוע עצמו
+        (בדיקת קונפליקט תזמון + התחלת תנועה) קורה כאן, לא ב-RuleEngine."""
         if self._state.game_over:
-            return MOVE_ILLEGAL
+            return MoveResult(started=False, reason=REASON_GAME_OVER)
 
-        piece = self._state.board.piece_at(from_pos)
-        if piece is None or not self._rules.is_legal_move(from_pos, to_pos):
-            return MOVE_ILLEGAL
+        validation = self._rules.validate_move(from_pos, to_pos)
+        if not validation.is_valid:
+            return MoveResult(started=False, reason=validation.reason)
 
         if self._arbiter.is_destination_reserved(to_pos):
-            return MOVE_DESTINATION_RESERVED
+            return MoveResult(started=False, reason=REASON_DESTINATION_RESERVED)
 
+        piece = self._state.board.piece_at(from_pos)
         self._arbiter.start_motion(piece, to_pos)
-        return MOVE_STARTED
+        return MoveResult(started=True, reason=REASON_STARTED)
 
     def try_jump(self, position: Position) -> bool:
         """הרחבה מותאמת אישית (מחוץ ל-DSL הרשמי) - ר' plan/README."""
