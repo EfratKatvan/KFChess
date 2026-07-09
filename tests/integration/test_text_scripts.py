@@ -1,14 +1,16 @@
+import io
+import os
 import subprocess
 import sys
-import os
 
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-MAIN_PATH = os.path.join(PROJECT_ROOT, "main.py")
+from kungfu_chess.app import main
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def run_main(stdin_text: str) -> str:
+def run_app(stdin_text: str) -> str:
     result = subprocess.run(
-        [sys.executable, MAIN_PATH],
+        [sys.executable, "-m", "kungfu_chess.app"],
         input=stdin_text,
         capture_output=True,
         text=True,
@@ -19,28 +21,25 @@ def run_main(stdin_text: str) -> str:
 
 def test_valid_board_printed_canonically():
     stdin_text = "Board:\nwK . bK\n. . .\nCommands:\n"
-    assert run_main(stdin_text) == "wK . bK\n. . .\n"
+    assert run_app(stdin_text) == "wK . bK\n. . .\n"
 
 
 def test_row_width_mismatch_prints_error():
     stdin_text = "Board:\nwK .\nbK . .\nCommands:\n"
-    assert run_main(stdin_text) == "ERROR ROW_WIDTH_MISMATCH\n"
+    assert run_app(stdin_text) == "ERROR ROW_WIDTH_MISMATCH\n"
 
 
 def test_unknown_token_prints_error():
     stdin_text = "Board:\nwK zZ\n. .\nCommands:\n"
-    assert run_main(stdin_text) == "ERROR UNKNOWN_TOKEN\n"
+    assert run_app(stdin_text) == "ERROR UNKNOWN_TOKEN\n"
 
 
 def test_no_commands_marker_reads_to_end():
     stdin_text = "Board:\nwK . .\nbK . .\n"
-    assert run_main(stdin_text) == "wK . .\nbK . .\n"
-
-import io
-from main import main
+    assert run_app(stdin_text) == "wK . .\nbK . .\n"
 
 
-def test_full_flow_iteration_2(monkeypatch, capsys):
+def test_full_flow_click_wait_print_board(monkeypatch, capsys):
     input_data = """Board:
                     wR .
                     . bK

@@ -18,10 +18,9 @@ class Board:
     def width(self) -> int:
         return len(self._rows[0]) if self._rows else 0
 
-    def to_canonical_lines(self) -> list[str]:
-        return [" ".join(row) for row in self._rows]
-
-    # --- תוספות לאיטרציה 2 ---
+    def to_rows(self) -> list[list[str]]:
+        """מחזיר עותק של כל שורות הלוח, בלי לחשוף את הייצוג הפנימי."""
+        return [row[:] for row in self._rows]
 
     def is_inside(self, row: int, col: int) -> bool:
         """בודק אם תא (row, col) נמצא בתוך גבולות הלוח"""
