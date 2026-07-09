@@ -1,7 +1,7 @@
 from __future__ import annotations
-from typing import Tuple
 
 from kungfu_chess.model.board import Board
+from kungfu_chess.model.position import Position
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 
@@ -23,49 +23,49 @@ class GameEngine:
     def is_game_over(self) -> bool:
         return self._game_over
 
-    def is_busy(self, row: int, col: int) -> bool:
-        return self._arbiter.is_cell_busy(row, col)
+    def is_busy(self, position: Position) -> bool:
+        return self._arbiter.is_cell_busy(position)
 
-    def has_piece(self, row: int, col: int) -> bool:
-        return self._board.get_cell(row, col) != "."
+    def has_piece(self, position: Position) -> bool:
+        return self._board.piece_at(position) is not None
 
-    def is_same_color(self, pos_a: Tuple[int, int], pos_b: Tuple[int, int]) -> bool:
-        token_a = self._board.get_cell(*pos_a)
-        token_b = self._board.get_cell(*pos_b)
-        return token_a != "." and token_b != "." and token_a[0] == token_b[0]
+    def is_same_color(self, pos_a: Position, pos_b: Position) -> bool:
+        piece_a = self._board.piece_at(pos_a)
+        piece_b = self._board.piece_at(pos_b)
+        return piece_a is not None and piece_b is not None and piece_a.color == piece_b.color
 
-    def can_select(self, row: int, col: int) -> bool:
+    def can_select(self, position: Position) -> bool:
         """שער יחיד: game_over + has_piece + is_busy - כדי שאף קורא לא יצטרך
         לבדוק game_over בעצמו לפני שהוא שואל 'אפשר לבחור את התא הזה?'."""
         if self._game_over:
             return False
-        return self.has_piece(row, col) and not self.is_busy(row, col)
+        return self.has_piece(position) and not self.is_busy(position)
 
-    def try_move(self, from_pos: Tuple[int, int], to_pos: Tuple[int, int]) -> str:
+    def try_move(self, from_pos: Position, to_pos: Position) -> str:
         if self._game_over:
             return MOVE_ILLEGAL
 
-        piece_token = self._board.get_cell(*from_pos)
-        if not self._rules.is_legal_move(piece_token, from_pos, to_pos):
+        piece = self._board.piece_at(from_pos)
+        if piece is None or not self._rules.is_legal_move(from_pos, to_pos):
             return MOVE_ILLEGAL
 
-        if self._arbiter.is_destination_reserved(*to_pos):
+        if self._arbiter.is_destination_reserved(to_pos):
             return MOVE_DESTINATION_RESERVED
 
-        self._arbiter.start_motion(piece_token, from_pos, to_pos)
+        self._arbiter.start_motion(piece, to_pos)
         return MOVE_STARTED
 
-    def try_jump(self, row: int, col: int) -> bool:
+    def try_jump(self, position: Position) -> bool:
         """הרחבה מותאמת אישית (מחוץ ל-DSL הרשמי) - ר' plan/README."""
         if self._game_over:
             return False
-        if not self.has_piece(row, col):
+        if not self.has_piece(position):
             return False
-        if self.is_busy(row, col):
+        if self.is_busy(position):
             return False
-        if self._arbiter.is_cell_airborne(row, col):
+        if self._arbiter.is_cell_airborne(position):
             return False
-        self._arbiter.start_jump(row, col)
+        self._arbiter.start_jump(position)
         return True
 
     def wait(self, time_ms: int) -> None:
@@ -73,6 +73,3 @@ class GameEngine:
             return
         if self._arbiter.advance(time_ms):
             self._game_over = True
-
-    def snapshot_rows(self) -> list[list[str]]:
-        return self._board.to_rows()

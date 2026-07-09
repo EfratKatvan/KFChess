@@ -1,7 +1,9 @@
 from __future__ import annotations
-from typing import List, Tuple
+from typing import List
 
 from kungfu_chess.model.board import Board
+from kungfu_chess.model.piece import Piece, WHITE, BLACK, KING, QUEEN, PAWN, IDLE, MOVING, CAPTURED
+from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import Motion, Jump
 
 MS_PER_CELL = 1000
@@ -29,28 +31,25 @@ class RealTimeArbiter:
     def jumps(self) -> List[Jump]:
         return list(self._jumps)
 
-    def is_cell_busy(self, row: int, col: int) -> bool:
+    def is_cell_busy(self, position: Position) -> bool:
         """True אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות)."""
-        return any(
-            (m.from_row, m.from_col) == (row, col) or (m.to_row, m.to_col) == (row, col)
-            for m in self._motions
-        )
+        return any(m.piece.cell == position or m.to_pos == position for m in self._motions)
 
-    def is_destination_reserved(self, row: int, col: int) -> bool:
-        return any((m.to_row, m.to_col) == (row, col) for m in self._motions)
+    def is_destination_reserved(self, position: Position) -> bool:
+        return any(m.to_pos == position for m in self._motions)
 
-    def is_cell_airborne(self, row: int, col: int) -> bool:
-        return any(j.row == row and j.col == col and j.remaining_ms > 0 for j in self._jumps)
+    def is_cell_airborne(self, position: Position) -> bool:
+        return any(j.position == position and j.remaining_ms > 0 for j in self._jumps)
 
-    def start_motion(self, piece_token: str, from_pos: Tuple[int, int], to_pos: Tuple[int, int]) -> None:
-        from_row, from_col = from_pos
-        to_row, to_col = to_pos
-        distance = max(abs(to_row - from_row), abs(to_col - from_col))
+    def start_motion(self, piece: Piece, to_pos: Position) -> None:
+        from_pos = piece.cell
+        distance = max(abs(to_pos.row - from_pos.row), abs(to_pos.col - from_pos.col))
         travel_time = distance * MS_PER_CELL
-        self._motions.append(Motion(piece_token, from_row, from_col, to_row, to_col, travel_time))
+        piece.state = MOVING
+        self._motions.append(Motion(piece, to_pos, travel_time))
 
-    def start_jump(self, row: int, col: int) -> None:
-        self._jumps.append(Jump(row, col, JUMP_DURATION_MS))
+    def start_jump(self, position: Position) -> None:
+        self._jumps.append(Jump(position, JUMP_DURATION_MS))
 
     def advance(self, time_ms: int) -> bool:
         """מקדם את הזמן ב-time_ms. מחזיר True אם מלך נלכד בסיבוב הזה."""
@@ -58,16 +57,7 @@ class RealTimeArbiter:
         for motion in self._motions:
             remaining = motion.remaining_ms - time_ms
             if remaining > 0:
-                new_motions.append(
-                    Motion(
-                        motion.piece_token,
-                        motion.from_row,
-                        motion.from_col,
-                        motion.to_row,
-                        motion.to_col,
-                        remaining,
-                    )
-                )
+                new_motions.append(Motion(motion.piece, motion.to_pos, remaining))
                 continue
 
             if self._resolve_arrival(motion):
@@ -80,32 +70,42 @@ class RealTimeArbiter:
 
     def _resolve_arrival(self, motion: Motion) -> bool:
         """מיישם הגעה של כלי ליעדו. מחזיר True אם מלך נלכד (כולל לכידת-אוויר)."""
-        piece = motion.piece_token
-        sr, sc, tr, tc = motion.from_row, motion.from_col, motion.to_row, motion.to_col
-        original_piece = piece
+        piece = motion.piece
+        from_pos = piece.cell
+        to_pos = motion.to_pos
 
-        if self.is_cell_airborne(tr, tc):
-            if self._board.get_cell(sr, sc) == original_piece:
-                self._board.set_cell(sr, sc, ".")
-            return piece[1] == "K"
+        if self.is_cell_airborne(to_pos):
+            # הכלי הנע "נבלע" באוויר - הכלי שקפץ נשאר במקומו
+            if self._board.piece_at(from_pos) is piece:
+                self._board.remove_piece(piece)
+            return piece.kind == KING
 
-        captured_token = self._board.get_cell(tr, tc)
+        captured = self._board.piece_at(to_pos)
 
-        if piece == "wP" and tr == 0:
-            piece = "wQ"
-        elif piece == "bP" and tr == self._board.height - 1:
-            piece = "bQ"
+        if piece.kind == PAWN and piece.color == WHITE and to_pos.row == 0:
+            piece.kind = QUEEN
+        elif piece.kind == PAWN and piece.color == BLACK and to_pos.row == self._board.height - 1:
+            piece.kind = QUEEN
 
-        if self._board.get_cell(sr, sc) == original_piece:
-            self._board.set_cell(sr, sc, ".")
-        self._board.set_cell(tr, tc, piece)
+        # מפנים את תא המקור רק אם הכלי עדיין באמת שם (יכול היה כבר להילכד
+        # שם ע"י מהלך אחר שהסתיים באותו tick - ר' realtime/motion.py)
+        if self._board.piece_at(from_pos) is piece:
+            self._board.remove_piece(piece)
 
-        return captured_token != "." and captured_token[1] == "K"
+        if captured is not None:
+            self._board.remove_piece(captured)
+            captured.state = CAPTURED
+
+        piece.cell = to_pos
+        piece.state = IDLE
+        self._board.add_piece(piece)
+
+        return captured is not None and captured.kind == KING
 
     def _advance_jumps(self, time_ms: int) -> None:
         new_jumps: List[Jump] = []
         for jump in self._jumps:
             remaining = jump.remaining_ms - time_ms
             if remaining > 0:
-                new_jumps.append(Jump(jump.row, jump.col, remaining))
+                new_jumps.append(Jump(jump.position, remaining))
         self._jumps = new_jumps

@@ -1,43 +1,36 @@
 from __future__ import annotations
-from typing import Optional, Tuple
+from typing import Optional
 
-#בודקת האם המסלול מתא היעד לתא המקור פנוי מכלים אחרים עבור הכלים  (מלכה, רץ, צריח)
-def is_path_clear(
-    board_rows: list[list[str]], from_pos: Tuple[int, int], to_pos: Tuple[int, int]
-) -> bool:
-    r1, c1 = from_pos
-    r2, c2 = to_pos
+from kungfu_chess.model.board import Board
+from kungfu_chess.model.piece import Piece, WHITE, KING, QUEEN, ROOK, BISHOP, KNIGHT, PAWN
+from kungfu_chess.model.position import Position
 
-    dr = r2 - r1
-    dc = c2 - c1
+
+def is_path_clear(board: Board, from_pos: Position, to_pos: Position) -> bool:
+    """בודקת האם המסלול מתא המקור לתא היעד פנוי מכלים אחרים
+    (רלוונטי למלכה, רץ, צריח)."""
+    dr = to_pos.row - from_pos.row
+    dc = to_pos.col - from_pos.col
 
     step_r = 0 if dr == 0 else (1 if dr > 0 else -1)
     step_c = 0 if dc == 0 else (1 if dc > 0 else -1)
 
-    curr_r = r1 + step_r
-    curr_c = c1 + step_c
-
-    while (curr_r, curr_c) != (r2, c2):
-        if board_rows[curr_r][curr_c] != ".":
+    current = Position(from_pos.row + step_r, from_pos.col + step_c)
+    while current != to_pos:
+        if board.piece_at(current) is not None:
             return False
-        curr_r += step_r
-        curr_c += step_c
+        current = Position(current.row + step_r, current.col + step_c)
 
     return True
 
 
-def is_legal_pawn_move(
-    color: str,
-    from_pos: Tuple[int, int],
-    to_pos: Tuple[int, int],
-    board_rows: list[list[str]],
-    target_token: str,
-) -> bool:
-    r1, c1 = from_pos
-    r2, c2 = to_pos
-    board_height = len(board_rows)
+def is_legal_pawn_move(piece: Piece, from_pos: Position, to_pos: Position, board: Board) -> bool:
+    r1, c1 = from_pos.row, from_pos.col
+    r2, c2 = to_pos.row, to_pos.col
+    board_height = board.height
+    target = board.piece_at(to_pos)
 
-    if color == "w":
+    if piece.color == WHITE:
         direction = -1
         start_row = board_height - 2 if board_height == 8 else board_height - 1
     else:
@@ -45,77 +38,73 @@ def is_legal_pawn_move(
         start_row = 1 if board_height == 8 else 0
 
     if c1 == c2:
-        if r2 - r1 == direction and target_token == ".":
+        if r2 - r1 == direction and target is None:
             return True
         if r1 == start_row and r2 - r1 == 2 * direction:
-            mid_r = r1 + direction
-            if board_rows[mid_r][c1] == "." and target_token == ".":
+            mid = board.piece_at(Position(r1 + direction, c1))
+            if mid is None and target is None:
                 return True
 
     if abs(c2 - c1) == 1 and r2 - r1 == direction:
-        if target_token != "." and target_token[0] != color:
+        if target is not None and target.color != piece.color:
             return True
 
     return False
 
 
 def is_legal_piece_move(
-    piece: str,
-    from_pos: Tuple[int, int],
-    to_pos: Tuple[int, int],
-    board_rows: Optional[list[list[str]]] = None,
-    target_token: str = ".",
+    piece: Piece,
+    from_pos: Position,
+    to_pos: Position,
+    board: Optional[Board] = None,
 ) -> bool:
-    if piece == ".":
-        return False
-
-    color = piece[0]
-    p_type = piece[1]
-
-    r1, c1 = from_pos
-    r2, c2 = to_pos
     # אם המקור והיעד זהים, אין תנועה חוקית
-    if r1 == r2 and c1 == c2:
+    if from_pos == to_pos:
         return False
 
+    r1, c1 = from_pos.row, from_pos.col
+    r2, c2 = to_pos.row, to_pos.col
     dr = abs(r2 - r1)
     dc = abs(c2 - c1)
-    #מנסה לאכול מישהו מהקבוצה שלו-בצבע שלו
-    if target_token != "." and target_token[0] == color:
+
+    target = board.piece_at(to_pos) if board is not None else None
+    # מנסה לאכול כלי מהקבוצה שלו-בצבע שלו
+    if target is not None and target.color == piece.color:
         return False
-    #אם זה מלך, הוא יכול לזוז רק תא אחד לכל כיוון
-    if p_type == "K":
+
+    # אם זה מלך, הוא יכול לזוז רק תא אחד לכל כיוון
+    if piece.kind == KING:
         return dr <= 1 and dc <= 1
-    #אם זה צריח, הוא יכול לזוז רק ישר בעמודות או בשורות, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
-    if p_type == "R":
+    # אם זה צריח, הוא יכול לזוז רק ישר בעמודות או בשורות, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
+    if piece.kind == ROOK:
         if r1 != r2 and c1 != c2:
             return False
-        if board_rows is not None and not is_path_clear(board_rows, from_pos, to_pos):
+        if board is not None and not is_path_clear(board, from_pos, to_pos):
             return False
         return True
-    #אם זה רץ, הוא יכול לזוז רק באלכסון, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
-    if p_type == "B":
+    # אם זה רץ, הוא יכול לזוז רק באלכסון, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
+    if piece.kind == BISHOP:
         if dr != dc:
             return False
-        if board_rows is not None and not is_path_clear(board_rows, from_pos, to_pos):
+        if board is not None and not is_path_clear(board, from_pos, to_pos):
             return False
         return True
-    #אם זה מלכה, הוא יכול לזוז ישר או באלכסון, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
-    if p_type == "Q":
+    # אם זה מלכה, הוא יכול לזוז ישר או באלכסון, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
+    if piece.kind == QUEEN:
         is_straight = (r1 == r2) or (c1 == c2)
         is_diagonal = dr == dc
         if not (is_straight or is_diagonal):
             return False
-        if board_rows is not None and not is_path_clear(board_rows, from_pos, to_pos):
+        if board is not None and not is_path_clear(board, from_pos, to_pos):
             return False
         return True
-    #אם זה סוס, הוא יכול לזוז רק בתבנית של "L" (שני צעדים בכיוון אחד ואחריו צעד אחד בכיוון מאונך)
-    if p_type == "N":
+    # אם זה סוס, הוא יכול לזוז רק בתבנית של "L"
+    if piece.kind == KNIGHT:
         return (dr == 1 and dc == 2) or (dr == 2 and dc == 1)
-    #אם זה חייל, הוא יכול לזוז רק קדימה (לפי צבעו) או לאכול באלכסון, ואם הוא רוצה לזוז יותר ממקום אחד קדימה, הוא צריך לבדוק שהמסלול פנוי
-    if p_type == "P":
-        if board_rows is None:
+    # אם זה חייל, יש לו את חוקי התנועה/אכילה המיוחדים שלו - דורש לוח
+    if piece.kind == PAWN:
+        if board is None:
             return False
-        return is_legal_pawn_move(color, from_pos, to_pos, board_rows, target_token)
+        return is_legal_pawn_move(piece, from_pos, to_pos, board)
 
     return False

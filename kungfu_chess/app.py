@@ -8,10 +8,10 @@ from kungfu_chess.io.board_parser import (
     parse_board_section,
     parse_commands_section,
     validate_board,
+    build_board,
     BoardValidationError,
 )
 from kungfu_chess.io.board_printer import print_board
-from kungfu_chess.model.board import Board
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.engine.game_engine import GameEngine
@@ -30,7 +30,7 @@ def main() -> None:
         print(error.code)
         return
 
-    board = Board.from_rows(rows)
+    board = build_board(rows)
     commands = parse_commands_section(lines)
 
     if not commands:

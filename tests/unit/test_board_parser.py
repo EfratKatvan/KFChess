@@ -1,18 +1,60 @@
 import io as pyio
 import pytest
 
+from kungfu_chess.model.position import Position
+from kungfu_chess.model.piece import WHITE, BLACK, ROOK, KING
 from kungfu_chess.io.board_parser import (
     read_input_lines,
     parse_board_section,
     parse_commands_section,
     validate_board,
     build_legal_tokens,
+    token_to_piece,
+    piece_to_token,
+    build_board,
     BoardValidationError,
     ERROR_ROW_WIDTH_MISMATCH,
     ERROR_UNKNOWN_TOKEN,
 )
 
 LEGAL = build_legal_tokens()
+
+
+# ==========================================
+# token_to_piece / piece_to_token / build_board
+# ==========================================
+
+def test_token_to_piece_decodes_color_and_kind():
+    piece = token_to_piece("wR", Position(0, 0))
+    assert piece.color == WHITE
+    assert piece.kind == ROOK
+    assert piece.cell == Position(0, 0)
+
+
+def test_token_to_piece_black_king():
+    piece = token_to_piece("bK", Position(7, 4))
+    assert piece.color == BLACK
+    assert piece.kind == KING
+
+
+def test_piece_to_token_is_the_inverse_of_token_to_piece():
+    piece = token_to_piece("wQ", Position(1, 2))
+    assert piece_to_token(piece) == "wQ"
+
+
+def test_build_board_places_pieces_at_the_right_cells():
+    board = build_board([["wK", ".", "bK"], [".", ".", "."]])
+    assert board.width == 3
+    assert board.height == 2
+    assert board.piece_at(Position(0, 0)).color == WHITE
+    assert board.piece_at(Position(0, 2)).color == BLACK
+    assert board.piece_at(Position(1, 1)) is None
+
+
+def test_build_board_on_empty_rows_gives_zero_dimensions():
+    board = build_board([])
+    assert board.width == 0
+    assert board.height == 0
 
 
 # ==========================================

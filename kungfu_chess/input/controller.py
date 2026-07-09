@@ -1,6 +1,7 @@
 from __future__ import annotations
-from typing import Optional, Tuple
+from typing import Optional
 
+from kungfu_chess.model.position import Position
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.engine.game_engine import GameEngine, MOVE_STARTED, MOVE_DESTINATION_RESERVED
 
@@ -13,7 +14,7 @@ class Controller:
     def __init__(self, mapper: BoardMapper, engine: GameEngine) -> None:
         self._mapper = mapper
         self._engine = engine
-        self.selected_pos: Optional[Tuple[int, int]] = None
+        self.selected_pos: Optional[Position] = None
 
     def handle_click(self, x: int, y: int) -> None:
         cell = self._mapper.to_cell(x, y)
@@ -23,7 +24,7 @@ class Controller:
         #אם לא נבחר תא עדיין-קליק שני, נבדוק אם יש כלי בתא זה ואם הוא פנוי - אם כן, נבחר אותו
         # (can_select כולל בתוכו את בדיקת game_over - אין צורך לבדוק אותה כאן שוב)
         if self.selected_pos is None:
-            if self._engine.can_select(*cell):
+            if self._engine.can_select(cell):
                 self.selected_pos = cell
             return
         #אם תא המקור והיעד שוים, אין צורך לעשות כלום
@@ -32,7 +33,7 @@ class Controller:
 
         #אם נבחר כלי של אותו צבע, נבדוק אם הוא פנוי - אם כן, נשנה את הבחירה אליו
         if self._engine.is_same_color(self.selected_pos, cell):
-            if self._engine.can_select(*cell):
+            if self._engine.can_select(cell):
                 self.selected_pos = cell
             return
 
@@ -47,4 +48,4 @@ class Controller:
         if cell is None:
             return
         # game_over נבדק בתוך try_jump - שער יחיד
-        self._engine.try_jump(*cell)
+        self._engine.try_jump(cell)

@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+from kungfu_chess.model.board import Board
+from kungfu_chess.model.piece import Piece, WHITE, BLACK, KING, QUEEN, ROOK, BISHOP, KNIGHT, PAWN
+from kungfu_chess.model.position import Position
+
 BOARD_MARKER = "Board:"
 COMMANDS_MARKER = "Commands:"
 EMPTY_CELL = "."
 
 COLORS = ("w", "b")
 PIECE_TYPES = ("K", "Q", "R", "B", "N", "P")
+
+_COLOR_BY_LETTER = {"w": WHITE, "b": BLACK}
+_KIND_BY_LETTER = {"K": KING, "Q": QUEEN, "R": ROOK, "B": BISHOP, "N": KNIGHT, "P": PAWN}
+_LETTER_BY_COLOR = {color: letter for letter, color in _COLOR_BY_LETTER.items()}
+_LETTER_BY_KIND = {kind: letter for letter, kind in _KIND_BY_LETTER.items()}
 
 
 def build_legal_tokens() -> set[str]:
@@ -14,6 +23,36 @@ def build_legal_tokens() -> set[str]:
         for piece in PIECE_TYPES:
             tokens.add(f"{color}{piece}")
     return tokens
+
+
+def token_to_piece(token: str, position: Position) -> Piece:
+    """ממיר טוקן טקסטואלי כמו "wR" לכלי אמיתי במיקום הנתון."""
+    color_letter, kind_letter = token[0], token[1]
+    return Piece(
+        id=f"{token}-{position.row}-{position.col}",
+        color=_COLOR_BY_LETTER[color_letter],
+        kind=_KIND_BY_LETTER[kind_letter],
+        cell=position,
+    )
+
+
+def piece_to_token(piece: Piece) -> str:
+    """הכיוון ההפוך - כלי אמיתי בחזרה לטוקן הטקסטואלי שלו."""
+    return f"{_LETTER_BY_COLOR[piece.color]}{_LETTER_BY_KIND[piece.kind]}"
+
+
+def build_board(rows: list[list[str]]) -> Board:
+    """בונה Board אמיתי (עם Piece לכל תא לא-ריק) משורות טוקסט מאומתות."""
+    height = len(rows)
+    width = len(rows[0]) if rows else 0
+    board = Board(width, height)
+    for row_index, row in enumerate(rows):
+        for col_index, token in enumerate(row):
+            if token == EMPTY_CELL:
+                continue
+            position = Position(row_index, col_index)
+            board.add_piece(token_to_piece(token, position))
+    return board
 
 
 ERROR_ROW_WIDTH_MISMATCH = "ERROR ROW_WIDTH_MISMATCH"
