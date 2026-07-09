@@ -16,35 +16,35 @@ class Controller:
         self.selected_pos: Optional[Tuple[int, int]] = None
 
     def handle_click(self, x: int, y: int) -> None:
-        if self._engine.is_game_over():
-            return
-
         cell = self._mapper.to_cell(x, y)
         if cell is None:
             return
 
+        #אם לא נבחר תא עדיין-קליק שני, נבדוק אם יש כלי בתא זה ואם הוא פנוי - אם כן, נבחר אותו
+        # (can_select כולל בתוכו את בדיקת game_over - אין צורך לבדוק אותה כאן שוב)
         if self.selected_pos is None:
-            if self._engine.has_piece(*cell) and not self._engine.is_busy(*cell):
+            if self._engine.can_select(*cell):
                 self.selected_pos = cell
             return
-
+        #אם תא המקור והיעד שוים, אין צורך לעשות כלום
         if self.selected_pos == cell:
             return
 
+        #אם נבחר כלי של אותו צבע, נבדוק אם הוא פנוי - אם כן, נשנה את הבחירה אליו
         if self._engine.is_same_color(self.selected_pos, cell):
-            if not self._engine.is_busy(*cell):
+            if self._engine.can_select(*cell):
                 self.selected_pos = cell
             return
 
+        # game_over וחוקיות המהלך נבדקים שניהם בתוך try_move - שער יחיד
         result = self._engine.try_move(self.selected_pos, cell)
         if result in (MOVE_STARTED, MOVE_DESTINATION_RESERVED):
             self.selected_pos = None
         # אם המהלך לא חוקי - הבחירה נשארת כפי שהיא
 
     def handle_jump(self, x: int, y: int) -> None:
-        if self._engine.is_game_over():
-            return
         cell = self._mapper.to_cell(x, y)
         if cell is None:
             return
+        # game_over נבדק בתוך try_jump - שער יחיד
         self._engine.try_jump(*cell)

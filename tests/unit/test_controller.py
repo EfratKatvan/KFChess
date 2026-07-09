@@ -118,3 +118,24 @@ def test_piece_mid_motion_cannot_be_reselected():
 
     controller.handle_click(50, 50)   # ניסיון לבחור מחדש את (0,0) בזמן שהכלי בתנועה
     assert controller.selected_pos is None
+
+
+# ==========================================
+# אחרי סיום המשחק - קליקים לא אמורים לשנות בחירה בכלל
+# ==========================================
+
+def test_click_does_not_select_a_piece_after_game_over():
+    board = Board.from_rows([["wR", "bK"]])
+    rule_engine = RuleEngine(board)
+    arbiter = RealTimeArbiter(board)
+    engine = GameEngine(board, rule_engine, arbiter)
+    mapper = BoardMapper(board)
+    controller = Controller(mapper, engine)
+
+    controller.handle_click(50, 50)   # בחירת wR ב-(0,0)
+    controller.handle_click(150, 50)  # wR אוכל את bK ב-(0,1)
+    engine.wait(1000)
+    assert engine.is_game_over() is True
+
+    controller.handle_click(50, 50)   # ניסיון לבחור כלי אחרי סיום המשחק
+    assert controller.selected_pos is None

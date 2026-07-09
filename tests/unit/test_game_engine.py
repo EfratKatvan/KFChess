@@ -16,8 +16,38 @@ def make_stack(board: Board):
 
 
 # ==========================================
-# שאילתות בסיסיות שה-Controller נשען עליהן (has_piece / is_same_color)
+# שאילתות בסיסיות שה-Controller נשען עליהן (has_piece / is_same_color / can_select)
 # ==========================================
+
+def test_can_select_true_for_free_occupied_cell():
+    board = Board.from_rows([["wR", "."]])
+    _, engine, _ = make_stack(board)
+    assert engine.can_select(0, 0) is True
+
+
+def test_can_select_false_for_empty_cell():
+    board = Board.from_rows([["wR", "."]])
+    _, engine, _ = make_stack(board)
+    assert engine.can_select(0, 1) is False
+
+
+def test_can_select_false_for_busy_cell():
+    board = Board.from_rows([["wR", ".", "."]])
+    controller, engine, _ = make_stack(board)
+    controller.handle_click(50, 50)
+    controller.handle_click(250, 50)  # wR now mid-motion, selected_pos cleared
+    assert engine.can_select(0, 0) is False
+
+
+def test_can_select_false_once_game_is_over():
+    board = Board.from_rows([["wR", "bK"]])
+    controller, engine, _ = make_stack(board)
+    controller.handle_click(50, 50)   # בחירת wR ב-(0,0)
+    controller.handle_click(150, 50)  # wR אוכל את bK ב-(0,1)
+    engine.wait(1000)
+    assert engine.is_game_over() is True
+    assert engine.can_select(0, 1) is False
+
 
 def test_has_piece_true_for_occupied_cell():
     board = Board.from_rows([["wR", "."]])

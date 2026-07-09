@@ -34,6 +34,13 @@ class GameEngine:
         token_b = self._board.get_cell(*pos_b)
         return token_a != "." and token_b != "." and token_a[0] == token_b[0]
 
+    def can_select(self, row: int, col: int) -> bool:
+        """שער יחיד: game_over + has_piece + is_busy - כדי שאף קורא לא יצטרך
+        לבדוק game_over בעצמו לפני שהוא שואל 'אפשר לבחור את התא הזה?'."""
+        if self._game_over:
+            return False
+        return self.has_piece(row, col) and not self.is_busy(row, col)
+
     def try_move(self, from_pos: Tuple[int, int], to_pos: Tuple[int, int]) -> str:
         if self._game_over:
             return MOVE_ILLEGAL
@@ -52,9 +59,9 @@ class GameEngine:
         """הרחבה מותאמת אישית (מחוץ ל-DSL הרשמי) - ר' plan/README."""
         if self._game_over:
             return False
-        if self._board.get_cell(row, col) == ".":
+        if not self.has_piece(row, col):
             return False
-        if self._arbiter.is_cell_busy(row, col):
+        if self.is_busy(row, col):
             return False
         if self._arbiter.is_cell_airborne(row, col):
             return False
