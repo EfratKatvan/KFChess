@@ -23,6 +23,26 @@ def row_tokens(board, row):
 
 
 # ==========================================
+# snapshot - תמונת מצב read-only ל-Renderer/BoardPrinter
+# ==========================================
+
+def test_snapshot_reflects_the_live_board_and_game_over():
+    board, _, engine, _ = make_stack([["wR", "."]])
+    snapshot = engine.snapshot()
+    assert snapshot.board is board
+    assert snapshot.game_over is False
+
+
+def test_snapshot_reflects_game_over_after_king_capture():
+    _, controller, engine, _ = make_stack([["wR", "bK"]])
+    controller.handle_click(50, 50)
+    controller.handle_click(150, 50)
+    engine.wait(1000)
+
+    assert engine.snapshot().game_over is True
+
+
+# ==========================================
 # שאילתות בסיסיות שה-Controller נשען עליהן (has_piece / is_same_color / can_select)
 # ==========================================
 
@@ -76,8 +96,8 @@ def test_is_same_color_false_when_either_cell_is_empty():
 def test_request_move_looks_up_the_piece_itself():
     _, _, engine, _ = make_stack([["wR", ".", "."]])
     result = engine.request_move(Position(0, 0), Position(0, 2))
-    assert result.started is True
-    assert result.reason == "started"
+    assert result.is_accepted is True
+    assert result.reason == "ok"
 
 
 def test_request_move_checks_game_over_before_asking_rule_engine():
@@ -88,15 +108,34 @@ def test_request_move_checks_game_over_before_asking_rule_engine():
     assert engine.is_game_over() is True
 
     result = engine.request_move(Position(0, 1), Position(0, 0))
-    assert result.started is False
+    assert result.is_accepted is False
     assert result.reason == "game_over"
 
 
 def test_request_move_reports_the_rule_engine_reason_when_invalid():
     _, _, engine, _ = make_stack([["wR", ".", "."], [".", ".", "."]])
     result = engine.request_move(Position(0, 0), Position(1, 1))
-    assert result.started is False
+    assert result.is_accepted is False
     assert result.reason == "illegal_piece_move"
+
+
+def test_request_move_rejects_a_piece_that_is_already_mid_motion():
+    _, _, engine, _ = make_stack([["wR", ".", ".", "."]])
+    first = engine.request_move(Position(0, 0), Position(0, 3))
+    assert first.is_accepted is True
+
+    second = engine.request_move(Position(0, 0), Position(0, 1))
+    assert second.is_accepted is False
+    assert second.reason == "motion_in_progress"
+
+
+def test_request_move_allows_a_different_piece_to_move_while_another_is_in_flight():
+    _, _, engine, _ = make_stack([["wR", ".", "."], [".", "bR", "."]])
+    first = engine.request_move(Position(0, 0), Position(0, 2))
+    assert first.is_accepted is True
+
+    second = engine.request_move(Position(1, 1), Position(1, 0))
+    assert second.is_accepted is True
 
 
 # ==========================================

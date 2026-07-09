@@ -51,7 +51,7 @@ class RealTimeArbiter:
     def start_jump(self, position: Position) -> None:
         self._jumps.append(Jump(position, JUMP_DURATION_MS))
 
-    def advance(self, time_ms: int) -> bool:
+    def advance_time(self, time_ms: int) -> bool:
         """מקדם את הזמן ב-time_ms. מחזיר True אם מלך נלכד בסיבוב הזה."""
         new_motions: List[Motion] = []
         for motion in self._motions:

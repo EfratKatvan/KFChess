@@ -16,7 +16,7 @@ def test_piece_does_not_move_before_arrival_time():
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(rook, Position(0, 2))  # distance 2 -> 2000ms
 
-    arbiter.advance(1000)  # חצי דרך
+    arbiter.advance_time(1000)  # חצי דרך
 
     assert board.piece_at(Position(0, 0)) is rook
     assert board.piece_at(Position(0, 2)) is None
@@ -28,7 +28,7 @@ def test_piece_arrives_after_full_travel_time():
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(rook, Position(0, 2))
 
-    arbiter.advance(2000)
+    arbiter.advance_time(2000)
 
     assert board.piece_at(Position(0, 0)) is None
     assert board.piece_at(Position(0, 2)) is rook
@@ -42,8 +42,8 @@ def test_advance_can_be_split_across_multiple_calls():
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(rook, Position(0, 2))
 
-    arbiter.advance(1000)
-    arbiter.advance(1000)
+    arbiter.advance_time(1000)
+    arbiter.advance_time(1000)
 
     assert board.piece_at(Position(0, 2)) is rook
 
@@ -55,7 +55,7 @@ def test_arriving_piece_captures_enemy_piece():
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(rook, Position(0, 2))
 
-    king_captured = arbiter.advance(2000)
+    king_captured = arbiter.advance_time(2000)
 
     assert board.piece_at(Position(0, 2)) is rook
     assert enemy.state == CAPTURED
@@ -69,7 +69,7 @@ def test_capturing_a_king_is_reported():
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(rook, Position(0, 2))
 
-    king_captured = arbiter.advance(2000)
+    king_captured = arbiter.advance_time(2000)
 
     assert king_captured is True
     assert board.piece_at(Position(0, 2)) is rook
@@ -81,7 +81,7 @@ def test_pawn_reaching_last_row_is_promoted_to_queen():
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(pawn, Position(0, 0))
 
-    arbiter.advance(1000)
+    arbiter.advance_time(1000)
 
     assert pawn.kind == QUEEN
     assert board.piece_at(Position(0, 0)) is pawn
@@ -135,7 +135,7 @@ def test_jump_saves_piece_from_arriving_enemy():
     arbiter.start_jump(Position(0, 0))
     arbiter.start_motion(enemy, Position(0, 0))
 
-    king_captured = arbiter.advance(1000)
+    king_captured = arbiter.advance_time(1000)
 
     assert board.piece_at(Position(0, 0)) is king
     assert king_captured is False
@@ -147,6 +147,6 @@ def test_jump_expires_after_its_duration():
     arbiter = RealTimeArbiter(board)
     arbiter.start_jump(Position(0, 0))
 
-    arbiter.advance(1000)
+    arbiter.advance_time(1000)
 
     assert arbiter.is_cell_airborne(Position(0, 0)) is False

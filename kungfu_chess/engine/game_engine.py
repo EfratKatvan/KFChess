@@ -3,25 +3,27 @@ from dataclasses import dataclass
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.game_state import GameState
+from kungfu_chess.model.game_snapshot import GameSnapshot
 from kungfu_chess.model.position import Position
-from kungfu_chess.rules.rule_engine import RuleEngine
+from kungfu_chess.rules.rule_engine import RuleEngine, REASON_OK
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 
-REASON_STARTED = "started"
 REASON_GAME_OVER = "game_over"
+REASON_MOTION_IN_PROGRESS = "motion_in_progress"
 REASON_DESTINATION_RESERVED = "destination_reserved"
 
 
 @dataclass
 class MoveResult:
-    started: bool
+    is_accepted: bool
     reason: str
 
 
 class GameEngine:
-    """שכבת התיאום: שומרת את מצב סיום-המשחק (דרך GameState), מאצילה ולידציה
-    ל-RuleEngine, ומפעילה תנועות/זמן דרך RealTimeArbiter. לא מכירה פיקסלים
-    ולא בחירה."""
+    """שכבת התיאום (Application Service): הגבול הציבורי שדרכו Controller
+    ו-TextTestRunner מבקשים פעולות. מחזיקה את GameState (כולל game_over),
+    מאצילה ולידציה טהורה ל-RuleEngine, ומפעילה תנועות/זמן דרך
+    RealTimeArbiter. לא מכירה פיקסלים, ציור, פרסור טקסט, או לוגיקת-כלי."""
 
     def __init__(self, board: Board, rule_engine: RuleEngine, arbiter: RealTimeArbiter) -> None:
         self._state = GameState(board=board)
@@ -50,22 +52,25 @@ class GameEngine:
         return self.has_piece(position) and not self.is_busy(position)
 
     def request_move(self, from_pos: Position, to_pos: Position) -> MoveResult:
-        """מהלך = בקשה. קודם game_over (לא נוגעים ב-RuleEngine אם המשחק כבר נגמר),
-        אחר כך ולידציה טהורה דרך RuleEngine, ורק אם היא תקינה - הביצוע עצמו
-        (בדיקת קונפליקט תזמון + התחלת תנועה) קורה כאן, לא ב-RuleEngine."""
+        """שערי היישום (game_over, motion_in_progress) קודם - לפני שפונים בכלל
+        ל-RuleEngine. רק לאחר ולידציה תקינה מתבצע הביצוע עצמו (בדיקת קונפליקט
+        תזמון + התחלת תנועה) - וזה קורה כאן, לא ב-RuleEngine."""
         if self._state.game_over:
-            return MoveResult(started=False, reason=REASON_GAME_OVER)
+            return MoveResult(is_accepted=False, reason=REASON_GAME_OVER)
+
+        if self.is_busy(from_pos):
+            return MoveResult(is_accepted=False, reason=REASON_MOTION_IN_PROGRESS)
 
         validation = self._rules.validate_move(from_pos, to_pos)
         if not validation.is_valid:
-            return MoveResult(started=False, reason=validation.reason)
+            return MoveResult(is_accepted=False, reason=validation.reason)
 
         if self._arbiter.is_destination_reserved(to_pos):
-            return MoveResult(started=False, reason=REASON_DESTINATION_RESERVED)
+            return MoveResult(is_accepted=False, reason=REASON_DESTINATION_RESERVED)
 
         piece = self._state.board.piece_at(from_pos)
         self._arbiter.start_motion(piece, to_pos)
-        return MoveResult(started=True, reason=REASON_STARTED)
+        return MoveResult(is_accepted=True, reason=REASON_OK)
 
     def try_jump(self, position: Position) -> bool:
         """הרחבה מותאמת אישית (מחוץ ל-DSL הרשמי) - ר' plan/README."""
@@ -83,5 +88,9 @@ class GameEngine:
     def wait(self, time_ms: int) -> None:
         if self._state.game_over:
             return
-        if self._arbiter.advance(time_ms):
+        if self._arbiter.advance_time(time_ms):
             self._state.game_over = True
+
+    def snapshot(self) -> GameSnapshot:
+        """תמונת-מצב read-only ל-Renderer/BoardPrinter."""
+        return GameSnapshot(board=self._state.board, game_over=self._state.game_over)
