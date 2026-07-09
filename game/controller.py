@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Optional, Tuple, List, Dict, Any
 if TYPE_CHECKING:
     from board.model import Board
 
-
+#בודקת האם המסלול מתא היעד לתא המקור פנוי מכלים אחרים עבור הכלים  (מלכה, רץ, צריח)
 def is_path_clear(
     board_rows: list[list[str]], from_pos: Tuple[int, int], to_pos: Tuple[int, int]
 ) -> bool:
@@ -77,33 +77,33 @@ def is_legal_piece_move(
 
     r1, c1 = from_pos
     r2, c2 = to_pos
-
+    # אם המקור והיעד זהים, אין תנועה חוקית
     if r1 == r2 and c1 == c2:
         return False
 
     dr = abs(r2 - r1)
     dc = abs(c2 - c1)
-
+    #מנסה לאכול מישהו מהקבוצה שלו-בצבע שלו
     if target_token != "." and target_token[0] == color:
         return False
-
+    #אם זה מלך, הוא יכול לזוז רק תא אחד לכל כיוון
     if p_type == "K":
         return dr <= 1 and dc <= 1
-
+    #אם זה צריח, הוא יכול לזוז רק ישר בעמודות או בשורות, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
     if p_type == "R":
         if r1 != r2 and c1 != c2:
             return False
         if board_rows is not None and not is_path_clear(board_rows, from_pos, to_pos):
             return False
         return True
-
+    #אם זה רץ, הוא יכול לזוז רק באלכסון, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
     if p_type == "B":
         if dr != dc:
             return False
         if board_rows is not None and not is_path_clear(board_rows, from_pos, to_pos):
             return False
         return True
-
+    #אם זה מלכה, הוא יכול לזוז ישר או באלכסון, ואם רוצה יותר ממקום אחד, הוא צריך לבדוק שהמסלול פנוי
     if p_type == "Q":
         is_straight = (r1 == r2) or (c1 == c2)
         is_diagonal = dr == dc
@@ -112,10 +112,10 @@ def is_legal_piece_move(
         if board_rows is not None and not is_path_clear(board_rows, from_pos, to_pos):
             return False
         return True
-
+    #אם זה סוס, הוא יכול לזוז רק בתבנית של "L" (שני צעדים בכיוון אחד ואחריו צעד אחד בכיוון מאונך)
     if p_type == "N":
         return (dr == 1 and dc == 2) or (dr == 2 and dc == 1)
-
+    #אם זה חייל, הוא יכול לזוז רק קדימה (לפי צבעו) או לאכול באלכסון, ואם הוא רוצה לזוז יותר ממקום אחד קדימה, הוא צריך לבדוק שהמסלול פנוי
     if p_type == "P":
         if board_rows is None:
             return False
@@ -210,7 +210,7 @@ class GameController:
             target_token = self.board._rows[row][col]
 
             if target_token != "." and target_token[0] == source_token[0]:
-                # שינוי בחירה לכלי של אותו שחקן (בתנאי שגם הוא לא בתנועה)
+                # שינוי בחירה לכלי של אותו קבוצת שחקן (בתנאי שגם הוא לא בתנועה)
                 for _, sr, sc, tr, tc, _ in self.moving_pieces:
                     if (sr, sc) == (row, col) or (tr, tc) == (row, col):
                         return
