@@ -71,6 +71,14 @@ class RealTimeArbiter:
     def _resolve_arrival(self, motion: Motion) -> bool:
         """מיישם הגעה של כלי ליעדו. מחזיר True אם מלך נלכד (כולל לכידת-אוויר)."""
         piece = motion.piece
+
+        if piece.state == CAPTURED:
+            # הכלי כבר נלכד במקום אחר (למשל: כלי אויב תקף בהצלחה את תא-המקור
+            # שלו בזמן שהוא עדיין "ריחף" משם - is_destination_reserved לא
+            # מגן על זה, כי הוא בודק רק יעדים של תנועות אחרות, לא מקורות).
+            # התנועה שלו מתבטלת - אין מה להנחית כלי שכבר לא קיים.
+            return False
+
         from_pos = piece.cell
         to_pos = motion.to_pos
 

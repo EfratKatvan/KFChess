@@ -62,6 +62,27 @@ def test_arriving_piece_captures_enemy_piece():
     assert king_captured is False
 
 
+def test_a_piece_captured_mid_flight_does_not_resurrect_on_its_own_arrival():
+    """bR מתחיל לרחף מ-(0,0) ל-(0,3) (3000ms). wR תוקף את (0,0) - תא-המקור
+    של bR, לא היעד שלו - ומגיע קודם (1000ms). is_destination_reserved לא
+    מגן על מקורות, רק על יעדים, אז זה חוקי. bR צריך פשוט להיעלם, לא "לנחות"
+    ב-(0,3) אחרי שכבר נלכד ב-(0,0)."""
+    board = Board(width=4, height=1)
+    victim = add(board, "bR", BLACK, ROOK, 0, 0)
+    attacker = add(board, "wR", WHITE, ROOK, 0, 1)
+    arbiter = RealTimeArbiter(board)
+
+    arbiter.start_motion(victim, Position(0, 3))    # bR: (0,0) -> (0,3), 3000ms
+    arbiter.start_motion(attacker, Position(0, 0))  # wR: (0,1) -> (0,0), 1000ms - תוקף מקור, לא יעד
+
+    arbiter.advance_time(1000)  # wR מגיע, לוכד את bR שעדיין "יושב" ב-(0,0)
+    assert board.piece_at(Position(0, 0)) is attacker
+    assert victim.state == CAPTURED
+
+    arbiter.advance_time(2000)  # bR "מגיע" ל-(0,3) - לא אמור לקרות, הוא כבר מת
+    assert board.piece_at(Position(0, 3)) is None
+
+
 def test_capturing_a_king_is_reported():
     board = Board(width=3, height=1)
     rook = add(board, "wR", WHITE, ROOK, 0, 0)
