@@ -119,6 +119,27 @@ def test_request_move_reports_the_rule_engine_reason_when_invalid():
     assert result.reason == "illegal_piece_move"
 
 
+def test_request_move_reports_outside_board_reason():
+    _, _, engine, _ = make_stack([["wR", ".", "."]])
+    result = engine.request_move(Position(0, 0), Position(0, 99))
+    assert result.is_accepted is False
+    assert result.reason == "outside_board"
+
+
+def test_request_move_reports_empty_source_reason():
+    _, _, engine, _ = make_stack([["wR", ".", "."]])
+    result = engine.request_move(Position(0, 1), Position(0, 2))
+    assert result.is_accepted is False
+    assert result.reason == "empty_source"
+
+
+def test_request_move_reports_friendly_destination_reason():
+    _, _, engine, _ = make_stack([["wR", ".", "wB"]])
+    result = engine.request_move(Position(0, 0), Position(0, 2))
+    assert result.is_accepted is False
+    assert result.reason == "friendly_destination"
+
+
 def test_request_move_rejects_a_piece_that_is_already_mid_motion():
     _, _, engine, _ = make_stack([["wR", ".", ".", "."]])
     first = engine.request_move(Position(0, 0), Position(0, 3))
