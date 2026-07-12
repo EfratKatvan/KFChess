@@ -1,9 +1,17 @@
 from __future__ import annotations
-from typing import Set
+from typing import Protocol, Set
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, WHITE, ROOK, BISHOP, QUEEN, KNIGHT, KING, PAWN
 from kungfu_chess.model.position import Position
+
+
+class PieceRule(Protocol):
+    """חוזה שכל חוק-תנועה של סוג כלי צריך לקיים - נקודת הרחבה: אפשר להוסיף
+    כלי חדש (או להחליף חוק קיים) בלי לגעת ב-RuleEngine, כל עוד יש מתודה
+    כזו עם החתימה הזו."""
+
+    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]: ...
 
 #עבור כלים שנעים בקו ישר/אלכסוני (צריח, רץ, מלכה), סורק במרחקים בלתי מוגבלים מהכלי והלאה בכל כיוון, עד חסימה (כולל אכילה).
 #בודק את כל היעדים החוקיים
@@ -113,7 +121,7 @@ class PawnRules:
         return destinations
 
 
-_RULES_BY_KIND = {
+STANDARD_PIECE_RULES = {
     ROOK: RookRules,
     BISHOP: BishopRules,
     QUEEN: QueenRules,
@@ -124,4 +132,4 @@ _RULES_BY_KIND = {
 
 
 def rules_for(kind: str):
-    return _RULES_BY_KIND[kind]
+    return STANDARD_PIECE_RULES[kind]
