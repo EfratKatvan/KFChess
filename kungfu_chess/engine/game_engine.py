@@ -11,6 +11,7 @@ from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 REASON_GAME_OVER = "game_over"
 REASON_MOTION_IN_PROGRESS = "motion_in_progress"
 REASON_DESTINATION_RESERVED = "destination_reserved"
+REASON_ROUTE_CONFLICT = "route_conflict"
 
 
 @dataclass
@@ -65,10 +66,14 @@ class GameEngine:
         if not validation.is_valid:
             return MoveResult(is_accepted=False, reason=validation.reason)
 
+        piece = self._state.board.piece_at(from_pos)
+
+        if self._arbiter.has_route_conflict(piece.color, from_pos, to_pos):
+            return MoveResult(is_accepted=False, reason=REASON_ROUTE_CONFLICT)
+
         if self._arbiter.is_destination_reserved(to_pos):
             return MoveResult(is_accepted=False, reason=REASON_DESTINATION_RESERVED)
 
-        piece = self._state.board.piece_at(from_pos)
         self._arbiter.start_motion(piece, to_pos)
         return MoveResult(is_accepted=True, reason=REASON_OK)
 

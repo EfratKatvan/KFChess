@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import List, Optional
+from typing import List, Optional, Set
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED
@@ -14,6 +14,23 @@ from kungfu_chess.rules.rule_engine import (
 
 MS_PER_CELL = 1000
 JUMP_DURATION_MS = 1000
+
+
+def _route_cells(from_pos: Position, to_pos: Position) -> Set[Position]:
+    """כל התאים שהמסלול עובר בהם, כולל מקור ויעד."""
+    dr = to_pos.row - from_pos.row
+    dc = to_pos.col - from_pos.col
+    steps = max(abs(dr), abs(dc))
+    if steps == 0:
+        return {from_pos}
+    step_r = (dr > 0) - (dr < 0)
+    step_c = (dc > 0) - (dc < 0)
+    return {Position(from_pos.row + i * step_r, from_pos.col + i * step_c) for i in range(steps + 1)}
+
+
+def _has_common_route(from_a: Position, to_a: Position, from_b: Position, to_b: Position) -> bool:
+    """True אם שתי התנועות חולקות תא ממשי כלשהו (מקור, יעד, או תא ביניים)."""
+    return bool(_route_cells(from_a, to_a) & _route_cells(from_b, to_b))
 
 
 class RealTimeArbiter:
@@ -57,6 +74,14 @@ class RealTimeArbiter:
     #
     def is_cell_airborne(self, position: Position) -> bool:
         return any(j.position == position and j.remaining_ms > 0 for j in self._jumps)
+
+    def has_route_conflict(self, color: str, from_pos: Position, to_pos: Position) -> bool:
+        """True אם כלי בצבע מנוגד כבר בתנועה כרגע, והמסלול שלו חופף למסלול
+        המבוקש (ר' _has_common_route). כלים באותו צבע לא נחסמים זה מזה."""
+        return any(
+            motion.piece.color != color and _has_common_route(from_pos, to_pos, motion.piece.cell, motion.to_pos)
+            for motion in self._motions
+        )
 
     def start_motion(self, piece: Piece, to_pos: Position) -> None:
         from_pos = piece.cell
