@@ -81,10 +81,8 @@ class KingRules:
 
 
 def _pawn_start_row(board: Board, color: str) -> int:
-    """שורת ההתחלה של חייל, לפי גובה הלוח (זהה להיגיון שהיה קיים מקודם)."""
-    if color == WHITE:
-        return board.height - 2 if board.height == 8 else board.height - 1
-    return 1 if board.height == 8 else 0
+    """שורת ההתחלה של חייל - שורה אחת פנימה מהקצה שלו, בכל גובה לוח."""
+    return board.height - 2 if color == WHITE else 1
 
 
 # 6. Pawn - תנועה מפושטת: צעד אחד קדימה (או צעד כפול משורת ההתחלה),
