@@ -5,7 +5,7 @@ import sys
 
 import pytest
 
-from kungfu_chess.app import main
+from main import main
 from kungfu_chess.io.board_parser import (
     read_input_lines,
     parse_board_section,
@@ -146,7 +146,7 @@ print board
 
 def run_app(stdin_text: str) -> str:
     result = subprocess.run(
-        [sys.executable, "-m", "kungfu_chess.app"],
+        [sys.executable, "main.py"],
         input=stdin_text,
         capture_output=True,
         text=True,
