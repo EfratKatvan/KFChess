@@ -5,7 +5,8 @@ from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, WHITE, ROOK, BISHOP, QUEEN, KNIGHT, KING, PAWN
 from kungfu_chess.model.position import Position
 
-
+#עבור כלים שנעים בקו ישר/אלכסוני (צריח, רץ, מלכה), סורק במרחקים בלתי מוגבלים מהכלי והלאה בכל כיוון, עד חסימה (כולל אכילה).
+#בודק את כל היעדים החוקיים
 def _sliding_destinations(board: Board, piece: Piece, directions) -> Set[Position]:
     """סורק בקווים ישרים מהכלי והלאה בכל כיוון, עד חסימה (כולל אכילה)."""
     destinations: Set[Position] = set()
@@ -25,7 +26,8 @@ def _sliding_destinations(board: Board, piece: Piece, directions) -> Set[Positio
             position = Position(row, col)
     return destinations
 
-
+#סורק את תאי היעד האפשריים עבור כלים שמבצעים "צעד" אחד בלבד (סוס, מלך) - לא סוריקה, אין חסימה בדרך.
+#בודק את כל היעדים החוקיים עבור כלים שמבצעים צעד אחד בלבד (סוס, מלך).
 def _step_destinations(board: Board, piece: Piece, offsets) -> Set[Position]:
     """בודק קבוצת תאי-יעד קבועים (סוס/מלך) - לא סוריקה, אין חסימה בדרך."""
     destinations: Set[Position] = set()

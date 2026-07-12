@@ -31,13 +31,16 @@ class RealTimeArbiter:
     def jumps(self) -> List[Jump]:
         return list(self._jumps)
 
+    #אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות) - True
     def is_cell_busy(self, position: Position) -> bool:
         """True אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות)."""
         return any(m.piece.cell == position or m.to_pos == position for m in self._motions)
 
+    #אם התא הוא יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות) - True
     def is_destination_reserved(self, position: Position) -> bool:
         return any(m.to_pos == position for m in self._motions)
 
+    #
     def is_cell_airborne(self, position: Position) -> bool:
         return any(j.position == position and j.remaining_ms > 0 for j in self._jumps)
 
@@ -82,6 +85,7 @@ class RealTimeArbiter:
         from_pos = piece.cell
         to_pos = motion.to_pos
 
+        
         if self.is_cell_airborne(to_pos):
             # הכלי הנע "נבלע" באוויר - הכלי שקפץ נשאר במקומו
             if self._board.piece_at(from_pos) is piece:
@@ -90,6 +94,7 @@ class RealTimeArbiter:
 
         captured = self._board.piece_at(to_pos)
 
+        #אם חייל הגיע לשורה האחורנה שו הופכים למלכה  - ר' חוקי שחמט סטנדרטיים
         if piece.kind == PAWN and piece.color == WHITE and to_pos.row == 0:
             piece.kind = QUEEN
         elif piece.kind == PAWN and piece.color == BLACK and to_pos.row == self._board.height - 1:

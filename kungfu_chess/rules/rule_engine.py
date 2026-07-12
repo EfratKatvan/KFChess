@@ -36,7 +36,8 @@ class RuleEngine:
         target = self._board.piece_at(to_pos)
         if target is not None and target.color == piece.color:
             return MoveValidation(False, REASON_FRIENDLY_DESTINATION)
-
+        
+        #בודקת האם היעד שלי נמצא באחד מהיעדים החוקיים שאפשריים
         rules = rules_for(piece.kind)
         if to_pos not in rules.legal_destinations(self._board, piece):
             return MoveValidation(False, REASON_ILLEGAL_PIECE_MOVE)
