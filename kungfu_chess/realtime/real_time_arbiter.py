@@ -1,10 +1,17 @@
 from __future__ import annotations
-from typing import List, Optional, Set
+from typing import List, Optional
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED
 from kungfu_chess.model.position import Position
-from kungfu_chess.realtime.motion import Motion, Jump
+from kungfu_chess.realtime.motion import (
+    Jump,
+    Motion,
+    Trajectory,
+    is_straight_line,
+    motion_duration_ms,
+    trajectories_collide,
+)
 from kungfu_chess.rules.rule_engine import (
     KingCaptureWinCondition,
     LastRankPromotion,
@@ -12,25 +19,7 @@ from kungfu_chess.rules.rule_engine import (
     WinCondition,
 )
 
-MS_PER_CELL = 1000
 JUMP_DURATION_MS = 1000
-
-
-def _route_cells(from_pos: Position, to_pos: Position) -> Set[Position]:
-    """כל התאים שהמסלול עובר בהם, כולל מקור ויעד."""
-    dr = to_pos.row - from_pos.row
-    dc = to_pos.col - from_pos.col
-    steps = max(abs(dr), abs(dc))
-    if steps == 0:
-        return {from_pos}
-    step_r = (dr > 0) - (dr < 0)
-    step_c = (dc > 0) - (dc < 0)
-    return {Position(from_pos.row + i * step_r, from_pos.col + i * step_c) for i in range(steps + 1)}
-
-
-def _has_common_route(from_a: Position, to_a: Position, from_b: Position, to_b: Position) -> bool:
-    """True אם שתי התנועות חולקות תא ממשי כלשהו (מקור, יעד, או תא ביניים)."""
-    return bool(_route_cells(from_a, to_a) & _route_cells(from_b, to_b))
 
 
 class RealTimeArbiter:
@@ -76,17 +65,35 @@ class RealTimeArbiter:
         return any(j.position == position and j.remaining_ms > 0 for j in self._jumps)
 
     def has_route_conflict(self, color: str, from_pos: Position, to_pos: Position) -> bool:
-        """True אם כלי בצבע מנוגד כבר בתנועה כרגע, והמסלול שלו חופף למסלול
-        המבוקש (ר' _has_common_route). כלים באותו צבע לא נחסמים זה מזה."""
-        return any(
-            motion.piece.color != color and _has_common_route(from_pos, to_pos, motion.piece.cell, motion.to_pos)
-            for motion in self._motions
-        )
+        """True אם כלי בצבע מנוגד כבר בתנועה כרגע, ושני הכלים יהיו באותה
+        נקודה בדיוק באותו רגע (מודל רציף בזמן - ר' realtime/motion.py),
+        לא רק אם המסלולים חוצים את אותו תא. כלים באותו צבע לא נחסמים
+        זה מזה. תנועות לא-ישרות (קפיצת סוס) פטורות - אין להן מסלול רציף."""
+        if not is_straight_line(from_pos, to_pos):
+            return False
+
+        requested = Trajectory(from_pos, to_pos, motion_duration_ms(from_pos, to_pos))
+
+        for motion in self._motions:
+            if motion.piece.color == color:
+                continue
+
+            source = motion.piece.cell
+            if not is_straight_line(source, motion.to_pos):
+                continue
+
+            duration = motion_duration_ms(source, motion.to_pos)
+            elapsed = duration - motion.remaining_ms
+            active = Trajectory(source, motion.to_pos, duration, start_offset_ms=-elapsed)
+
+            if trajectories_collide(requested, active):
+                return True
+
+        return False
 
     def start_motion(self, piece: Piece, to_pos: Position) -> None:
         from_pos = piece.cell
-        distance = max(abs(to_pos.row - from_pos.row), abs(to_pos.col - from_pos.col))
-        travel_time = distance * MS_PER_CELL
+        travel_time = motion_duration_ms(from_pos, to_pos)
         piece.state = MOVING
         self._motions.append(Motion(piece, to_pos, travel_time))
 
