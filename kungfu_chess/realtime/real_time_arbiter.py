@@ -1,10 +1,16 @@
 from __future__ import annotations
-from typing import List
+from typing import List, Optional
 
 from kungfu_chess.model.board import Board
-from kungfu_chess.model.piece import Piece, WHITE, BLACK, KING, QUEEN, PAWN, IDLE, MOVING, CAPTURED
+from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import Motion, Jump
+from kungfu_chess.rules.rule_engine import (
+    KingCaptureWinCondition,
+    LastRankPromotion,
+    PromotionRule,
+    WinCondition,
+)
 
 MS_PER_CELL = 1000
 JUMP_DURATION_MS = 1000
@@ -15,13 +21,21 @@ class RealTimeArbiter:
 
     לוגיקת ההגעה, הלכידה וזיהוי לכידת-מלך זהה 1:1 להתנהגות שהייתה קודם
     ב-GameController._handle_wait, כולל העצירה המיידית של כל שאר העיבוד
-    (ודילוג על עדכון הקפיצות) ברגע שנלכד מלך.
+    (ודילוג על עדכון הקפיצות) ברגע שנלכד מלך. מה מסיים משחק (WinCondition)
+    ומה קורה בהגעה ליעד (PromotionRule) ניתנים להחלפה מבחוץ.
     """
 
-    def __init__(self, board: Board) -> None:
+    def __init__(
+        self,
+        board: Board,
+        win_condition: Optional[WinCondition] = None,
+        promotion_rule: Optional[PromotionRule] = None,
+    ) -> None:
         self._board = board
         self._motions: List[Motion] = []
         self._jumps: List[Jump] = []
+        self._win_condition = win_condition if win_condition is not None else KingCaptureWinCondition()
+        self._promotion_rule = promotion_rule if promotion_rule is not None else LastRankPromotion()
 
     @property
     def motions(self) -> List[Motion]:
@@ -90,15 +104,9 @@ class RealTimeArbiter:
             # הכלי הנע "נבלע" באוויר - הכלי שקפץ נשאר במקומו
             if self._board.piece_at(from_pos) is piece:
                 self._board.remove_piece(piece)
-            return piece.kind == KING
+            return self._win_condition.is_game_over(piece)
 
         captured = self._board.piece_at(to_pos)
-
-        #אם חייל הגיע לשורה האחורנה שו הופכים למלכה  - ר' חוקי שחמט סטנדרטיים
-        if piece.kind == PAWN and piece.color == WHITE and to_pos.row == 0:
-            piece.kind = QUEEN
-        elif piece.kind == PAWN and piece.color == BLACK and to_pos.row == self._board.height - 1:
-            piece.kind = QUEEN
 
         # מפנים את תא המקור רק אם הכלי עדיין באמת שם (יכול היה כבר להילכד
         # שם ע"י מהלך אחר שהסתיים באותו tick - ר' realtime/motion.py)
@@ -112,8 +120,9 @@ class RealTimeArbiter:
         piece.cell = to_pos
         piece.state = IDLE
         self._board.add_piece(piece)
+        self._promotion_rule.promote(piece, self._board.height)
 
-        return captured is not None and captured.kind == KING
+        return self._win_condition.is_game_over(captured)
 
     def _advance_jumps(self, time_ms: int) -> None:
         new_jumps: List[Jump] = []
