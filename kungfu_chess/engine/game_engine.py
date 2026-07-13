@@ -13,6 +13,7 @@ REASON_MOTION_IN_PROGRESS = "motion_in_progress"
 REASON_DESTINATION_RESERVED = "destination_reserved"
 REASON_ROUTE_CONFLICT = "route_conflict"
 REASON_BLOCKED_BY_FRIENDLY_MOTION = "blocked_by_friendly_motion"
+REASON_COOLING_DOWN = "cooling_down"
 
 
 @dataclass
@@ -38,6 +39,9 @@ class GameEngine:
     def is_busy(self, position: Position) -> bool:
         return self._arbiter.is_cell_busy(position)
 
+    def is_cooling_down(self, position: Position) -> bool:
+        return self._arbiter.is_cell_cooling_down(position)
+
     def has_piece(self, position: Position) -> bool:
         return self._state.board.piece_at(position) is not None
 
@@ -47,23 +51,27 @@ class GameEngine:
         return piece_a is not None and piece_b is not None and piece_a.color == piece_b.color
 
     def can_select(self, position: Position) -> bool:
-        """שער יחיד: game_over + has_piece + is_busy - כדי שאף קורא לא יצטרך
-        לבדוק game_over בעצמו לפני שהוא שואל 'אפשר לבחור את התא הזה?'."""
+        """שער יחיד: game_over + has_piece + is_busy + is_cooling_down - כדי
+        שאף קורא לא יצטרך לבדוק game_over בעצמו לפני שהוא שואל 'אפשר
+        לבחור את התא הזה?'."""
         if self._state.game_over:
             return False
-        return self.has_piece(position) and not self.is_busy(position)
+        return self.has_piece(position) and not self.is_busy(position) and not self.is_cooling_down(position)
 
     def request_move(self, from_pos: Position, to_pos: Position) -> MoveResult:
-        """שערי היישום (game_over, motion_in_progress) קודם - לפני שפונים בכלל
-        ל-RuleEngine. רק לאחר ולידציה תקינה מתבצע הביצוע עצמו: קודם מקצרים
-        את היעד אם כלי ידידותי "כמעט חוצה" את הדרך (truncated_destination),
-        ואז בודקים קונפליקט תזמון מול כלי אויב על הדרך *בפועל* (שעשויה
-        להיות מקוצרת) - וזה קורה כאן, לא ב-RuleEngine."""
+        """שערי היישום (game_over, motion_in_progress, cooling_down) קודם -
+        לפני שפונים בכלל ל-RuleEngine. רק לאחר ולידציה תקינה מתבצע הביצוע
+        עצמו: קודם מקצרים את היעד אם כלי ידידותי "כמעט חוצה" את הדרך
+        (truncated_destination), ואז בודקים קונפליקט תזמון מול כלי אויב
+        על הדרך *בפועל* (שעשויה להיות מקוצרת) - וזה קורה כאן, לא ב-RuleEngine."""
         if self._state.game_over:
             return MoveResult(is_accepted=False, reason=REASON_GAME_OVER)
 
         if self.is_busy(from_pos):
             return MoveResult(is_accepted=False, reason=REASON_MOTION_IN_PROGRESS)
+
+        if self.is_cooling_down(from_pos):
+            return MoveResult(is_accepted=False, reason=REASON_COOLING_DOWN)
 
         validation = self._rules.validate_move(from_pos, to_pos)
         if not validation.is_valid:

@@ -228,7 +228,7 @@ def test_piece_arrives_after_wait_time():
 
 
 # ==========================================
-# מניעת שינוי מסלול ותנועה מיידית ללא Cooldown
+# מניעת שינוי מסלול ו-Cooldown אחרי הגעה
 # ==========================================
 
 def test_cannot_redirect_piece_while_moving():
@@ -250,7 +250,7 @@ def test_cannot_redirect_piece_while_moving():
     assert row_tokens(board, 0) == [".", ".", ".", "wR"]
 
 
-def test_immediate_move_after_arrival_no_cooldown():
+def test_piece_frozen_for_cooldown_window_after_arrival():
     board, controller, engine, _ = make_stack([["wR", ".", "."], [".", ".", "."]])
 
     # תנועה 1: מ-(0,0) ל-(0,2) -> דורש 2000ms
@@ -260,7 +260,14 @@ def test_immediate_move_after_arrival_no_cooldown():
 
     assert row_tokens(board, 0) == [".", ".", "wR"]
 
-    # תנועה 2 מיידית (ללא השהייה): מ-(0,2) חזרה ל-(0,0) -> דורש 2000ms
+    # ניסיון תנועה מיידי (בתוך חלון הקירור) - נדחה, הכלי לא זז
+    controller.handle_click(250, 50)
+    controller.handle_click(50, 50)
+
+    assert row_tokens(board, 0) == [".", ".", "wR"]
+
+    # אחרי שהקירור מסתיים (1000ms נוספות) - עכשיו כן אפשר לזוז
+    engine.wait(1000)
     controller.handle_click(250, 50)
     controller.handle_click(50, 50)
     engine.wait(2000)

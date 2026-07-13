@@ -5,6 +5,7 @@ from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import (
+    Cooldown,
     Jump,
     Motion,
     Trajectory,
@@ -21,6 +22,7 @@ from kungfu_chess.rules.rule_engine import (
 )
 
 JUMP_DURATION_MS = 1000
+COOLDOWN_DURATION_MS = 1000
 
 
 def _active_trajectory(motion: Motion) -> Optional[Trajectory]:
@@ -52,6 +54,7 @@ class RealTimeArbiter:
         self._board = board
         self._motions: List[Motion] = []
         self._jumps: List[Jump] = []
+        self._cooldowns: List[Cooldown] = []
         self._win_condition = win_condition if win_condition is not None else KingCaptureWinCondition()
         self._promotion_rule = promotion_rule if promotion_rule is not None else LastRankPromotion()
 
@@ -76,6 +79,10 @@ class RealTimeArbiter:
     #אם התא הוא יעד של קפיצה פעילה (קפיצות אינן נחשבות תפוסות) - True
     def is_cell_airborne(self, position: Position) -> bool:
         return any(j.position == position and j.remaining_ms > 0 for j in self._jumps)
+
+    #אם כלי נחת בתא הזה לאחרונה ועדיין בתוך חלון הקירור - True (אי אפשר לבחור אותו/להזיז אותו עד שזה נגמר)
+    def is_cell_cooling_down(self, position: Position) -> bool:
+        return any(c.position == position and c.remaining_ms > 0 for c in self._cooldowns)
 
     #בדיקה האם בטווח תנועה  של מסלול יש מפגש עם כלי בצבע מנוגד, כך ששני הכלים יהיו באותו מקום באותו זמן (מודל רציף בזמן - ר' realtime/motion.py).
     def has_route_conflict(self, color: str, from_pos: Position, to_pos: Position) -> bool:
@@ -147,7 +154,11 @@ class RealTimeArbiter:
         מעבד תנועות שמסתיימות באותו tick לפי סדר הגעה כרונולוגי (מי
         שהיה לו פחות remaining_ms מגיע קודם) - כדי שאם שני כלים מגיעים
         לאותו יעד באותו tick, זה שממתין קודם כבר יושב שם כשהשני מגיע
-        (ואז נלכד באופן טבעי דרך לכידה רגילה, לא לוגיקה נפרדת)."""
+        (ואז נלכד באופן טבעי דרך לכידה רגילה, לא לוגיקה נפרדת). מקדמת את
+        הקירורים הקיימים *לפני* עיבוד ההגעות - כדי שקירור חדש שנוצר
+        כתוצאה מהגעה באותו tick לא יקוצץ מיד באותה קריאה."""
+        self._advance_cooldowns(time_ms)
+
         new_motions: List[Motion] = []
         for motion in sorted(self._motions, key=lambda m: m.remaining_ms):
             remaining = motion.remaining_ms - time_ms
@@ -199,6 +210,7 @@ class RealTimeArbiter:
         piece.state = IDLE
         self._board.add_piece(piece)
         self._promotion_rule.promote(piece, self._board.height)
+        self._cooldowns.append(Cooldown(to_pos, COOLDOWN_DURATION_MS))
 
         return self._win_condition.is_game_over(captured)
 
@@ -209,3 +221,11 @@ class RealTimeArbiter:
             if remaining > 0:
                 new_jumps.append(Jump(jump.position, remaining))
         self._jumps = new_jumps
+
+    def _advance_cooldowns(self, time_ms: int) -> None:
+        new_cooldowns: List[Cooldown] = []
+        for cooldown in self._cooldowns:
+            remaining = cooldown.remaining_ms - time_ms
+            if remaining > 0:
+                new_cooldowns.append(Cooldown(cooldown.position, remaining))
+        self._cooldowns = new_cooldowns

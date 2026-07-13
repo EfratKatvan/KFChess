@@ -49,6 +49,15 @@ class Jump:
     remaining_ms: int
 
 
+@dataclass
+class Cooldown:
+    """חלון זמן שבו כלי שזה עתה נחת בתא הזה "קפוא" - אי אפשר לבחור אותו
+    או לבקש עבורו מהלך חדש עד שהזמן שנותר מגיע ל-0."""
+
+    position: Position
+    remaining_ms: int
+
+
 @dataclass(frozen=True)
 class Trajectory:
     """מסלול קו-ישר במרחב וזמן רציפים: ב-source כש-start_offset_ms חולף
