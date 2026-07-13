@@ -12,6 +12,7 @@ REASON_GAME_OVER = "game_over"
 REASON_MOTION_IN_PROGRESS = "motion_in_progress"
 REASON_DESTINATION_RESERVED = "destination_reserved"
 REASON_ROUTE_CONFLICT = "route_conflict"
+REASON_BLOCKED_BY_FRIENDLY_MOTION = "blocked_by_friendly_motion"
 
 
 @dataclass
@@ -54,8 +55,10 @@ class GameEngine:
 
     def request_move(self, from_pos: Position, to_pos: Position) -> MoveResult:
         """שערי היישום (game_over, motion_in_progress) קודם - לפני שפונים בכלל
-        ל-RuleEngine. רק לאחר ולידציה תקינה מתבצע הביצוע עצמו (בדיקת קונפליקט
-        תזמון + התחלת תנועה) - וזה קורה כאן, לא ב-RuleEngine."""
+        ל-RuleEngine. רק לאחר ולידציה תקינה מתבצע הביצוע עצמו: קודם מקצרים
+        את היעד אם כלי ידידותי "כמעט חוצה" את הדרך (truncated_destination),
+        ואז בודקים קונפליקט תזמון מול כלי אויב על הדרך *בפועל* (שעשויה
+        להיות מקוצרת) - וזה קורה כאן, לא ב-RuleEngine."""
         if self._state.game_over:
             return MoveResult(is_accepted=False, reason=REASON_GAME_OVER)
 
@@ -68,13 +71,17 @@ class GameEngine:
 
         piece = self._state.board.piece_at(from_pos)
 
-        if self._arbiter.has_route_conflict(piece.color, from_pos, to_pos):
+        actual_to = self._arbiter.truncated_destination(piece.color, from_pos, to_pos)
+        if actual_to is None:
+            return MoveResult(is_accepted=False, reason=REASON_BLOCKED_BY_FRIENDLY_MOTION)
+
+        if self._arbiter.has_route_conflict(piece.color, from_pos, actual_to):
             return MoveResult(is_accepted=False, reason=REASON_ROUTE_CONFLICT)
 
-        if self._arbiter.is_destination_reserved(to_pos):
+        if self._arbiter.is_destination_reserved(piece.color, actual_to):
             return MoveResult(is_accepted=False, reason=REASON_DESTINATION_RESERVED)
 
-        self._arbiter.start_motion(piece, to_pos)
+        self._arbiter.start_motion(piece, actual_to)
         return MoveResult(is_accepted=True, reason=REASON_OK)
 
     def try_jump(self, position: Position) -> bool:

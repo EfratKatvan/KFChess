@@ -115,8 +115,9 @@ def test_is_destination_reserved_true_while_a_motion_targets_it():
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(rook, Position(0, 1))
 
-    assert arbiter.is_destination_reserved(Position(0, 1)) is True
-    assert arbiter.is_destination_reserved(Position(0, 2)) is False
+    assert arbiter.is_destination_reserved(WHITE, Position(0, 1)) is True
+    assert arbiter.is_destination_reserved(WHITE, Position(0, 2)) is False
+    assert arbiter.is_destination_reserved(BLACK, Position(0, 1)) is False
 
 
 def test_is_cell_busy_true_for_motion_source_and_destination():

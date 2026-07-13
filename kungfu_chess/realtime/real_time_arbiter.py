@@ -11,6 +11,7 @@ from kungfu_chess.realtime.motion import (
     is_straight_line,
     motion_duration_ms,
     trajectories_collide,
+    truncated_before_collision,
 )
 from kungfu_chess.rules.rule_engine import (
     KingCaptureWinCondition,
@@ -20,6 +21,17 @@ from kungfu_chess.rules.rule_engine import (
 )
 
 JUMP_DURATION_MS = 1000
+
+
+def _active_trajectory(motion: Motion) -> Optional[Trajectory]:
+    """בונה את ה-Trajectory הנוכחי של תנועה פעילה - None אם היא לא ישרה
+    (קפיצת-L של סוס, שאין לה מסלול רציף להתנגש עליו)."""
+    source = motion.piece.cell
+    if not is_straight_line(source, motion.to_pos):
+        return None
+    duration = motion_duration_ms(source, motion.to_pos)
+    elapsed = duration - motion.remaining_ms
+    return Trajectory(source, motion.to_pos, duration, start_offset_ms=-elapsed)
 
 
 class RealTimeArbiter:
@@ -56,14 +68,16 @@ class RealTimeArbiter:
         """True אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות)."""
         return any(m.piece.cell == position or m.to_pos == position for m in self._motions)
 
-    #אם התא הוא יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות) - True
-    def is_destination_reserved(self, position: Position) -> bool:
-        return any(m.to_pos == position for m in self._motions)
+    #אם התא הוא יעד של תנועה פעילה של כלי מאותו צבע - True (כלים מנוגדי-צבע
+    #כן יכולים להתחרות על אותו יעד - ר' advance_time; מי שמגיע מאוחר יותר אוכל את מי שהגיע קודם)
+    def is_destination_reserved(self, color: str, position: Position) -> bool:
+        return any(m.to_pos == position and m.piece.color == color for m in self._motions)
 
-    #
+    #אם התא הוא יעד של קפיצה פעילה (קפיצות אינן נחשבות תפוסות) - True
     def is_cell_airborne(self, position: Position) -> bool:
         return any(j.position == position and j.remaining_ms > 0 for j in self._jumps)
 
+    #בדיקה האם בטווח תנועה  של מסלול יש מפגש עם כלי בצבע מנוגד, כך ששני הכלים יהיו באותו מקום באותו זמן (מודל רציף בזמן - ר' realtime/motion.py).
     def has_route_conflict(self, color: str, from_pos: Position, to_pos: Position) -> bool:
         """True אם כלי בצבע מנוגד כבר בתנועה כרגע, ושני הכלים יהיו באותה
         נקודה בדיוק באותו רגע (מודל רציף בזמן - ר' realtime/motion.py),
@@ -78,18 +92,46 @@ class RealTimeArbiter:
             if motion.piece.color == color:
                 continue
 
-            source = motion.piece.cell
-            if not is_straight_line(source, motion.to_pos):
+            active = _active_trajectory(motion)
+            if active is None:
                 continue
 
-            duration = motion_duration_ms(source, motion.to_pos)
-            elapsed = duration - motion.remaining_ms
-            active = Trajectory(source, motion.to_pos, duration, start_offset_ms=-elapsed)
-
+            #בדיקה אם שתי הכלים יפגשו באותו תע בו זמנית
             if trajectories_collide(requested, active):
                 return True
 
         return False
+
+    def truncated_destination(self, color: str, from_pos: Position, to_pos: Position) -> Optional[Position]:
+        """אם המהלך המבוקש היה מתנגש (באותה נקודה ובאותו רגע) עם תנועה
+        פעילה של כלי מאותו צבע, מחזירה יעד מקוצר - תא אחד לפני נקודת
+        ההתנגשות לאורך אותו כיוון (הכלי "נתקע" שם במקום להמשיך). אם כמה
+        התנגשויות אפשריות, בוחרת את הקרובה ביותר למקור. אם ההתנגשות
+        קורית כבר בצעד הראשון, מחזירה None (אין יעד חוקי בכיוון הזה).
+        אחרת מחזירה את היעד המקורי ללא שינוי."""
+        if not is_straight_line(from_pos, to_pos):
+            return to_pos
+
+        requested = Trajectory(from_pos, to_pos, motion_duration_ms(from_pos, to_pos))
+
+        cutoffs = []
+        for motion in self._motions:
+            if motion.piece.color != color:
+                continue
+
+            active = _active_trajectory(motion)
+            if active is None:
+                continue
+
+            cutoff = truncated_before_collision(requested, active)
+            if cutoff is not None:
+                cutoffs.append(cutoff)
+
+        if not cutoffs:
+            return to_pos
+
+        closest = min(cutoffs, key=lambda c: max(abs(c.row - from_pos.row), abs(c.col - from_pos.col)))
+        return None if closest == from_pos else closest
 
     def start_motion(self, piece: Piece, to_pos: Position) -> None:
         from_pos = piece.cell
@@ -101,9 +143,13 @@ class RealTimeArbiter:
         self._jumps.append(Jump(position, JUMP_DURATION_MS))
 
     def advance_time(self, time_ms: int) -> bool:
-        """מקדם את הזמן ב-time_ms. מחזיר True אם מלך נלכד בסיבוב הזה."""
+        """מקדם את הזמן ב-time_ms. מחזיר True אם מלך נלכד בסיבוב הזה.
+        מעבד תנועות שמסתיימות באותו tick לפי סדר הגעה כרונולוגי (מי
+        שהיה לו פחות remaining_ms מגיע קודם) - כדי שאם שני כלים מגיעים
+        לאותו יעד באותו tick, זה שממתין קודם כבר יושב שם כשהשני מגיע
+        (ואז נלכד באופן טבעי דרך לכידה רגילה, לא לוגיקה נפרדת)."""
         new_motions: List[Motion] = []
-        for motion in self._motions:
+        for motion in sorted(self._motions, key=lambda m: m.remaining_ms):
             remaining = motion.remaining_ms - time_ms
             if remaining > 0:
                 new_motions.append(Motion(motion.piece, motion.to_pos, remaining))
@@ -131,7 +177,7 @@ class RealTimeArbiter:
         from_pos = piece.cell
         to_pos = motion.to_pos
 
-        
+        #אם היעד באויר -היעד אוכל אותו
         if self.is_cell_airborne(to_pos):
             # הכלי הנע "נבלע" באוויר - הכלי שקפץ נשאר במקומו
             if self._board.piece_at(from_pos) is piece:
