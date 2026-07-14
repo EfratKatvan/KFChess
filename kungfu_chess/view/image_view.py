@@ -5,10 +5,11 @@ import time
 
 import cv2
 
+from kungfu_chess.assets_config import DEFAULT_PIECE_SET
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.input.controller import Controller
-from kungfu_chess.view import renderer
+from kungfu_chess.view.renderer import Renderer
 
 WINDOW_NAME = "Kung Fu Chess"
 ESC_KEY = 27
@@ -49,16 +50,18 @@ def run(
     engine: GameEngine,
     controller: Controller,
     cell_size: int = CELL_SIZE,
-    piece_set: str = renderer.DEFAULT_PIECE_SET,
+    piece_set: str = DEFAULT_PIECE_SET,
 ) -> None:
     """הלולאה האינטראקטיבית: בכל פריים מקדמת את הזמן לפי ה-dt שחלף בפועל
-    (engine.wait), מרנדרת (view.renderer.draw) ומציגה. רצה עד ESC, סגירת
+    (engine.wait), מרנדרת (Renderer.draw) ומציגה. רצה עד ESC, סגירת
     החלון, או סיום המשחק. piece_set בוחר בין חבילות הגרפיקה (ר'
-    renderer.PIECE_SETS)."""
+    assets_config.PIECE_SETS). ה-Renderer נוצר פעם אחת כאן (לא global
+    state) - הקאשים שלו (אנימציות/רקע-לוח) נשארים חיים לאורך כל ההרצה."""
     _disable_windows_dpi_scaling()
     cv2.namedWindow(WINDOW_NAME)
     cv2.setMouseCallback(WINDOW_NAME, lambda event, x, y, flags, param: _on_mouse(event, x, y, controller))
 
+    frame_renderer = Renderer()
     total_elapsed_ms = 0
     last_time = time.perf_counter()
 
@@ -71,7 +74,7 @@ def run(
 
             engine.wait(dt_ms)
             snapshot = engine.snapshot()
-            canvas = renderer.draw(snapshot, total_elapsed_ms, cell_size, piece_set)
+            canvas = frame_renderer.draw(snapshot, total_elapsed_ms, cell_size, piece_set)
             key = canvas.show(WINDOW_NAME, wait_ms=TARGET_FRAME_MS)
 
             window_closed = cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1
