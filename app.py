@@ -11,7 +11,7 @@ from kungfu_chess.view import image_view
 
 # בחירת חבילת הגרפיקה - "pieces1" (נכסי-פיתוח, ללא alpha אמיתי) או
 # "pieces2" (אמנות סופית עם שקיפות אמיתית - ברירת המחדל). ר' view/renderer.py.
-PIECE_SET = "pieces1"
+PIECE_SET = "pieces2"
 
 STARTING_POSITION = [
     ["bR", "bN", "bB", "bQ", "bK", "bB", "bN", "bR"],

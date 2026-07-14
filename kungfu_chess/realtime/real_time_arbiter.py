@@ -5,8 +5,8 @@ from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import (
-    LONG_REST,
-    SHORT_REST,
+    JUMP_NEXT_STATE,
+    MOVE_NEXT_STATE,
     Cooldown,
     Jump,
     Motion,
@@ -218,7 +218,7 @@ class RealTimeArbiter:
         piece.state = IDLE
         self._board.add_piece(piece)
         self._promotion_rule.promote(piece, self._board.height)
-        self._cooldowns.append(Cooldown(to_pos, COOLDOWN_DURATION_MS, kind=LONG_REST))
+        self._cooldowns.append(Cooldown(to_pos, COOLDOWN_DURATION_MS, kind=MOVE_NEXT_STATE))
 
         return self._win_condition.is_game_over(captured)
 
@@ -229,7 +229,7 @@ class RealTimeArbiter:
             if remaining > 0:
                 new_jumps.append(Jump(jump.position, remaining))
             else:
-                self._cooldowns.append(Cooldown(jump.position, SHORT_REST_DURATION_MS, kind=SHORT_REST))
+                self._cooldowns.append(Cooldown(jump.position, SHORT_REST_DURATION_MS, kind=JUMP_NEXT_STATE))
         self._jumps = new_jumps
 
     def _advance_cooldowns(self, time_ms: int) -> None:

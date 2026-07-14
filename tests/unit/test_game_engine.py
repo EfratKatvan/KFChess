@@ -462,15 +462,14 @@ def test_cannot_jump_empty_cell():
 def test_multiple_wait_increments_during_jump():
     board, controller, engine, _ = make_stack([[".", ".", "."], ["wK", "bR", "."], [".", ".", "."]])
 
-    controller.handle_jump(50, 150)   # קפיצה ל-1000ms
+    controller.handle_jump(50, 150)   # קפיצה ל-1000ms (קבועה, לא תלויה במהירות תנועה)
     controller.handle_click(150, 150)
-    controller.handle_click(50, 150)  # תנועה לוקחת 1000ms
+    controller.handle_click(50, 150)  # תנועה של תא אחד - לוקחת MS_PER_CELL (667ms, 1.5 מטר/שנייה)
 
-    engine.wait(400)  # נשארו 600ms
-    engine.wait(400)  # נשארו 200ms
+    engine.wait(400)  # נשארו 267ms לתנועה
     assert row_tokens(board, 1) == ["wK", "bR", "."]  # bR עדיין בדרך
 
-    engine.wait(400)  # 1200ms סה"כ -> bR הגיע בזמן שהיה באוויר ונלכד
+    engine.wait(300)  # 700ms סה"כ -> bR הגיע בזמן שהיה עדיין באוויר (קפיצה עד 1000ms) ונלכד
     assert row_tokens(board, 1) == ["wK", ".", "."]
 
 

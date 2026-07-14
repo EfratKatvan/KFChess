@@ -1,12 +1,18 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, List, Tuple
 
+from kungfu_chess.assets_config import (
+    ASSETS_DIR,
+    DEFAULT_PIECE_SET,
+    PIECE_SETS,
+    MissingAssetError,
+    asset_code,
+    load_state_config,
+    state_sprite_paths,
+)
 from kungfu_chess.input.board_mapper import CELL_SIZE
-from kungfu_chess.io.board_parser import piece_to_token
 from kungfu_chess.model.game_snapshot import GameSnapshot
 from kungfu_chess.model.piece import IDLE as IDLE_STATE
 from kungfu_chess.model.piece import Piece
@@ -22,35 +28,7 @@ from kungfu_chess.view.img import Img
 MOVE_STATE = "move"
 JUMP_STATE = "jump"
 
-ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets"
 BOARD_IMAGE_PATH = ASSETS_DIR / "board.png"
-
-# pieces1 הם נכסי-פיתוח (placeholder) - בלי alpha אמיתי, עם תווית state+frame
-# צרובה בתוך כל תמונה. pieces2 הם אמנות סופית עם ערוץ alpha אמיתי. שתיהן
-# מ-CTD26 בלבד - ברירת המחדל היא pieces2, אבל אפשר להחליף חופשית.
-PIECE_SETS = ("pieces1", "pieces2")
-DEFAULT_PIECE_SET = "pieces2"
-
-
-class MissingAssetError(Exception):
-    """נזרקת כשלא נמצאו נכסי אנימציה (config.json או תמונות sprites) עבור
-    כלי/state/piece_set נתונים תחת kungfu_chess/assets - למשל בעקבות קוד
-    כלי שגוי, piece_set לא מוכר, או תיקייה חסרה - במקום FileNotFoundError
-    גנרי שלא אומר במפורש מה בדיוק חסר."""
-
-
-def _pieces_dir(piece_set: str) -> Path:
-    if piece_set not in PIECE_SETS:
-        raise MissingAssetError(f"unknown piece set '{piece_set}' (expected one of {PIECE_SETS})")
-    return ASSETS_DIR / piece_set
-
-
-def asset_code(piece: Piece) -> str:
-    """הטוקן של הפרויקט הוא <color><KIND> (למשל "wP"), וב-CTD26 זה הפוך:
-    <KIND><COLOR> (למשל "PW")."""
-    token = piece_to_token(piece)
-    color_letter, kind_letter = token[0], token[1]
-    return f"{kind_letter}{color_letter.upper()}"
 
 
 def _cell_to_pixel(position: Position, cell_size: int) -> Tuple[int, int]:
@@ -82,22 +60,8 @@ def _load_state_animation(
     if cached is not None:
         return cached
 
-    state_dir = _pieces_dir(piece_set) / asset_code / "states" / state
-    config_path = state_dir / "config.json"
-    if not config_path.is_file():
-        raise MissingAssetError(
-            f"no animation assets for piece '{asset_code}' state '{state}' in '{piece_set}' (expected {config_path})"
-        )
-
-    with open(config_path, encoding="utf-8") as config_file:
-        config = json.load(config_file)
-
-    sprite_paths = sorted((state_dir / "sprites").glob("*.png"), key=lambda p: int(p.stem))
-    if not sprite_paths:
-        raise MissingAssetError(
-            f"no sprite frames for piece '{asset_code}' state '{state}' in '{piece_set}' "
-            f"(expected under {state_dir / 'sprites'})"
-        )
+    config = load_state_config(asset_code, state, piece_set)
+    sprite_paths = state_sprite_paths(asset_code, state, piece_set)
 
     frames = []
     for path in sprite_paths:

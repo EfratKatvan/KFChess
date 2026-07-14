@@ -2,10 +2,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
+from kungfu_chess.assets_config import DEFAULT_PIECE_SET, load_state_config
 from kungfu_chess.model.piece import Piece
 from kungfu_chess.model.position import Position
 
-MS_PER_CELL = 1000
+# קוראות physics.* בפועל מ-config.json של CTD26 - לא מספרים מועתקים ביד.
+# מהירות התנועה (state "move") היא אחידה בכל סוגי הכלים (pieces1 ו-pieces2
+# כאחד), אז קוראות דוגמה ייצוגית אחת (חייל לבן) במקום לשרשר "איזה כלי" דרך
+# כל פונקציית זיהוי-התנגשות שהיום מכירה רק Position, לא Piece.
+_PHYSICS_REFERENCE_ASSET_CODE = "PW"
+_move_physics = load_state_config(_PHYSICS_REFERENCE_ASSET_CODE, "move", DEFAULT_PIECE_SET)["physics"]
+_jump_physics = load_state_config(_PHYSICS_REFERENCE_ASSET_CODE, "jump", DEFAULT_PIECE_SET)["physics"]
+
+# "מטר" לא מוגדר בשום מקום אחר ב-CTD26 - אנחנו קובעות את יחס ההמרה בין
+# תא-לוח למטר: משבצת אחת = מטר אחד. משם MS_PER_CELL נגזר (ולא קבוע שרירותי
+# כמו שהיה): כמה זמן לוקח לחצות משבצת אחת במהירות שקראנו מה-config.
+METERS_PER_CELL = 1.0
+MOVE_SPEED_M_PER_SEC = _move_physics["speed_m_per_sec"]
+MS_PER_CELL = round(METERS_PER_CELL / MOVE_SPEED_M_PER_SEC * 1000)
+
+# ה-state הבא אחרי תנועה/קפיצה, כמו שכתוב בפועל ב-config.json
+# (physics.next_state_when_finished) - לא קביעה עצמאית שלנו.
+MOVE_NEXT_STATE = _move_physics["next_state_when_finished"]  # "long_rest"
+JUMP_NEXT_STATE = _jump_physics["next_state_when_finished"]  # "short_rest"
+
 _EPSILON = 1e-9
 
 # אם אן חיובי מחיר 1 אם אן שלילי מחזיר -1 אם אן שווה 0 מחזיר 0

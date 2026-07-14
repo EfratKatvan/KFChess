@@ -2,7 +2,7 @@ from kungfu_chess.model.board import Board
 from kungfu_chess.model.game_snapshot import GameSnapshot
 from kungfu_chess.model.piece import Piece, WHITE, BLACK, ROOK, KING, PAWN, QUEEN
 from kungfu_chess.model.position import Position
-from kungfu_chess.realtime.motion import Cooldown, Jump, Motion, LONG_REST, SHORT_REST
+from kungfu_chess.realtime.motion import Cooldown, Jump, Motion, LONG_REST, SHORT_REST, motion_duration_ms
 from kungfu_chess.realtime.real_time_arbiter import COOLDOWN_DURATION_MS, JUMP_DURATION_MS, SHORT_REST_DURATION_MS
 import pytest
 
@@ -30,13 +30,14 @@ def test_moving_piece_reports_move_state_with_interpolated_pixel_position():
     board = Board(width=3, height=1)
     piece = make_piece("wR", WHITE, ROOK, 0, 0)
     board.add_piece(piece)
-    motion = Motion(piece=piece, to_pos=Position(0, 2), remaining_ms=1000)  # half-way through a 2000ms move
+    duration = motion_duration_ms(Position(0, 0), Position(0, 2))
+    motion = Motion(piece=piece, to_pos=Position(0, 2), remaining_ms=duration // 2)  # half-way through the move
     snapshot = GameSnapshot(board=board, game_over=False, motions=[motion])
 
     state, elapsed_ms, pixel_pos = renderer.resolve_visual_state(piece, snapshot, total_elapsed_ms=0, cell_size=100)
 
     assert state == "move"
-    assert elapsed_ms == 1000
+    assert elapsed_ms == duration - duration // 2
     assert pixel_pos == (100, 0)  # half-way between col 0 and col 2, at cell_size=100
 
 
