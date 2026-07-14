@@ -1,6 +1,7 @@
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.position import Position
 from kungfu_chess.model.piece import Piece, WHITE, BLACK, ROOK, BISHOP, KING, QUEEN, PAWN, IDLE, MOVING, CAPTURED
+from kungfu_chess.realtime.motion import LONG_REST, SHORT_REST
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 
 
@@ -172,3 +173,29 @@ def test_jump_expires_after_its_duration():
     arbiter.advance_time(1000)
 
     assert arbiter.is_cell_airborne(Position(0, 0)) is False
+
+
+def test_jump_ending_starts_a_short_rest_cooldown():
+    board = Board(width=2, height=1)
+    add(board, "wK", WHITE, KING, 0, 0)
+    arbiter = RealTimeArbiter(board)
+    arbiter.start_jump(Position(0, 0))
+
+    arbiter.advance_time(1000)
+
+    assert arbiter.is_cell_cooling_down(Position(0, 0)) is True
+    [cooldown] = arbiter.cooldowns
+    assert cooldown.kind == SHORT_REST
+
+
+def test_motion_arrival_starts_a_long_rest_cooldown():
+    board = Board(width=3, height=1)
+    rook = add(board, "wR", WHITE, ROOK, 0, 0)
+    arbiter = RealTimeArbiter(board)
+    arbiter.start_motion(rook, Position(0, 2))
+
+    arbiter.advance_time(2000)
+
+    assert arbiter.is_cell_cooling_down(Position(0, 2)) is True
+    [cooldown] = arbiter.cooldowns
+    assert cooldown.kind == LONG_REST

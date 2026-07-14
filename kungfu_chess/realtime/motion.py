@@ -8,7 +8,7 @@ from kungfu_chess.model.position import Position
 MS_PER_CELL = 1000
 _EPSILON = 1e-9
 
-
+# אם אן חיובי מחיר 1 אם אן שלילי מחזיר -1 אם אן שווה 0 מחזיר 0
 def _sign(n: int) -> int:
     return (n > 0) - (n < 0)
 
@@ -49,13 +49,20 @@ class Jump:
     remaining_ms: int
 
 
+SHORT_REST = "short_rest"
+LONG_REST = "long_rest"
+
+
 @dataclass
 class Cooldown:
     """חלון זמן שבו כלי שזה עתה נחת בתא הזה "קפוא" - אי אפשר לבחור אותו
-    או לבקש עבורו מהלך חדש עד שהזמן שנותר מגיע ל-0."""
+    או לבקש עבורו מהלך חדש עד שהזמן שנותר מגיע ל-0. kind מבדיל בין קירור
+    אחרי תנועה רגילה (LONG_REST) לקירור אחרי קפיצה (SHORT_REST) - משמש
+    ל-Renderer לבחור את האנימציה המתאימה."""
 
     position: Position
     remaining_ms: int
+    kind: str = LONG_REST
 
 
 @dataclass(frozen=True)
@@ -80,7 +87,7 @@ def _axis_rates(t: Trajectory) -> Tuple[float, float]:
     אחת ומשותף בין _solve_collision_time ו-collision_position."""
     return (t.destination.row - t.source.row) / t.duration_ms, (t.destination.col - t.source.col) / t.duration_ms
 
-
+#בודקת אם התנגשות בין שני מסלולים מתרחשת, ואם כן - מחזירה את הזמן שבו זה קורה (יחידות: מילישניות). אחרת מחזירה None.
 def _solve_collision_time(a: Trajectory, b: Trajectory) -> Optional[float]:
     """הליבה המשותפת: מוצאת את הרגע (אם קיים) שבו position_a(t) ==
     position_b(t) עבור שורה ועמודה בו-זמנית, בתוך חלון הזמן שבו שני
@@ -131,7 +138,7 @@ def trajectories_collide(a: Trajectory, b: Trajectory) -> bool:
     אלא אם שני הכלים יהיו שם יחד."""
     return _solve_collision_time(a, b) is not None
 
-
+#אם הם נפגשים, מחזירה את התא שבו הם נפגשים  (מעוגל לתא שלם). אחרת None.
 def collision_position(a: Trajectory, b: Trajectory) -> Optional[Position]:
     """אם שני המסלולים מתנגשים (ר' trajectories_collide), מחזירה את התא
     (מעוגל לתא שלם) שבו זה קורה. אחרת None."""
@@ -143,7 +150,7 @@ def collision_position(a: Trajectory, b: Trajectory) -> Optional[Position]:
     elapsed = collision_time - a.start_offset_ms
     return Position(round(a.source.row + row_rate_a * elapsed), round(a.source.col + col_rate_a * elapsed))
 
-
+#מחזירה תא אחד לפני ההתנגשות
 def truncated_before_collision(requested: Trajectory, active: Trajectory) -> Optional[Position]:
     """אם requested היה מתנגש עם active (ר' collision_position), מחזירה
     את התא אחד לפני נקודת ההתנגשות לאורך הכיוון של requested - התא שבו
@@ -151,9 +158,12 @@ def truncated_before_collision(requested: Trajectory, active: Trajectory) -> Opt
     אם ההתנגשות קורית כבר בצעד הראשון (אין יעד חוקי בכיוון הזה). None
     אם אין התנגשות בכלל."""
     point = collision_position(requested, active)
+
+    #אם אין התנגשות או שההתנגשות היא כבר בצעד הראשון - אין יעד חוקי.
     if point is None or point == requested.source:
         return None
 
+    #אם יש התנגשות, מחזירה את התא אחד לפני נקודת ההתנגשות לאורך הכיוון של requested - התא שבו requested "נתקע" במקום להמשיך.
     row_step = _sign(requested.destination.row - requested.source.row)
     col_step = _sign(requested.destination.col - requested.source.col)
     return Position(point.row - row_step, point.col - col_step)

@@ -5,6 +5,8 @@ from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import (
+    LONG_REST,
+    SHORT_REST,
     Cooldown,
     Jump,
     Motion,
@@ -23,6 +25,7 @@ from kungfu_chess.rules.rule_engine import (
 
 JUMP_DURATION_MS = 1000
 COOLDOWN_DURATION_MS = 1000
+SHORT_REST_DURATION_MS = 1000
 
 
 def _active_trajectory(motion: Motion) -> Optional[Trajectory]:
@@ -65,6 +68,10 @@ class RealTimeArbiter:
     @property
     def jumps(self) -> List[Jump]:
         return list(self._jumps)
+
+    @property
+    def cooldowns(self) -> List[Cooldown]:
+        return list(self._cooldowns)
 
     #אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות) - True
     def is_cell_busy(self, position: Position) -> bool:
@@ -136,7 +143,8 @@ class RealTimeArbiter:
 
         if not cutoffs:
             return to_pos
-
+        
+        #אם יש כמה התנגשות אפשריות, בוחרת את הקרובה ביותר למקור. אם ההתנגשות
         closest = min(cutoffs, key=lambda c: max(abs(c.row - from_pos.row), abs(c.col - from_pos.col)))
         return None if closest == from_pos else closest
 
@@ -210,7 +218,7 @@ class RealTimeArbiter:
         piece.state = IDLE
         self._board.add_piece(piece)
         self._promotion_rule.promote(piece, self._board.height)
-        self._cooldowns.append(Cooldown(to_pos, COOLDOWN_DURATION_MS))
+        self._cooldowns.append(Cooldown(to_pos, COOLDOWN_DURATION_MS, kind=LONG_REST))
 
         return self._win_condition.is_game_over(captured)
 
@@ -220,6 +228,8 @@ class RealTimeArbiter:
             remaining = jump.remaining_ms - time_ms
             if remaining > 0:
                 new_jumps.append(Jump(jump.position, remaining))
+            else:
+                self._cooldowns.append(Cooldown(jump.position, SHORT_REST_DURATION_MS, kind=SHORT_REST))
         self._jumps = new_jumps
 
     def _advance_cooldowns(self, time_ms: int) -> None:

@@ -113,4 +113,10 @@ class GameEngine:
 
     def snapshot(self) -> GameSnapshot:
         """תמונת-מצב read-only ל-Renderer/BoardPrinter."""
-        return GameSnapshot(board=self._state.board, game_over=self._state.game_over)
+        return GameSnapshot(
+            board=self._state.board,
+            game_over=self._state.game_over,
+            motions=self._arbiter.motions,
+            jumps=self._arbiter.jumps,
+            cooldowns=self._arbiter.cooldowns,
+        )

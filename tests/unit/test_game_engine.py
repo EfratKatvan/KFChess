@@ -42,6 +42,18 @@ def test_snapshot_reflects_game_over_after_king_capture():
     assert engine.snapshot().game_over is True
 
 
+def test_snapshot_exposes_the_arbiters_realtime_state():
+    _, controller, engine, arbiter = make_stack([["wR", ".", "."]])
+    controller.handle_click(50, 50)
+    controller.handle_click(250, 50)
+
+    snapshot = engine.snapshot()
+
+    assert snapshot.motions == arbiter.motions
+    assert snapshot.jumps == arbiter.jumps
+    assert snapshot.cooldowns == arbiter.cooldowns
+
+
 # ==========================================
 # שאילתות בסיסיות שה-Controller נשען עליהן (has_piece / is_same_color / can_select)
 # ==========================================

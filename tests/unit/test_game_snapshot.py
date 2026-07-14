@@ -9,6 +9,13 @@ def test_game_snapshot_holds_board_and_game_over():
     assert snapshot.game_over is True
 
 
+def test_game_snapshot_defaults_realtime_lists_to_empty():
+    snapshot = GameSnapshot(board=Board(width=1, height=1), game_over=False)
+    assert snapshot.motions == []
+    assert snapshot.jumps == []
+    assert snapshot.cooldowns == []
+
+
 def test_game_snapshot_is_frozen():
     snapshot = GameSnapshot(board=Board(width=1, height=1), game_over=False)
     try:
