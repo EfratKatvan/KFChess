@@ -5,7 +5,7 @@ from kungfu_chess.model.piece import Piece, WHITE, BLACK, ROOK, KING, PAWN, QUEE
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import Cooldown, Jump, Motion, LONG_REST, SHORT_REST, motion_duration_ms
 from kungfu_chess.realtime.real_time_arbiter import COOLDOWN_DURATION_MS, JUMP_DURATION_MS, SHORT_REST_DURATION_MS
-from kungfu_chess.view.renderer import Renderer, resolve_visual_state
+from kungfu_chess.view.renderer import Renderer, cooldown_remaining_fraction, resolve_visual_state
 
 
 def make_piece(piece_id, color, kind, row, col):
@@ -125,3 +125,79 @@ def test_draw_reuses_injected_caches_across_calls():
 
     assert len(shared_cache._animations) == 1
     assert len(shared_board_view._backgrounds) == 1
+
+
+def test_cooldown_remaining_fraction_starts_full_and_reaches_zero_at_full_duration():
+    assert cooldown_remaining_fraction(SHORT_REST, elapsed_ms=0) == 1.0
+    assert cooldown_remaining_fraction(SHORT_REST, elapsed_ms=SHORT_REST_DURATION_MS) == 0.0
+    assert cooldown_remaining_fraction(LONG_REST, elapsed_ms=0) == 1.0
+    assert cooldown_remaining_fraction(LONG_REST, elapsed_ms=COOLDOWN_DURATION_MS) == 0.0
+
+
+def test_cooldown_remaining_fraction_is_clamped_to_zero_and_one():
+    assert cooldown_remaining_fraction(SHORT_REST, elapsed_ms=-100) == 1.0
+    assert cooldown_remaining_fraction(SHORT_REST, elapsed_ms=10_000) == 0.0
+
+
+def test_draw_cooldown_overlay_paints_the_whole_cell_at_full_remaining_fraction():
+    import numpy as np
+
+    from kungfu_chess.view.img import Img
+    from kungfu_chess.view.renderer import _draw_cooldown_overlay
+
+    canvas = Img()
+    canvas.img = np.zeros((100, 100, 4), dtype=np.uint8)
+    canvas.img[..., 3] = 255
+
+    _draw_cooldown_overlay(canvas, pixel_pos=(0, 0), remaining_fraction=1.0, cell_size=100)
+
+    assert tuple(canvas.img[0, 0][:3]) != (0, 0, 0)
+    assert tuple(canvas.img[99, 0][:3]) != (0, 0, 0)
+
+
+def test_draw_cooldown_overlay_drains_from_the_top_as_the_fraction_decreases():
+    import numpy as np
+
+    from kungfu_chess.view.img import Img
+    from kungfu_chess.view.renderer import _draw_cooldown_overlay
+
+    canvas = Img()
+    canvas.img = np.zeros((100, 100, 4), dtype=np.uint8)
+    canvas.img[..., 3] = 255
+
+    _draw_cooldown_overlay(canvas, pixel_pos=(0, 0), remaining_fraction=0.5, cell_size=100)
+
+    assert tuple(canvas.img[0, 0][:3]) == (0, 0, 0)   # top half: already drained/untouched
+    assert tuple(canvas.img[99, 0][:3]) != (0, 0, 0)  # bottom half: "sand" still pooled there
+
+
+def test_draw_cooldown_overlay_draws_nothing_once_the_cooldown_is_over():
+    import numpy as np
+
+    from kungfu_chess.view.img import Img
+    from kungfu_chess.view.renderer import _draw_cooldown_overlay
+
+    canvas = Img()
+    canvas.img = np.zeros((100, 100, 4), dtype=np.uint8)
+    canvas.img[..., 3] = 255
+
+    _draw_cooldown_overlay(canvas, pixel_pos=(0, 0), remaining_fraction=0.0, cell_size=100)
+
+    assert (canvas.img[..., :3] == 0).all()
+
+
+def test_draw_does_not_crash_for_a_piece_that_is_cooling_down():
+    """טסט אינטגרציה: ה-Renderer בפועל מפעיל את ה-overlay דרך draw(), לא
+    רק דרך הבדיקות הישירות של _draw_cooldown_overlay למעלה."""
+    board = Board(width=1, height=1)
+    piece = make_piece("wR", WHITE, ROOK, 0, 0)
+    board.add_piece(piece)
+    cooling_snapshot = GameSnapshot(
+        board=board,
+        game_over=False,
+        cooldowns=[Cooldown(position=Position(0, 0), remaining_ms=SHORT_REST_DURATION_MS, kind=SHORT_REST)],
+    )
+
+    canvas = Renderer().draw(cooling_snapshot, total_elapsed_ms=0, cell_size=100)
+
+    assert canvas.img is not None

@@ -278,8 +278,8 @@ def test_piece_frozen_for_cooldown_window_after_arrival():
 
     assert row_tokens(board, 0) == [".", ".", "wR"]
 
-    # אחרי שהקירור מסתיים (1000ms נוספות) - עכשיו כן אפשר לזוז
-    engine.wait(1000)
+    # אחרי שהקירור מסתיים (COOLDOWN_DURATION_MS=3000ms נוספות) - עכשיו כן אפשר לזוז
+    engine.wait(3000)
     controller.handle_click(250, 50)
     controller.handle_click(50, 50)
     engine.wait(2000)

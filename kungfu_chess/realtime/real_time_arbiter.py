@@ -24,8 +24,8 @@ from kungfu_chess.rules.rule_engine import (
 )
 
 JUMP_DURATION_MS = 1000
-COOLDOWN_DURATION_MS = 1000
-SHORT_REST_DURATION_MS = 1000
+COOLDOWN_DURATION_MS = 3000
+SHORT_REST_DURATION_MS = 3000
 
 
 def _active_trajectory(motion: Motion) -> Optional[Trajectory]:

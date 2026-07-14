@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from typing import Optional, Tuple
 
+import numpy as np
+
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET, asset_code
 from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.model.game_snapshot import GameSnapshot
 from kungfu_chess.model.piece import IDLE as IDLE_STATE
 from kungfu_chess.model.piece import Piece
 from kungfu_chess.model.position import Position
-from kungfu_chess.realtime.motion import SHORT_REST, motion_duration_ms
+from kungfu_chess.realtime.motion import LONG_REST, SHORT_REST, motion_duration_ms
 from kungfu_chess.realtime.real_time_arbiter import (
     COOLDOWN_DURATION_MS,
     JUMP_DURATION_MS,
@@ -20,6 +22,9 @@ from kungfu_chess.view.img import Img
 
 MOVE_STATE = "move"
 JUMP_STATE = "jump"
+
+# תכלת-קרח שקופה-למחצה (BGRA) - "שעון החול" שמצטייר מעל כלי קפוא בקירור.
+COOLDOWN_OVERLAY_COLOR_BGRA = (235, 206, 135, 120)
 
 
 def resolve_visual_state(
@@ -49,6 +54,29 @@ def resolve_visual_state(
             return cooldown.kind, elapsed_ms, BoardView.cell_to_pixel(piece.cell, cell_size)
 
     return IDLE_STATE, total_elapsed_ms, BoardView.cell_to_pixel(piece.cell, cell_size)
+
+
+def cooldown_remaining_fraction(state: str, elapsed_ms: int) -> float:
+    """1.0 ברגע שהקירור מתחיל, יורד ל-0.0 ברגע שהוא נגמר - זה "שעון החול":
+    הכמות שממנה נגזר גובה ההצפה שמכסה את התא. state שאינו short_rest/
+    long_rest לא רלוונטי כאן (הקריאה למעלה כבר מוודאת את זה)."""
+    full_duration = SHORT_REST_DURATION_MS if state == SHORT_REST else COOLDOWN_DURATION_MS
+    remaining_ms = full_duration - elapsed_ms
+    return max(0.0, min(1.0, remaining_ms / full_duration))
+
+
+def _draw_cooldown_overlay(canvas: Img, pixel_pos: Tuple[int, int], remaining_fraction: float, cell_size: int) -> None:
+    """"שעון חול": הצפה תכלת שקופה-למחצה שמכסה חלק מהתא היורד עם הזמן -
+    מלא כשהקירור מתחיל, ונעלם לגמרי (הכלי "משתחרר") כשהוא מסתיים. ה"חול"
+    מתרוקן מלמעלה - הקצה העליון של ההצפה יורד עם הזמן, וה"חול" שנשאר
+    נשקע כלפי מטה עד שהוא נעלם."""
+    if remaining_fraction <= 0:
+        return
+    overlay_height = max(1, round(cell_size * remaining_fraction))
+    overlay = Img()
+    overlay.img = np.full((overlay_height, cell_size, 4), COOLDOWN_OVERLAY_COLOR_BGRA, dtype=np.uint8)
+    x, y = pixel_pos
+    overlay.draw_on(canvas, x, y + (cell_size - overlay_height))
 
 
 class Renderer:
@@ -85,5 +113,9 @@ class Renderer:
                 animation = self._animation_cache.load(asset_code(piece), state, cell_size, piece_set)
                 frame = animation.frames[frame_index(elapsed_ms, animation)]
                 frame.draw_on(canvas, *pixel_pos)
+
+                if state in (SHORT_REST, LONG_REST):
+                    remaining_fraction = cooldown_remaining_fraction(state, elapsed_ms)
+                    _draw_cooldown_overlay(canvas, pixel_pos, remaining_fraction, cell_size)
 
         return canvas
