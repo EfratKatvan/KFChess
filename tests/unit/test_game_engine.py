@@ -2,7 +2,8 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.io.board_printer import format_board
 from kungfu_chess.rules.rule_engine import RuleEngine
-from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
+from kungfu_chess.realtime.motion import motion_duration_ms
+from kungfu_chess.realtime.real_time_arbiter import JUMP_DURATION_MS, RealTimeArbiter
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.input.controller import Controller
@@ -456,6 +457,27 @@ def test_cannot_jump_empty_cell():
     _, controller, engine, arbiter = make_stack([[".", ".", "."]])
 
     controller.handle_jump(50, 50)
+    assert len(arbiter.jumps) == 0
+
+
+def test_cannot_jump_while_cooling_down_after_a_move():
+    _, controller, engine, arbiter = make_stack([["wR", ".", "."]])
+
+    controller.handle_click(50, 50)
+    controller.handle_click(150, 50)  # wR: (0,0) -> (0,1), one cell
+    engine.wait(motion_duration_ms(Position(0, 0), Position(0, 1)))  # arrives, enters long_rest
+
+    controller.handle_jump(150, 50)  # still frozen - must not be allowed to jump
+    assert len(arbiter.jumps) == 0
+
+
+def test_cannot_jump_again_while_cooling_down_after_a_jump():
+    _, controller, engine, arbiter = make_stack([["wR", ".", "."]])
+
+    controller.handle_jump(50, 50)
+    engine.wait(JUMP_DURATION_MS)  # jump ends, piece enters short_rest
+
+    controller.handle_jump(50, 50)  # still frozen - must not be allowed to jump again
     assert len(arbiter.jumps) == 0
 
 

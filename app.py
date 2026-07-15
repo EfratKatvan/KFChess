@@ -9,8 +9,7 @@ from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.view import image_view
 
-# בחירת חבילת הגרפיקה - "pieces1" (נכסי-פיתוח, ללא alpha אמיתי) או
-# "pieces2" (אמנות סופית עם שקיפות אמיתית - ברירת המחדל). ר' view/renderer.py.
+
 PIECE_SET = "pieces2"
 
 STARTING_POSITION = [

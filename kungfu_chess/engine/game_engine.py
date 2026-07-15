@@ -100,6 +100,8 @@ class GameEngine:
             return False
         if self.is_busy(position):
             return False
+        if self.is_cooling_down(position):
+            return False
         if self._arbiter.is_cell_airborne(position):
             return False
         self._arbiter.start_jump(position)
