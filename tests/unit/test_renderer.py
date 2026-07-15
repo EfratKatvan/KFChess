@@ -149,29 +149,36 @@ def test_draw_does_not_highlight_anything_when_no_cell_is_selected():
     assert not np.any(np.all(canvas.img == highlight, axis=-1))
 
 
-def test_draw_marks_legal_destination_cells():
+def test_draw_destination_highlight_tints_the_whole_cell():
     import numpy as np
 
-    from kungfu_chess.view.renderer import DESTINATION_MARKER_COLOR_BGRA
+    from kungfu_chess.view.img import Img
+    from kungfu_chess.view.renderer import _draw_destination_highlight
 
+    canvas = Img()
+    canvas.img = np.zeros((100, 100, 4), dtype=np.uint8)
+    canvas.img[..., 3] = 255
+
+    _draw_destination_highlight(canvas, Position(0, 0), cell_size=100)
+
+    assert tuple(canvas.img[0, 0][:3]) != (0, 0, 0)      # corner: tinted
+    assert tuple(canvas.img[99, 99][:3]) != (0, 0, 0)    # opposite corner: also tinted (whole cell, not a dot)
+
+
+def test_draw_marks_legal_destination_cells_by_tinting_them():
     view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
 
-    canvas = Renderer().draw(view_state, cell_size=100, legal_destinations=[Position(0, 1)])
+    baseline = Renderer().draw(view_state, cell_size=100, legal_destinations=None)
+    highlighted = Renderer().draw(view_state, cell_size=100, legal_destinations=[Position(0, 1)])
 
-    # center of the marked cell (0,1) -> painted with the marker color
-    assert tuple(canvas.img[50, 150]) == DESTINATION_MARKER_COLOR_BGRA
-    # center of the unmarked cell (0,0) -> not painted
-    assert tuple(canvas.img[50, 50]) != DESTINATION_MARKER_COLOR_BGRA
+    assert tuple(highlighted.img[50, 150]) != tuple(baseline.img[50, 150])  # marked cell: changed
+    assert tuple(highlighted.img[50, 50]) == tuple(baseline.img[50, 50])    # other cell: untouched
 
 
 def test_draw_marks_nothing_when_no_destinations_are_given():
-    import numpy as np
-
-    from kungfu_chess.view.renderer import DESTINATION_MARKER_COLOR_BGRA
-
     view_state = BoardViewState(width=1, height=1, game_over=False, pieces=())
 
-    canvas = Renderer().draw(view_state, cell_size=100, legal_destinations=None)
+    with_none = Renderer().draw(view_state, cell_size=100, legal_destinations=None)
+    with_empty = Renderer().draw(view_state, cell_size=100, legal_destinations=[])
 
-    marker = np.array(DESTINATION_MARKER_COLOR_BGRA, dtype=canvas.img.dtype)
-    assert not np.any(np.all(canvas.img == marker, axis=-1))
+    assert (with_none.img == with_empty.img).all()

@@ -102,13 +102,6 @@ class Img:
             raise ValueError("Image not loaded.")
         cv2.rectangle(self.img, (x, y), (x + width - 1, y + height - 1), color, thickness)
 
-    def draw_circle(self, center_x: int, center_y: int, radius: int, color, thickness: int = -1) -> None:
-        """עיגול - thickness=-1 (ברירת מחדל) ממלא אותו, למשל לסימון יעד
-        אפשרי בתוך תא."""
-        if self.img is None:
-            raise ValueError("Image not loaded.")
-        cv2.circle(self.img, (center_x, center_y), radius, color, thickness)
-
     def put_text(self, txt, x, y, font_size, color=(255, 255, 255, 255), thickness=1):
         if self.img is None:
             raise ValueError("Image not loaded.")

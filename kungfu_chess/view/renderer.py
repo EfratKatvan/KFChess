@@ -19,9 +19,8 @@ COOLDOWN_OVERLAY_COLOR_BGRA = (235, 206, 135, 120)
 SELECTION_HIGHLIGHT_COLOR_BGRA = (0, 215, 255, 255)
 SELECTION_HIGHLIGHT_THICKNESS = 4
 
-# נקודה ירוקה - מסמנת תא-יעד אפשרי לכלי הנבחר (RuleEngine.legal_destinations).
-DESTINATION_MARKER_COLOR_BGRA = (60, 200, 60, 255)
-DESTINATION_MARKER_RADIUS_RATIO = 0.15
+# ירוק שקוף-למחצה - צובע את כל התא-יעד האפשרי לכלי הנבחר (RuleEngine.legal_destinations).
+DESTINATION_HIGHLIGHT_COLOR_BGRA = (60, 200, 60, 130)
 
 
 def _draw_cooldown_overlay(canvas: Img, pixel_pos: tuple, remaining_fraction: float, cell_size: int) -> None:
@@ -43,10 +42,11 @@ def _draw_selection_highlight(canvas: Img, position: Position, cell_size: int) -
     canvas.draw_rect(x, y, cell_size, cell_size, SELECTION_HIGHLIGHT_COLOR_BGRA, SELECTION_HIGHLIGHT_THICKNESS)
 
 
-def _draw_destination_marker(canvas: Img, position: Position, cell_size: int) -> None:
+def _draw_destination_highlight(canvas: Img, position: Position, cell_size: int) -> None:
     x, y = BoardView.cell_to_pixel(position, cell_size)
-    radius = max(2, round(cell_size * DESTINATION_MARKER_RADIUS_RATIO))
-    canvas.draw_circle(x + cell_size // 2, y + cell_size // 2, radius, DESTINATION_MARKER_COLOR_BGRA)
+    overlay = Img()
+    overlay.img = np.full((cell_size, cell_size, 4), DESTINATION_HIGHLIGHT_COLOR_BGRA, dtype=np.uint8)
+    overlay.draw_on(canvas, x, y)
 
 
 class Renderer:
@@ -77,7 +77,7 @@ class Renderer:
         legal_destinations - לא חלק מ-BoardViewState (אלה בחירות/שאילתות
         בצד ה-view/קלט, לא state של המשחק עצמו): selected_position מצייר
         מסגרת הדגשה על התא הנבחר (Controller.selected_pos), legal_destinations
-        מצייר נקודה על כל יעד אפשרי (GameEngine.legal_destinations)."""
+        צובע (שקוף-למחצה) כל יעד אפשרי (GameEngine.legal_destinations)."""
         canvas = self._board_view.new_canvas(view_state.width, view_state.height, cell_size)
 
         for piece_view in view_state.pieces:
@@ -101,6 +101,6 @@ class Renderer:
 
         if legal_destinations is not None:
             for destination in legal_destinations:
-                _draw_destination_marker(canvas, destination, cell_size)
+                _draw_destination_highlight(canvas, destination, cell_size)
 
         return canvas
