@@ -8,6 +8,7 @@ from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.view import image_view
+from kungfu_chess.view.renderer import HUD_HEIGHT
 
 
 PIECE_SET = "pieces2"
@@ -29,7 +30,7 @@ def main() -> None:
     rule_engine = RuleEngine(board)
     arbiter = RealTimeArbiter(board)
     engine = GameEngine(board, rule_engine, arbiter)
-    mapper = BoardMapper(board)
+    mapper = BoardMapper(board, y_offset=HUD_HEIGHT)
     controller = Controller(mapper, engine)
 
     image_view.run(engine, controller, piece_set=PIECE_SET)
