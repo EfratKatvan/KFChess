@@ -114,6 +114,28 @@ def test_can_select_false_once_game_is_over():
     assert engine.can_select(Position(0, 1)) is False
 
 
+def test_targeted_piece_can_still_be_selected_and_flee_before_the_attacker_arrives():
+    """כלי שכלי אויב כבר בדרך אליו (כדי לאכול אותו) לא בעצמו "עסוק" -
+    צריך להישאר ניתן לבחירה ולהזזה כדי לברוח לפני שהתוקף מגיע, אחרת
+    שחמט-בזמן-אמת מאבד את המשמעות שלו (תקיפה תמיד תצליח, בלי אפשרות
+    הגנה)."""
+    board, controller, engine, _ = make_stack([["wR", ".", "bR"], [".", ".", "."]])
+
+    controller.handle_click(50, 50)    # בחירת wR ב-(0,0)
+    controller.handle_click(250, 50)   # wR יוצא לדרך לאכול את bR ב-(0,2)
+
+    controller.handle_click(250, 50)   # בחירת bR ב-(0,2) - יעד של תנועה נכנסת, אבל bR עצמו לא זז
+    assert controller.selected_pos == Position(0, 2)
+
+    controller.handle_click(250, 150)  # bR בורח דרומה ל-(1,2)
+    assert controller.selected_pos is None
+
+    engine.wait(2000)  # wR מגיע ל-(0,2) - אמור למצוא אותו ריק, לא "לאכול" כלום
+
+    assert row_tokens(board, 0) == [".", ".", "wR"]
+    assert row_tokens(board, 1) == [".", ".", "bR"]
+
+
 def test_has_piece_true_for_occupied_cell():
     _, _, engine, _ = make_stack([["wR", "."]])
     assert engine.has_piece(Position(0, 0)) is True

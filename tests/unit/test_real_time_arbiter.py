@@ -148,15 +148,18 @@ def test_is_destination_reserved_true_while_a_motion_targets_it():
     assert arbiter.is_destination_reserved(BLACK, Position(0, 1)) is False
 
 
-def test_is_cell_busy_true_for_motion_source_and_destination():
+def test_is_piece_in_motion_true_only_for_the_moving_pieces_own_cell():
+    """הפוך מכוון: (0,2) הוא היעד של התנועה, לא המקור - הכלי שאולי יושב
+    שם עכשיו (הקורבן הפוטנציאלי) לא בעצמו "בתנועה", וצריך להישאר ניתן
+    לבחירה כדי שיוכל לברוח לפני שהתוקף מגיע."""
     board = Board(width=3, height=1)
     rook = add(board, "wR", WHITE, ROOK, 0, 0)
     arbiter = RealTimeArbiter(board)
     arbiter.start_motion(rook, Position(0, 2))
 
-    assert arbiter.is_cell_busy(Position(0, 0)) is True
-    assert arbiter.is_cell_busy(Position(0, 2)) is True
-    assert arbiter.is_cell_busy(Position(0, 1)) is False
+    assert arbiter.is_piece_in_motion(Position(0, 0)) is True
+    assert arbiter.is_piece_in_motion(Position(0, 2)) is False
+    assert arbiter.is_piece_in_motion(Position(0, 1)) is False
 
 
 def test_starting_a_motion_marks_the_piece_as_moving():
@@ -173,7 +176,7 @@ def test_jump_does_not_count_as_busy():
     arbiter = RealTimeArbiter(board)
     arbiter.start_jump(Position(0, 0))
 
-    assert arbiter.is_cell_busy(Position(0, 0)) is False
+    assert arbiter.is_piece_in_motion(Position(0, 0)) is False
     assert arbiter.is_cell_airborne(Position(0, 0)) is True
 
 

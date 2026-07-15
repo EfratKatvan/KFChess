@@ -79,10 +79,15 @@ class RealTimeArbiter:
     def scores(self) -> Dict[str, int]:
         return dict(self._scores)
 
-    #אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות) - True
-    def is_cell_busy(self, position: Position) -> bool:
-        """True אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות)."""
-        return any(m.piece.cell == position or m.to_pos == position for m in self._motions)
+    #אם הכלי שיושב כרגע בתא הזה (אם יש) כבר באמצע תנועה משלו - True
+    def is_piece_in_motion(self, position: Position) -> bool:
+        """True רק אם הכלי שיושב כרגע ב-position כבר באמצע תנועה משלו -
+        ואי אפשר לבחור/להזיז/לקפוץ בו שוב עד שהוא מגיע. במתכוון *לא* בודק
+        אם position הוא יעד של תנועה נכנסת של כלי אחר: כלי שרק מותקף
+        (עדיין לא זז בעצמו) חייב להישאר ניתן לבחירה כדי שאפשר יהיה לברוח
+        איתו לפני שהתוקף נוחת - ר' _resolve_arrival, שכבר תומך בכלי-קורבן
+        שברח בזמן."""
+        return any(m.piece.cell == position for m in self._motions)
 
     #אם התא הוא יעד של תנועה פעילה של כלי מאותו צבע - True (כלים מנוגדי-צבע
     #כן יכולים להתחרות על אותו יעד - ר' advance_time; מי שמגיע מאוחר יותר אוכל את מי שהגיע קודם)

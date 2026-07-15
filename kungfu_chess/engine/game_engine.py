@@ -39,7 +39,7 @@ class GameEngine:
         return self._state.game_over
 
     def is_busy(self, position: Position) -> bool:
-        return self._arbiter.is_cell_busy(position)
+        return self._arbiter.is_piece_in_motion(position)
 
     def is_cooling_down(self, position: Position) -> bool:
         return self._arbiter.is_cell_cooling_down(position)
