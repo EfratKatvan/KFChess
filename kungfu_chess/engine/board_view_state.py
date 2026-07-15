@@ -57,7 +57,10 @@ def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms
     for jump in arbiter.jumps:
         if jump.position == piece.cell:
             elapsed_ms = JUMP_DURATION_MS - jump.remaining_ms
-            return PieceView(piece.cell, piece.color, piece.kind, JUMP_STATE, elapsed_ms)
+            return PieceView(
+                position=piece.cell, color=piece.color, kind=piece.kind,
+                visual_state=JUMP_STATE, elapsed_ms=elapsed_ms,
+            )
 
     for motion in arbiter.motions:
         if motion.piece.id == piece.id:
@@ -65,7 +68,8 @@ def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms
             elapsed_ms = duration - motion.remaining_ms
             progress = elapsed_ms / duration if duration > 0 else 1.0
             return PieceView(
-                piece.cell, piece.color, piece.kind, MOVE_STATE, elapsed_ms,
+                position=piece.cell, color=piece.color, kind=piece.kind,
+                visual_state=MOVE_STATE, elapsed_ms=elapsed_ms,
                 target_position=motion.to_pos, progress=progress,
             )
 
@@ -75,11 +79,15 @@ def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms
             elapsed_ms = full_duration - cooldown.remaining_ms
             remaining_fraction = max(0.0, min(1.0, (full_duration - elapsed_ms) / full_duration))
             return PieceView(
-                piece.cell, piece.color, piece.kind, cooldown.kind, elapsed_ms,
+                position=piece.cell, color=piece.color, kind=piece.kind,
+                visual_state=cooldown.kind, elapsed_ms=elapsed_ms,
                 remaining_fraction=remaining_fraction,
             )
 
-    return PieceView(piece.cell, piece.color, piece.kind, IDLE_STATE, total_elapsed_ms)
+    return PieceView(
+        position=piece.cell, color=piece.color, kind=piece.kind,
+        visual_state=IDLE_STATE, elapsed_ms=total_elapsed_ms,
+    )
 
 
 def build_board_view_state(

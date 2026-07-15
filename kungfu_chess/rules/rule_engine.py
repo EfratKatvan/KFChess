@@ -57,9 +57,7 @@ class RuleEngine:
             return MoveValidation(False, board_check.reason)
 
         #בודקת האם היעד שלי נמצא באחד מהיעדים החוקיים שאפשריים
-        piece = self._board.piece_at(from_pos)
-        rule = self._piece_rules.get(piece.kind)
-        if rule is None or to_pos not in rule.legal_destinations(self._board, piece):
+        if to_pos not in self.legal_destinations(from_pos):
             return MoveValidation(False, REASON_ILLEGAL_PIECE_MOVE)
 
         return MoveValidation(True, REASON_OK)

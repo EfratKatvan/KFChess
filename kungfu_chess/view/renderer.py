@@ -23,6 +23,14 @@ SELECTION_HIGHLIGHT_THICKNESS = 4
 DESTINATION_HIGHLIGHT_COLOR_BGRA = (60, 200, 60, 130)
 
 
+def _blend_solid_rect(canvas: Img, x: int, y: int, width: int, height: int, color_bgra) -> None:
+    """מבליטה (עם alpha blending אמיתי, ר' Img.draw_on) מלבן בצבע-אחיד על
+    הקנבס - הבסיס המשותף לשעון-החול ולצביעת יעדים אפשריים."""
+    overlay = Img()
+    overlay.img = np.full((height, width, 4), color_bgra, dtype=np.uint8)
+    overlay.draw_on(canvas, x, y)
+
+
 def _draw_cooldown_overlay(canvas: Img, pixel_pos: tuple, remaining_fraction: float, cell_size: int) -> None:
     """"שעון חול": הצפה תכלת שקופה-למחצה שמכסה חלק מהתא היורד עם הזמן -
     מלא כשהקירור מתחיל, ונעלם לגמרי (הכלי "משתחרר") כשהוא מסתיים. ה"חול"
@@ -31,10 +39,8 @@ def _draw_cooldown_overlay(canvas: Img, pixel_pos: tuple, remaining_fraction: fl
     if remaining_fraction <= 0:
         return
     overlay_height = max(1, round(cell_size * remaining_fraction))
-    overlay = Img()
-    overlay.img = np.full((overlay_height, cell_size, 4), COOLDOWN_OVERLAY_COLOR_BGRA, dtype=np.uint8)
     x, y = pixel_pos
-    overlay.draw_on(canvas, x, y + (cell_size - overlay_height))
+    _blend_solid_rect(canvas, x, y + (cell_size - overlay_height), cell_size, overlay_height, COOLDOWN_OVERLAY_COLOR_BGRA)
 
 
 def _draw_selection_highlight(canvas: Img, position: Position, cell_size: int) -> None:
@@ -44,9 +50,7 @@ def _draw_selection_highlight(canvas: Img, position: Position, cell_size: int) -
 
 def _draw_destination_highlight(canvas: Img, position: Position, cell_size: int) -> None:
     x, y = BoardView.cell_to_pixel(position, cell_size)
-    overlay = Img()
-    overlay.img = np.full((cell_size, cell_size, 4), DESTINATION_HIGHLIGHT_COLOR_BGRA, dtype=np.uint8)
-    overlay.draw_on(canvas, x, y)
+    _blend_solid_rect(canvas, x, y, cell_size, cell_size, DESTINATION_HIGHLIGHT_COLOR_BGRA)
 
 
 class Renderer:
