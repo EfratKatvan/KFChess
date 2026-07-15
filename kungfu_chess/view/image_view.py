@@ -72,7 +72,7 @@ def run(
 
             engine.wait(dt_ms)
             view_state = engine.snapshot()
-            canvas = frame_renderer.draw(view_state, cell_size, piece_set)
+            canvas = frame_renderer.draw(view_state, cell_size, piece_set, selected_position=controller.selected_pos)
             key = canvas.show(WINDOW_NAME, wait_ms=TARGET_FRAME_MS)
 
             window_closed = cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1

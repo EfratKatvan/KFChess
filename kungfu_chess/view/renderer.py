@@ -7,12 +7,17 @@ import numpy as np
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET, asset_code
 from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.input.board_mapper import CELL_SIZE
+from kungfu_chess.model.position import Position
 from kungfu_chess.view.animation import AnimationCache, frame_index
 from kungfu_chess.view.board_view import BoardView
 from kungfu_chess.view.img import Img
 
 # תכלת-קרח שקופה-למחצה (BGRA) - "שעון החול" שמצטייר מעל כלי קפוא בקירור.
 COOLDOWN_OVERLAY_COLOR_BGRA = (235, 206, 135, 120)
+
+# מסגרת זהובה - מדגישה את התא שנבחר כרגע (Controller.selected_pos).
+SELECTION_HIGHLIGHT_COLOR_BGRA = (0, 215, 255, 255)
+SELECTION_HIGHLIGHT_THICKNESS = 4
 
 
 def _draw_cooldown_overlay(canvas: Img, pixel_pos: tuple, remaining_fraction: float, cell_size: int) -> None:
@@ -27,6 +32,11 @@ def _draw_cooldown_overlay(canvas: Img, pixel_pos: tuple, remaining_fraction: fl
     overlay.img = np.full((overlay_height, cell_size, 4), COOLDOWN_OVERLAY_COLOR_BGRA, dtype=np.uint8)
     x, y = pixel_pos
     overlay.draw_on(canvas, x, y + (cell_size - overlay_height))
+
+
+def _draw_selection_highlight(canvas: Img, position: Position, cell_size: int) -> None:
+    x, y = BoardView.cell_to_pixel(position, cell_size)
+    canvas.draw_rect(x, y, cell_size, cell_size, SELECTION_HIGHLIGHT_COLOR_BGRA, SELECTION_HIGHLIGHT_THICKNESS)
 
 
 class Renderer:
@@ -47,11 +57,15 @@ class Renderer:
         view_state: BoardViewState,
         cell_size: int = CELL_SIZE,
         piece_set: str = DEFAULT_PIECE_SET,
+        selected_position: Optional[Position] = None,
     ) -> Img:
         """מרנדרת פריים בודד: רקע הלוח + כל כלי בפריים/מיקום הנכונים לפי
         ה-visual_state הכבר-פתור שלו. לוגיקה טהורה - לא פותחת חלון ולא
         נוגעת בקלט, כדי שתהיה ניתנת לבדיקה ביחידה. piece_set בוחר בין
-        pieces1/pieces2 (ר' assets_config.PIECE_SETS)."""
+        pieces1/pieces2 (ר' assets_config.PIECE_SETS). selected_position -
+        אם לא None, מצייר מסגרת הדגשה על התא הזה (Controller.selected_pos,
+        לא חלק מ-BoardViewState - זו בחירה בצד ה-view/קלט, לא state של
+        המשחק עצמו)."""
         canvas = self._board_view.new_canvas(view_state.width, view_state.height, cell_size)
 
         for piece_view in view_state.pieces:
@@ -69,5 +83,8 @@ class Renderer:
 
             if piece_view.remaining_fraction is not None:
                 _draw_cooldown_overlay(canvas, pixel_pos, piece_view.remaining_fraction, cell_size)
+
+        if selected_position is not None:
+            _draw_selection_highlight(canvas, selected_position, cell_size)
 
         return canvas

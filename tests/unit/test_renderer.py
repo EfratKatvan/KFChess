@@ -119,3 +119,31 @@ def test_draw_does_not_crash_for_a_piece_that_is_cooling_down():
     canvas = Renderer().draw(view_state, cell_size=100)
 
     assert canvas.img is not None
+
+
+def test_draw_highlights_the_selected_cell():
+    import numpy as np
+
+    from kungfu_chess.view.renderer import SELECTION_HIGHLIGHT_COLOR_BGRA
+
+    view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
+
+    canvas = Renderer().draw(view_state, cell_size=100, selected_position=Position(0, 1))
+
+    # top-left border pixel of the selected cell (0,1), at pixel (x=100, y=0)
+    assert tuple(canvas.img[0, 100]) == SELECTION_HIGHLIGHT_COLOR_BGRA
+    # deep in the interior of the non-selected cell (0,0) - never painted by the border
+    assert tuple(canvas.img[50, 50]) != SELECTION_HIGHLIGHT_COLOR_BGRA
+
+
+def test_draw_does_not_highlight_anything_when_no_cell_is_selected():
+    import numpy as np
+
+    from kungfu_chess.view.renderer import SELECTION_HIGHLIGHT_COLOR_BGRA
+
+    view_state = BoardViewState(width=1, height=1, game_over=False, pieces=())
+
+    canvas = Renderer().draw(view_state, cell_size=100, selected_position=None)
+
+    highlight = np.array(SELECTION_HIGHLIGHT_COLOR_BGRA, dtype=canvas.img.dtype)
+    assert not np.any(np.all(canvas.img == highlight, axis=-1))

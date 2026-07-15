@@ -96,6 +96,12 @@ class Img:
         self.img = cv2.merge([b, g, r, alpha])
         return self
 
+    def draw_rect(self, x: int, y: int, width: int, height: int, color, thickness: int = 3) -> None:
+        """מסגרת מלבן (לא מלא) - למשל להדגשת תא נבחר על הלוח."""
+        if self.img is None:
+            raise ValueError("Image not loaded.")
+        cv2.rectangle(self.img, (x, y), (x + width - 1, y + height - 1), color, thickness)
+
     def put_text(self, txt, x, y, font_size, color=(255, 255, 255, 255), thickness=1):
         if self.img is None:
             raise ValueError("Image not loaded.")
