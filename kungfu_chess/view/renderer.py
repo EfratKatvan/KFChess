@@ -67,6 +67,15 @@ def _draw_destination_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_si
     _blend_solid_rect(canvas, x, y, cell_size, cell_size, DESTINATION_HIGHLIGHT_COLOR_BGRA)
 
 
+def _cell_pixel_pos(position: Position, cell_size: int) -> Tuple[int, int]:
+    """הופכת תא לוגי לפיקסל על הקנבס המלא (כולל רצועת ה-HUD העליונה) -
+    נקודה יחידה שמיישמת את היסט ה-HUD, כדי שלא יהיו כמה עותקים של אותו
+    +HUD_HEIGHT מפוזרים ב-draw() (בדיוק סוג הכפילות שגרמה בעבר לפער בין
+    מיפוי הקליקים לרינדור בפועל)."""
+    x, y = BoardView.cell_to_pixel(position, cell_size)
+    return x, y + HUD_HEIGHT
+
+
 def _draw_centered_text(canvas: Img, text: str, center_x: int, center_y: int) -> None:
     """ממרכזת טקסט אופקית סביב center_x ואנכית סביב center_y - במקום לצייר
     מפינה קבועה, כדי שהניקוד יעמוד באמצע רצועת ה-HUD ולא יידבק לצד."""
@@ -134,9 +143,9 @@ class Renderer:
                 x, y = BoardView.lerp_pixel(
                     piece_view.position, piece_view.target_position, piece_view.progress, cell_size
                 )
+                pixel_pos = (x, y + HUD_HEIGHT)
             else:
-                x, y = BoardView.cell_to_pixel(piece_view.position, cell_size)
-            pixel_pos = (x, y + HUD_HEIGHT)
+                pixel_pos = _cell_pixel_pos(piece_view.position, cell_size)
 
             code = asset_code(piece_view.color, piece_view.kind)
             animation = self._animation_cache.load(code, piece_view.visual_state, cell_size, piece_set)
@@ -147,13 +156,11 @@ class Renderer:
                 _draw_cooldown_overlay(canvas, pixel_pos, piece_view.remaining_fraction, cell_size)
 
         if selected_position is not None:
-            x, y = BoardView.cell_to_pixel(selected_position, cell_size)
-            _draw_selection_highlight(canvas, (x, y + HUD_HEIGHT), cell_size)
+            _draw_selection_highlight(canvas, _cell_pixel_pos(selected_position, cell_size), cell_size)
 
         if legal_destinations is not None:
             for destination in legal_destinations:
-                x, y = BoardView.cell_to_pixel(destination, cell_size)
-                _draw_destination_highlight(canvas, (x, y + HUD_HEIGHT), cell_size)
+                _draw_destination_highlight(canvas, _cell_pixel_pos(destination, cell_size), cell_size)
 
         _draw_score_hud(canvas, view_state.scores, board_pixel_width, board_pixel_height)
 
