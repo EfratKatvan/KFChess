@@ -1,6 +1,6 @@
 from kungfu_chess.engine.board_view_state import build_board_view_state
 from kungfu_chess.model.board import Board
-from kungfu_chess.model.piece import Piece, WHITE, ROOK, KING
+from kungfu_chess.model.piece import Piece, WHITE, BLACK, ROOK, KING, QUEEN
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import LONG_REST, SHORT_REST, motion_duration_ms
 from kungfu_chess.realtime.real_time_arbiter import JUMP_DURATION_MS, RealTimeArbiter
@@ -21,6 +21,20 @@ def test_build_board_view_state_reports_board_dimensions_and_game_over():
     assert (view_state.width, view_state.height) == (2, 3)
     assert view_state.game_over is True
     assert view_state.pieces == ()
+    assert view_state.scores == {WHITE: 0, BLACK: 0}
+
+
+def test_build_board_view_state_reflects_the_arbiters_scores():
+    board = Board(width=3, height=1)
+    rook = add(board, "wR", WHITE, ROOK, 0, 0)
+    add(board, "bQ", BLACK, QUEEN, 0, 2)
+    arbiter = RealTimeArbiter(board)
+    arbiter.start_motion(rook, Position(0, 2))
+    arbiter.advance_time(2000)
+
+    view_state = build_board_view_state(board, arbiter, game_over=False, total_elapsed_ms=0)
+
+    assert view_state.scores == {WHITE: 9, BLACK: 0}
 
 
 def test_idle_piece_uses_idle_state_and_wall_clock_progress():

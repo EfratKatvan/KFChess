@@ -63,6 +63,33 @@ def test_arriving_piece_captures_enemy_piece():
     assert king_captured is False
 
 
+def test_capturing_a_piece_awards_its_point_value_to_the_capturer():
+    board = Board(width=3, height=1)
+    rook = add(board, "wR", WHITE, ROOK, 0, 0)
+    add(board, "bQ", BLACK, QUEEN, 0, 2)  # queen = 9 points
+    arbiter = RealTimeArbiter(board)
+    arbiter.start_motion(rook, Position(0, 2))
+
+    arbiter.advance_time(2000)
+
+    assert arbiter.scores == {WHITE: 9, BLACK: 0}
+
+
+def test_swallowing_an_attacker_mid_air_awards_points_to_the_jumper():
+    """מקביל ל-test_jump_saves_piece_from_arriving_enemy - הכלי הקופץ
+    (wK) "בולע" את התוקף (bR, 5 נקודות) בלי לנחות בפועל."""
+    board = Board(width=3, height=1)
+    add(board, "wK", WHITE, KING, 0, 0)
+    enemy = add(board, "bR", BLACK, ROOK, 0, 1)
+    arbiter = RealTimeArbiter(board)
+    arbiter.start_jump(Position(0, 0))
+    arbiter.start_motion(enemy, Position(0, 0))
+
+    arbiter.advance_time(1000)
+
+    assert arbiter.scores == {WHITE: 5, BLACK: 0}
+
+
 def test_a_piece_captured_mid_flight_does_not_resurrect_on_its_own_arrival():
     """bR מתחיל לרחף מ-(0,0) ל-(0,3) (3000ms). wR תוקף את (0,0) - תא-המקור
     של bR, לא היעד שלו - ומגיע קודם (1000ms). is_destination_reserved לא

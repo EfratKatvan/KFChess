@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from kungfu_chess.model.board import Board
-from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED
+from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED, WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import (
     JUMP_NEXT_STATE,
@@ -22,6 +22,7 @@ from kungfu_chess.rules.rule_engine import (
     PromotionRule,
     WinCondition,
 )
+from kungfu_chess.rules.scoring import piece_value
 
 JUMP_DURATION_MS = 1000
 COOLDOWN_DURATION_MS = 3000
@@ -58,6 +59,7 @@ class RealTimeArbiter:
         self._motions: List[Motion] = []
         self._jumps: List[Jump] = []
         self._cooldowns: List[Cooldown] = []
+        self._scores: Dict[str, int] = {WHITE: 0, BLACK: 0}
         self._win_condition = win_condition if win_condition is not None else KingCaptureWinCondition()
         self._promotion_rule = promotion_rule if promotion_rule is not None else LastRankPromotion()
 
@@ -72,6 +74,10 @@ class RealTimeArbiter:
     @property
     def cooldowns(self) -> List[Cooldown]:
         return list(self._cooldowns)
+
+    @property
+    def scores(self) -> Dict[str, int]:
+        return dict(self._scores)
 
     #אם התא הוא מקור או יעד של תנועה פעילה (קפיצות אינן נחשבות תפוסות) - True
     def is_cell_busy(self, position: Position) -> bool:
@@ -198,7 +204,11 @@ class RealTimeArbiter:
 
         #אם היעד באויר -היעד אוכל אותו
         if self.is_cell_airborne(to_pos):
-            # הכלי הנע "נבלע" באוויר - הכלי שקפץ נשאר במקומו
+            # הכלי הנע "נבלע" באוויר - הכלי שקפץ נשאר במקומו, ומקבל נקודות
+            # על השמדת הכלי שניסה לתקוף אותו (בדיוק כמו לכידה רגילה).
+            defender = self._board.piece_at(to_pos)
+            if defender is not None:
+                self._scores[defender.color] += piece_value(piece.kind)
             if self._board.piece_at(from_pos) is piece:
                 self._board.remove_piece(piece)
             return self._win_condition.is_game_over(piece)
@@ -213,6 +223,7 @@ class RealTimeArbiter:
         if captured is not None:
             self._board.remove_piece(captured)
             captured.state = CAPTURED
+            self._scores[piece.color] += piece_value(captured.kind)
 
         piece.cell = to_pos
         piece.state = IDLE

@@ -17,13 +17,15 @@ def test_asset_code_converts_color_kind_to_ctd26_order():
     assert asset_code(BLACK, KING) == "KB"
 
 
-def test_draw_returns_a_canvas_sized_to_the_board_in_pixels():
+def test_draw_returns_a_canvas_sized_to_the_board_plus_the_score_hud():
+    from kungfu_chess.view.renderer import HUD_HEIGHT
+
     view_state = BoardViewState(width=2, height=3, game_over=False, pieces=(make_piece_view(WHITE, ROOK, 0, 0),))
 
     canvas = Renderer().draw(view_state, cell_size=100)
 
     height, width = canvas.img.shape[:2]
-    assert (width, height) == (200, 300)
+    assert (width, height) == (200, 300 + 2 * HUD_HEIGHT)
 
 
 def test_draw_accepts_either_piece_set():
@@ -124,16 +126,16 @@ def test_draw_does_not_crash_for_a_piece_that_is_cooling_down():
 def test_draw_highlights_the_selected_cell():
     import numpy as np
 
-    from kungfu_chess.view.renderer import SELECTION_HIGHLIGHT_COLOR_BGRA
+    from kungfu_chess.view.renderer import HUD_HEIGHT, SELECTION_HIGHLIGHT_COLOR_BGRA
 
     view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
 
     canvas = Renderer().draw(view_state, cell_size=100, selected_position=Position(0, 1))
 
-    # top-left border pixel of the selected cell (0,1), at pixel (x=100, y=0)
-    assert tuple(canvas.img[0, 100]) == SELECTION_HIGHLIGHT_COLOR_BGRA
+    # top-left border pixel of the selected cell (0,1) - shifted down by the HUD strip
+    assert tuple(canvas.img[HUD_HEIGHT, 100]) == SELECTION_HIGHLIGHT_COLOR_BGRA
     # deep in the interior of the non-selected cell (0,0) - never painted by the border
-    assert tuple(canvas.img[50, 50]) != SELECTION_HIGHLIGHT_COLOR_BGRA
+    assert tuple(canvas.img[HUD_HEIGHT + 50, 50]) != SELECTION_HIGHLIGHT_COLOR_BGRA
 
 
 def test_draw_does_not_highlight_anything_when_no_cell_is_selected():
@@ -159,20 +161,23 @@ def test_draw_destination_highlight_tints_the_whole_cell():
     canvas.img = np.zeros((100, 100, 4), dtype=np.uint8)
     canvas.img[..., 3] = 255
 
-    _draw_destination_highlight(canvas, Position(0, 0), cell_size=100)
+    _draw_destination_highlight(canvas, (0, 0), cell_size=100)
 
     assert tuple(canvas.img[0, 0][:3]) != (0, 0, 0)      # corner: tinted
     assert tuple(canvas.img[99, 99][:3]) != (0, 0, 0)    # opposite corner: also tinted (whole cell, not a dot)
 
 
 def test_draw_marks_legal_destination_cells_by_tinting_them():
+    from kungfu_chess.view.renderer import HUD_HEIGHT
+
     view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
 
     baseline = Renderer().draw(view_state, cell_size=100, legal_destinations=None)
     highlighted = Renderer().draw(view_state, cell_size=100, legal_destinations=[Position(0, 1)])
 
-    assert tuple(highlighted.img[50, 150]) != tuple(baseline.img[50, 150])  # marked cell: changed
-    assert tuple(highlighted.img[50, 50]) == tuple(baseline.img[50, 50])    # other cell: untouched
+    row = HUD_HEIGHT + 50
+    assert tuple(highlighted.img[row, 150]) != tuple(baseline.img[row, 150])  # marked cell: changed
+    assert tuple(highlighted.img[row, 50]) == tuple(baseline.img[row, 50])    # other cell: untouched
 
 
 def test_draw_marks_nothing_when_no_destinations_are_given():
@@ -182,3 +187,23 @@ def test_draw_marks_nothing_when_no_destinations_are_given():
     with_empty = Renderer().draw(view_state, cell_size=100, legal_destinations=[])
 
     assert (with_none.img == with_empty.img).all()
+
+
+def test_draw_renders_a_different_score_hud_for_different_scores():
+    # wide enough board that the score text actually has room to render and differ
+    no_score = BoardViewState(width=8, height=1, game_over=False, pieces=(), scores={WHITE: 0, BLACK: 0})
+    with_score = BoardViewState(width=8, height=1, game_over=False, pieces=(), scores={WHITE: 9, BLACK: 3})
+
+    canvas_no_score = Renderer().draw(no_score, cell_size=100)
+    canvas_with_score = Renderer().draw(with_score, cell_size=100)
+
+    # the two HUD strips (top+bottom) must differ - the score text is different
+    assert not (canvas_no_score.img == canvas_with_score.img).all()
+
+
+def test_draw_hud_defaults_scores_to_zero_when_missing():
+    view_state = BoardViewState(width=1, height=1, game_over=False, pieces=())  # no scores passed
+
+    canvas = Renderer().draw(view_state, cell_size=100)  # must not raise
+
+    assert canvas.img is not None

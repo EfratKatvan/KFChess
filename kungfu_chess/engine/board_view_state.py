@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import IDLE as IDLE_STATE
@@ -45,6 +45,7 @@ class BoardViewState:
     height: int
     game_over: bool
     pieces: Tuple[PieceView, ...] = field(default_factory=tuple)
+    scores: Dict[str, int] = field(default_factory=dict)
 
 
 def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms: int) -> PieceView:
@@ -101,4 +102,7 @@ def build_board_view_state(
                 continue
             pieces.append(_resolve_piece_view(piece, arbiter, total_elapsed_ms))
 
-    return BoardViewState(width=board.width, height=board.height, game_over=game_over, pieces=tuple(pieces))
+    return BoardViewState(
+        width=board.width, height=board.height, game_over=game_over,
+        pieces=tuple(pieces), scores=arbiter.scores,
+    )
