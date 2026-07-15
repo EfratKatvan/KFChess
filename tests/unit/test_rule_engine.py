@@ -38,6 +38,17 @@ def test_move_from_outside_the_board_is_rejected():
     assert result.reason == REASON_OUTSIDE_BOARD
 
 
+def test_legal_destinations_matches_the_pieces_own_rule():
+    board = Board(width=3, height=1)
+    add(board, "wR", WHITE, ROOK, 0, 0)
+    assert RuleEngine(board).legal_destinations(Position(0, 0)) == {Position(0, 1), Position(0, 2)}
+
+
+def test_legal_destinations_is_empty_for_an_empty_cell():
+    board = Board(width=3, height=1)
+    assert RuleEngine(board).legal_destinations(Position(0, 0)) == set()
+
+
 def test_move_from_empty_source_is_rejected():
     board = Board(width=3, height=1)
     result = RuleEngine(board).validate_move(Position(0, 0), Position(0, 2))

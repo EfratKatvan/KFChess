@@ -72,7 +72,11 @@ def run(
 
             engine.wait(dt_ms)
             view_state = engine.snapshot()
-            canvas = frame_renderer.draw(view_state, cell_size, piece_set, selected_position=controller.selected_pos)
+            selected = controller.selected_pos
+            legal_destinations = engine.legal_destinations(selected) if selected is not None else None
+            canvas = frame_renderer.draw(
+                view_state, cell_size, piece_set, selected_position=selected, legal_destinations=legal_destinations
+            )
             key = canvas.show(WINDOW_NAME, wait_ms=TARGET_FRAME_MS)
 
             window_closed = cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1

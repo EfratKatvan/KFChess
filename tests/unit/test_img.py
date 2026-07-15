@@ -39,3 +39,12 @@ def test_draw_rect_paints_only_the_border_not_the_interior():
 
     assert tuple(img.img[0, 0]) == (255, 255, 255, 255)  # border pixel: painted
     assert tuple(img.img[5, 5]) == (0, 0, 0, 0)  # interior pixel: untouched
+
+
+def test_draw_circle_paints_the_center_and_leaves_the_corners_untouched():
+    img = make_img(np.zeros((10, 10, 4), dtype=np.uint8))
+
+    img.draw_circle(5, 5, radius=3, color=(0, 255, 0, 255))
+
+    assert tuple(img.img[5, 5]) == (0, 255, 0, 255)  # center: painted (filled by default)
+    assert tuple(img.img[0, 0]) == (0, 0, 0, 0)  # far corner: untouched

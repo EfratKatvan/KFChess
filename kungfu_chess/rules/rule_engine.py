@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, Optional, Protocol
+from typing import Dict, Optional, Protocol, Set
 
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.piece import KING, PAWN, QUEEN, WHITE, Piece
@@ -36,6 +36,20 @@ class RuleEngine:
         self._board = board
         self._piece_rules = piece_rules if piece_rules is not None else STANDARD_PIECE_RULES
         self._board_rules = board_rules if board_rules is not None else BoardRules()
+
+    def legal_destinations(self, from_pos: Position) -> Set[Position]:
+        """כל היעדים החוקיים לכלי בתא הזה, לפי חוקי סוג-הכלי בלבד (כמו
+        validate_move, אבל כל האפשרויות ביחד ולא בדיקת יעד בודד) - למשל
+        להדגשה ויזואלית של יעדים אפשריים אחרי בחירת כלי. לא בודק חסימות
+        זמן-אמת (מסלול/יעד תפוס) - זה תלוי-רגע ומשתנה כל הזמן, לא חלק
+        מ"מה שחוקי לפי חוקי השחמט"."""
+        piece = self._board.piece_at(from_pos)
+        if piece is None:
+            return set()
+        rule = self._piece_rules.get(piece.kind)
+        if rule is None:
+            return set()
+        return rule.legal_destinations(self._board, piece)
 
     def validate_move(self, from_pos: Position, to_pos: Position) -> MoveValidation:
         board_check = self._board_rules.check(self._board, from_pos, to_pos)

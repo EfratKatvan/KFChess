@@ -66,6 +66,25 @@ def test_snapshot_reflects_a_moving_piece_as_move_state():
 
 
 # ==========================================
+# legal_destinations - ליעדים אפשריים להדגשה ויזואלית אחרי בחירת כלי
+# ==========================================
+
+def test_legal_destinations_returns_the_pieces_legal_moves():
+    _, _, engine, _ = make_stack([["wR", ".", "."]])
+    assert engine.legal_destinations(Position(0, 0)) == {Position(0, 1), Position(0, 2)}
+
+
+def test_legal_destinations_is_empty_once_game_is_over():
+    _, controller, engine, _ = make_stack([["wR", "bK"]])
+    controller.handle_click(50, 50)
+    controller.handle_click(150, 50)
+    engine.wait(1000)
+    assert engine.is_game_over() is True
+
+    assert engine.legal_destinations(Position(0, 1)) == set()
+
+
+# ==========================================
 # שאילתות בסיסיות שה-Controller נשען עליהן (has_piece / is_same_color / can_select)
 # ==========================================
 

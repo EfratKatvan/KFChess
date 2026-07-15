@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Iterable, Optional
 
 import numpy as np
 
@@ -18,6 +18,10 @@ COOLDOWN_OVERLAY_COLOR_BGRA = (235, 206, 135, 120)
 # מסגרת זהובה - מדגישה את התא שנבחר כרגע (Controller.selected_pos).
 SELECTION_HIGHLIGHT_COLOR_BGRA = (0, 215, 255, 255)
 SELECTION_HIGHLIGHT_THICKNESS = 4
+
+# נקודה ירוקה - מסמנת תא-יעד אפשרי לכלי הנבחר (RuleEngine.legal_destinations).
+DESTINATION_MARKER_COLOR_BGRA = (60, 200, 60, 255)
+DESTINATION_MARKER_RADIUS_RATIO = 0.15
 
 
 def _draw_cooldown_overlay(canvas: Img, pixel_pos: tuple, remaining_fraction: float, cell_size: int) -> None:
@@ -39,6 +43,12 @@ def _draw_selection_highlight(canvas: Img, position: Position, cell_size: int) -
     canvas.draw_rect(x, y, cell_size, cell_size, SELECTION_HIGHLIGHT_COLOR_BGRA, SELECTION_HIGHLIGHT_THICKNESS)
 
 
+def _draw_destination_marker(canvas: Img, position: Position, cell_size: int) -> None:
+    x, y = BoardView.cell_to_pixel(position, cell_size)
+    radius = max(2, round(cell_size * DESTINATION_MARKER_RADIUS_RATIO))
+    canvas.draw_circle(x + cell_size // 2, y + cell_size // 2, radius, DESTINATION_MARKER_COLOR_BGRA)
+
+
 class Renderer:
     """מרכיבה רקע-לוח (BoardView) + פריים-אנימציה נכון לכל כלי
     (AnimationCache) לתוך Img אחד, לכל פריים - מ-BoardViewState בלבד
@@ -58,14 +68,16 @@ class Renderer:
         cell_size: int = CELL_SIZE,
         piece_set: str = DEFAULT_PIECE_SET,
         selected_position: Optional[Position] = None,
+        legal_destinations: Optional[Iterable[Position]] = None,
     ) -> Img:
         """מרנדרת פריים בודד: רקע הלוח + כל כלי בפריים/מיקום הנכונים לפי
         ה-visual_state הכבר-פתור שלו. לוגיקה טהורה - לא פותחת חלון ולא
         נוגעת בקלט, כדי שתהיה ניתנת לבדיקה ביחידה. piece_set בוחר בין
-        pieces1/pieces2 (ר' assets_config.PIECE_SETS). selected_position -
-        אם לא None, מצייר מסגרת הדגשה על התא הזה (Controller.selected_pos,
-        לא חלק מ-BoardViewState - זו בחירה בצד ה-view/קלט, לא state של
-        המשחק עצמו)."""
+        pieces1/pieces2 (ר' assets_config.PIECE_SETS). selected_position/
+        legal_destinations - לא חלק מ-BoardViewState (אלה בחירות/שאילתות
+        בצד ה-view/קלט, לא state של המשחק עצמו): selected_position מצייר
+        מסגרת הדגשה על התא הנבחר (Controller.selected_pos), legal_destinations
+        מצייר נקודה על כל יעד אפשרי (GameEngine.legal_destinations)."""
         canvas = self._board_view.new_canvas(view_state.width, view_state.height, cell_size)
 
         for piece_view in view_state.pieces:
@@ -86,5 +98,9 @@ class Renderer:
 
         if selected_position is not None:
             _draw_selection_highlight(canvas, selected_position, cell_size)
+
+        if legal_destinations is not None:
+            for destination in legal_destinations:
+                _draw_destination_marker(canvas, destination, cell_size)
 
         return canvas

@@ -147,3 +147,31 @@ def test_draw_does_not_highlight_anything_when_no_cell_is_selected():
 
     highlight = np.array(SELECTION_HIGHLIGHT_COLOR_BGRA, dtype=canvas.img.dtype)
     assert not np.any(np.all(canvas.img == highlight, axis=-1))
+
+
+def test_draw_marks_legal_destination_cells():
+    import numpy as np
+
+    from kungfu_chess.view.renderer import DESTINATION_MARKER_COLOR_BGRA
+
+    view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
+
+    canvas = Renderer().draw(view_state, cell_size=100, legal_destinations=[Position(0, 1)])
+
+    # center of the marked cell (0,1) -> painted with the marker color
+    assert tuple(canvas.img[50, 150]) == DESTINATION_MARKER_COLOR_BGRA
+    # center of the unmarked cell (0,0) -> not painted
+    assert tuple(canvas.img[50, 50]) != DESTINATION_MARKER_COLOR_BGRA
+
+
+def test_draw_marks_nothing_when_no_destinations_are_given():
+    import numpy as np
+
+    from kungfu_chess.view.renderer import DESTINATION_MARKER_COLOR_BGRA
+
+    view_state = BoardViewState(width=1, height=1, game_over=False, pieces=())
+
+    canvas = Renderer().draw(view_state, cell_size=100, legal_destinations=None)
+
+    marker = np.array(DESTINATION_MARKER_COLOR_BGRA, dtype=canvas.img.dtype)
+    assert not np.any(np.all(canvas.img == marker, axis=-1))

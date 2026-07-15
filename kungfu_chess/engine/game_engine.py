@@ -1,5 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from typing import Set
 
 from kungfu_chess.engine.board_view_state import BoardViewState, build_board_view_state
 from kungfu_chess.model.board import Board
@@ -58,6 +59,14 @@ class GameEngine:
         if self._state.game_over:
             return False
         return self.has_piece(position) and not self.is_busy(position) and not self.is_cooling_down(position)
+
+    def legal_destinations(self, position: Position) -> Set[Position]:
+        """כל היעדים שחוקיים לכלי בתא הזה לפי חוקי השחמט - למשל להדגשת
+        יעדים אפשריים אחרי בחירת כלי. לא בודק חסימות זמן-אמת (אלה תלויות-
+        רגע, לא "מה שהיה חוקי ברגע הבחירה")."""
+        if self._state.game_over:
+            return set()
+        return self._rules.legal_destinations(position)
 
     def request_move(self, from_pos: Position, to_pos: Position) -> MoveResult:
         """שערי היישום (game_over, motion_in_progress, cooling_down) קודם -
