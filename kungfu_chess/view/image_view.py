@@ -14,6 +14,7 @@ from kungfu_chess.view.renderer import Renderer
 WINDOW_NAME = "Kung Fu Chess"
 ESC_KEY = 27
 TARGET_FRAME_MS = 16
+PROCESS_PER_MONITOR_DPI_AWARE = 2
 
 
 def _disable_windows_dpi_scaling() -> None:
@@ -29,7 +30,7 @@ def _disable_windows_dpi_scaling() -> None:
     import ctypes
 
     try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+        ctypes.windll.shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
     except (AttributeError, OSError):
         try:
             ctypes.windll.user32.SetProcessDPIAware()
