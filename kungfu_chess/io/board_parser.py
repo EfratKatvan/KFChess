@@ -16,6 +16,14 @@ _KIND_BY_LETTER = {"K": KING, "Q": QUEEN, "R": ROOK, "B": BISHOP, "N": KNIGHT, "
 _LETTER_BY_COLOR = {color: letter for letter, color in _COLOR_BY_LETTER.items()}
 _LETTER_BY_KIND = {kind: letter for letter, kind in _KIND_BY_LETTER.items()}
 
+# ממופה מהטוקן השלם (לא ממיקום-תו בתוכו) - כדי שהמרת טוקן<->כלי לא תניח
+# איזה תו מייצג צבע ואיזה סוג-כלי, רק את הטוקן המלא כמפתח.
+_PIECE_BY_TOKEN = {
+    f"{color_letter}{kind_letter}": (color, kind)
+    for color_letter, color in _COLOR_BY_LETTER.items()
+    for kind_letter, kind in _KIND_BY_LETTER.items()
+}
+
 
 def build_legal_tokens() -> set[str]:
     tokens = {EMPTY_CELL}
@@ -27,11 +35,11 @@ def build_legal_tokens() -> set[str]:
 
 def token_to_piece(token: str, position: Position) -> Piece:
     """ממיר טוקן טקסטואלי כמו "wR" לכלי אמיתי במיקום הנתון."""
-    color_letter, kind_letter = token[0], token[1]
+    color, kind = _PIECE_BY_TOKEN[token]
     return Piece(
         id=f"{token}-{position.row}-{position.col}",
-        color=_COLOR_BY_LETTER[color_letter],
-        kind=_KIND_BY_LETTER[kind_letter],
+        color=color,
+        kind=kind,
         cell=position,
     )
 
