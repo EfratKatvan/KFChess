@@ -1,3 +1,4 @@
+from kungfu_chess.model.piece import WHITE
 from kungfu_chess.model.position import Position
 from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.io.board_printer import format_board
@@ -24,14 +25,15 @@ def row_tokens(board, row):
 
 
 # ==========================================
-# snapshot - תמונת מצב read-only ל-Renderer/BoardPrinter
+# snapshot - "לוח תצוגה" read-only (BoardViewState) ל-view, נפרד מ-Board
+# האמיתי - ר' engine/board_view_state.py
 # ==========================================
 
-def test_snapshot_reflects_the_live_board_and_game_over():
+def test_snapshot_reflects_the_board_dimensions_and_game_over():
     board, _, engine, _ = make_stack([["wR", "."]])
-    snapshot = engine.snapshot()
-    assert snapshot.board is board
-    assert snapshot.game_over is False
+    view_state = engine.snapshot()
+    assert (view_state.width, view_state.height) == (board.width, board.height)
+    assert view_state.game_over is False
 
 
 def test_snapshot_reflects_game_over_after_king_capture():
@@ -43,16 +45,24 @@ def test_snapshot_reflects_game_over_after_king_capture():
     assert engine.snapshot().game_over is True
 
 
-def test_snapshot_exposes_the_arbiters_realtime_state():
-    _, controller, engine, arbiter = make_stack([["wR", ".", "."]])
+def test_snapshot_exposes_a_piece_at_its_board_position():
+    _, _, engine, _ = make_stack([["wR", "."]])
+
+    [piece_view] = engine.snapshot().pieces
+
+    assert piece_view.position == Position(0, 0)
+    assert piece_view.color == WHITE
+
+
+def test_snapshot_reflects_a_moving_piece_as_move_state():
+    _, controller, engine, _ = make_stack([["wR", ".", "."]])
     controller.handle_click(50, 50)
     controller.handle_click(250, 50)
 
-    snapshot = engine.snapshot()
+    [piece_view] = engine.snapshot().pieces
 
-    assert snapshot.motions == arbiter.motions
-    assert snapshot.jumps == arbiter.jumps
-    assert snapshot.cooldowns == arbiter.cooldowns
+    assert piece_view.visual_state == "move"
+    assert piece_view.target_position == Position(0, 2)
 
 
 # ==========================================

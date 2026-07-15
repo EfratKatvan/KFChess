@@ -4,8 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
-from kungfu_chess.io.board_parser import piece_to_token
-from kungfu_chess.model.piece import Piece
+from kungfu_chess.io.board_parser import color_kind_to_token
 
 """קורא-נכסים משותף ל-view וגם ל-realtime - שתי השכבות צריכות מידע מאותם
 קבצי config.json של CTD26 (view: graphics.frames_per_sec/is_loop לרינדור,
@@ -35,10 +34,11 @@ def pieces_dir(piece_set: str) -> Path:
     return ASSETS_DIR / piece_set
 
 
-def asset_code(piece: Piece) -> str:
+def asset_code(color: str, kind: str) -> str:
     """הטוקן של הפרויקט הוא <color><KIND> (למשל "wP"), וב-CTD26 זה הפוך:
-    <KIND><COLOR> (למשל "PW")."""
-    token = piece_to_token(piece)
+    <KIND><COLOR> (למשל "PW"). מקבלת color/kind גולמיים (לא Piece שלם) -
+    כי גם PieceView (ר' engine/board_view_state.py) צריך לקרוא לזה."""
+    token = color_kind_to_token(color, kind)
     color_letter, kind_letter = token[0], token[1]
     return f"{kind_letter}{color_letter.upper()}"
 

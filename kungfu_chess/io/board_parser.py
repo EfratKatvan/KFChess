@@ -44,9 +44,16 @@ def token_to_piece(token: str, position: Position) -> Piece:
     )
 
 
+def color_kind_to_token(color: str, kind: str) -> str:
+    """בונה טוקן טקסטואלי (כמו "wR") מצבע+סוג-כלי גולמיים, בלי צורך
+    ב-Piece שלם - למשל עבור PieceView (ר' engine/board_view_state.py) שלא
+    מחזיק אובייקט Piece אמיתי."""
+    return f"{_LETTER_BY_COLOR[color]}{_LETTER_BY_KIND[kind]}"
+
+
 def piece_to_token(piece: Piece) -> str:
     """הכיוון ההפוך - כלי אמיתי בחזרה לטוקן הטקסטואלי שלו."""
-    return f"{_LETTER_BY_COLOR[piece.color]}{_LETTER_BY_KIND[piece.kind]}"
+    return color_kind_to_token(piece.color, piece.kind)
 
 
 def build_board(rows: list[list[str]]) -> Board:

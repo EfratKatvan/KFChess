@@ -1,9 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
+from kungfu_chess.engine.board_view_state import BoardViewState, build_board_view_state
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.game_state import GameState
-from kungfu_chess.model.game_snapshot import GameSnapshot
 from kungfu_chess.model.position import Position
 from kungfu_chess.rules.rule_engine import RuleEngine, REASON_OK
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
@@ -32,6 +32,7 @@ class GameEngine:
         self._state = GameState(board=board)
         self._rules = rule_engine
         self._arbiter = arbiter
+        self._total_elapsed_ms = 0
 
     def is_game_over(self) -> bool:
         return self._state.game_over
@@ -108,17 +109,19 @@ class GameEngine:
         return True
 
     def wait(self, time_ms: int) -> None:
+        self._total_elapsed_ms += time_ms
         if self._state.game_over:
             return
         if self._arbiter.advance_time(time_ms):
             self._state.game_over = True
 
-    def snapshot(self) -> GameSnapshot:
-        """תמונת-מצב read-only ל-Renderer/BoardPrinter."""
-        return GameSnapshot(
+    def snapshot(self) -> BoardViewState:
+        """תמונת-מצב read-only ל-view - "לוח תצוגה" נפרד מ-"לוח המשחק"
+        (Board האמיתי). לא חושף Board/Piece/Motion/Jump/Cooldown אמיתיים -
+        רק PieceView-ים מתורגמים (ר' engine/board_view_state.py)."""
+        return build_board_view_state(
             board=self._state.board,
+            arbiter=self._arbiter,
             game_over=self._state.game_over,
-            motions=self._arbiter.motions,
-            jumps=self._arbiter.jumps,
-            cooldowns=self._arbiter.cooldowns,
+            total_elapsed_ms=self._total_elapsed_ms,
         )

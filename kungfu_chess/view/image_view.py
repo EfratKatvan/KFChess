@@ -62,7 +62,6 @@ def run(
     cv2.setMouseCallback(WINDOW_NAME, lambda event, x, y, flags, param: _on_mouse(event, x, y, controller))
 
     frame_renderer = Renderer()
-    total_elapsed_ms = 0
     last_time = time.perf_counter()
 
     try:
@@ -70,11 +69,10 @@ def run(
             now = time.perf_counter()
             dt_ms = int((now - last_time) * 1000)
             last_time = now
-            total_elapsed_ms += dt_ms
 
             engine.wait(dt_ms)
-            snapshot = engine.snapshot()
-            canvas = frame_renderer.draw(snapshot, total_elapsed_ms, cell_size, piece_set)
+            view_state = engine.snapshot()
+            canvas = frame_renderer.draw(view_state, cell_size, piece_set)
             key = canvas.show(WINDOW_NAME, wait_ms=TARGET_FRAME_MS)
 
             window_closed = cv2.getWindowProperty(WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1
