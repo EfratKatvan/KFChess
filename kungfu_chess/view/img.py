@@ -109,6 +109,12 @@ class Img:
                     cv2.FONT_HERSHEY_SIMPLEX, font_size,
                     color, thickness, cv2.LINE_AA)
 
+    def text_size(self, txt, font_size, thickness=1) -> tuple[int, int]:
+        """(width, height) בפיקסלים שטקסט נתון יתפוס עם put_text - כדי
+        שאפשר יהיה למרכז אותו לפני הציור בפועל."""
+        (width, height), _baseline = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, font_size, thickness)
+        return width, height
+
     def show(self, window_name: str = "Image", wait_ms: int = 1) -> int:
         """מציג את התמונה בחלון cv2. wait_ms=1 (ברירת מחדל) לא חוסם - מתאים
         ללולאת רינדור בזמן-אמת. מחזיר את קוד המקש שנלחץ (cv2.waitKey).

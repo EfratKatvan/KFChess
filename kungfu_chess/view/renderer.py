@@ -29,7 +29,12 @@ DESTINATION_HIGHLIGHT_COLOR_BGRA = (60, 200, 60, 130)
 HUD_HEIGHT = 60
 HUD_BACKGROUND_COLOR_BGRA = (40, 40, 40, 255)
 HUD_TEXT_COLOR_BGRA = (255, 255, 255, 255)
-HUD_FONT_SIZE = 1.0
+HUD_FONT_SIZE = 0.9
+HUD_TEXT_THICKNESS = 2
+
+# קו מפריד דק בין רצועת ה-HUD ללוח עצמו - מבדיל ויזואלית בלי להיות בולט.
+HUD_DIVIDER_COLOR_BGRA = (90, 90, 90, 255)
+HUD_DIVIDER_THICKNESS = 2
 
 
 def _blend_solid_rect(canvas: Img, x: int, y: int, width: int, height: int, color_bgra) -> None:
@@ -62,14 +67,25 @@ def _draw_destination_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_si
     _blend_solid_rect(canvas, x, y, cell_size, cell_size, DESTINATION_HIGHLIGHT_COLOR_BGRA)
 
 
-def _draw_score_hud(canvas: Img, scores: Dict[str, int], board_pixel_height: int) -> None:
-    """"Black: X" ברצועה העליונה, "White: Y" ברצועה התחתונה - מחוץ ללוח
-    עצמו לגמרי, לא מצטייר מעל אף כלי."""
-    canvas.put_text(f"Black: {scores.get(BLACK, 0)}", 10, HUD_HEIGHT // 2 + 8, HUD_FONT_SIZE, HUD_TEXT_COLOR_BGRA)
-    canvas.put_text(
-        f"White: {scores.get(WHITE, 0)}", 10, HUD_HEIGHT + board_pixel_height + HUD_HEIGHT // 2 + 8,
-        HUD_FONT_SIZE, HUD_TEXT_COLOR_BGRA,
+def _draw_centered_text(canvas: Img, text: str, center_x: int, center_y: int) -> None:
+    """ממרכזת טקסט אופקית סביב center_x ואנכית סביב center_y - במקום לצייר
+    מפינה קבועה, כדי שהניקוד יעמוד באמצע רצועת ה-HUD ולא יידבק לצד."""
+    width, height = canvas.text_size(text, HUD_FONT_SIZE, HUD_TEXT_THICKNESS)
+    x = center_x - width // 2
+    y = center_y + height // 2
+    canvas.put_text(text, x, y, HUD_FONT_SIZE, HUD_TEXT_COLOR_BGRA, HUD_TEXT_THICKNESS)
+
+
+def _draw_score_hud(canvas: Img, scores: Dict[str, int], board_pixel_width: int, board_pixel_height: int) -> None:
+    """"Black: X" ברצועה העליונה, "White: Y" ברצועה התחתונה - ממורכזות
+    מעל רוחב הלוח (לא בצד), עם קו מפריד דק בינן לבין הלוח עצמו."""
+    center_x = board_pixel_width // 2
+    _draw_centered_text(canvas, f"Black: {scores.get(BLACK, 0)}", center_x, HUD_HEIGHT // 2)
+    _draw_centered_text(
+        canvas, f"White: {scores.get(WHITE, 0)}", center_x, HUD_HEIGHT + board_pixel_height + HUD_HEIGHT // 2,
     )
+    _blend_solid_rect(canvas, 0, HUD_HEIGHT - HUD_DIVIDER_THICKNESS, board_pixel_width, HUD_DIVIDER_THICKNESS, HUD_DIVIDER_COLOR_BGRA)
+    _blend_solid_rect(canvas, 0, HUD_HEIGHT + board_pixel_height, board_pixel_width, HUD_DIVIDER_THICKNESS, HUD_DIVIDER_COLOR_BGRA)
 
 
 class Renderer:
@@ -139,6 +155,6 @@ class Renderer:
                 x, y = BoardView.cell_to_pixel(destination, cell_size)
                 _draw_destination_highlight(canvas, (x, y + HUD_HEIGHT), cell_size)
 
-        _draw_score_hud(canvas, view_state.scores, board_pixel_height)
+        _draw_score_hud(canvas, view_state.scores, board_pixel_width, board_pixel_height)
 
         return canvas
