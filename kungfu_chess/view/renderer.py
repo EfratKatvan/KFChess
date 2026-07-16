@@ -7,7 +7,7 @@ import numpy as np
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET, asset_code
 from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, PieceView
 from kungfu_chess.input.board_mapper import CELL_SIZE
-from kungfu_chess.model.piece import WHITE, BLACK
+from kungfu_chess.model.piece import WHITE, BLACK, KING, QUEEN, ROOK, BISHOP, KNIGHT, PAWN
 from kungfu_chess.model.position import Position
 from kungfu_chess.view.animation import AnimationCache, frame_index
 from kungfu_chess.view.board_view import BoardView
@@ -225,6 +225,29 @@ def _format_elapsed(elapsed_ms: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
+# Pawn is intentionally absent - pawn moves have no piece letter in algebraic notation.
+_ALGEBRAIC_LETTER_BY_KIND = {KING: "K", QUEEN: "Q", ROOK: "R", BISHOP: "B", KNIGHT: "N"}
+
+
+def _move_notation(entry: MoveLogEntry, board_height: int) -> str:
+    """Simplified algebraic-style notation ("e4", "Nf3", "exd5") for the
+    move-log panel. Deliberately simplified vs standard chess SAN: no
+    check/checkmate suffix (this variant ends on a direct king capture,
+    not "check"), and no disambiguation between two same-kind pieces
+    that could both reach the same square - a display-only
+    simplification, not a full SAN replacement."""
+    dest = _square_name(entry.to_pos, board_height)
+
+    if entry.kind == PAWN:
+        if entry.is_capture:
+            source_file = chr(ord("a") + entry.from_pos.col)
+            return f"{source_file}x{dest}"
+        return dest
+
+    letter = _ALGEBRAIC_LETTER_BY_KIND[entry.kind]
+    return f"{letter}x{dest}" if entry.is_capture else f"{letter}{dest}"
+
+
 def _draw_side_panel(
     canvas: Img,
     x: int,
@@ -256,7 +279,7 @@ def _draw_side_panel(
     max_rows = max(0, (panel_height - SIDE_PANEL_ROWS_START_Y) // SIDE_PANEL_ROW_HEIGHT)
     for row_index, entry in enumerate(entries[-max_rows:] if max_rows else ()):
         row_y = SIDE_PANEL_ROWS_START_Y + row_index * SIDE_PANEL_ROW_HEIGHT
-        move_text = f"{_square_name(entry.from_pos, board_height)}-{_square_name(entry.to_pos, board_height)}"
+        move_text = _move_notation(entry, board_height)
         canvas.put_text(_format_elapsed(entry.elapsed_ms), time_column_x, row_y, SIDE_PANEL_ROW_FONT_SIZE, SIDE_PANEL_TEXT_COLOR_BGRA, SIDE_PANEL_ROW_THICKNESS)
         canvas.put_text(move_text, move_column_x, row_y, SIDE_PANEL_ROW_FONT_SIZE, SIDE_PANEL_TEXT_COLOR_BGRA, SIDE_PANEL_ROW_THICKNESS)
 

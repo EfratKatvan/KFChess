@@ -352,15 +352,41 @@ def test_draw_paints_the_game_over_button_at_its_own_reported_rect():
 
 def test_draw_side_panel_renders_a_move_log_entry():
     from kungfu_chess.engine.board_view_state import MoveLogEntry
-    from kungfu_chess.model.piece import WHITE
+    from kungfu_chess.model.piece import WHITE, PAWN
 
     no_moves = BoardViewState(width=8, height=8, game_over=False, pieces=(), move_log={WHITE: ()})
     with_move = BoardViewState(
         width=8, height=8, game_over=False, pieces=(),
-        move_log={WHITE: (MoveLogEntry(elapsed_ms=1000, from_pos=Position(6, 4), to_pos=Position(4, 4)),)},
+        move_log={WHITE: (MoveLogEntry(
+            elapsed_ms=1000, from_pos=Position(6, 4), to_pos=Position(4, 4), kind=PAWN, is_capture=False,
+        ),)},
     )
 
     canvas_no_moves = Renderer().draw(no_moves, cell_size=100)
     canvas_with_move = Renderer().draw(with_move, cell_size=100)
 
     assert not (canvas_no_moves.img == canvas_with_move.img).all()
+
+
+def test_move_notation_formats_pawn_moves_without_a_piece_letter():
+    from kungfu_chess.engine.board_view_state import MoveLogEntry
+    from kungfu_chess.model.piece import PAWN
+    from kungfu_chess.view.renderer import _move_notation
+
+    quiet = MoveLogEntry(elapsed_ms=0, from_pos=Position(6, 4), to_pos=Position(4, 4), kind=PAWN, is_capture=False)
+    capture = MoveLogEntry(elapsed_ms=0, from_pos=Position(4, 4), to_pos=Position(3, 3), kind=PAWN, is_capture=True)
+
+    assert _move_notation(quiet, board_height=8) == "e4"
+    assert _move_notation(capture, board_height=8) == "exd5"
+
+
+def test_move_notation_formats_piece_moves_with_a_letter():
+    from kungfu_chess.engine.board_view_state import MoveLogEntry
+    from kungfu_chess.model.piece import KNIGHT, QUEEN
+    from kungfu_chess.view.renderer import _move_notation
+
+    knight_move = MoveLogEntry(elapsed_ms=0, from_pos=Position(7, 6), to_pos=Position(5, 5), kind=KNIGHT, is_capture=False)
+    queen_capture = MoveLogEntry(elapsed_ms=0, from_pos=Position(4, 4), to_pos=Position(0, 4), kind=QUEEN, is_capture=True)
+
+    assert _move_notation(knight_move, board_height=8) == "Nf3"
+    assert _move_notation(queen_capture, board_height=8) == "Qxe8"

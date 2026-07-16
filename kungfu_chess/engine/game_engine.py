@@ -104,8 +104,11 @@ class GameEngine:
         if self._arbiter.is_destination_reserved(piece.color, actual_to):
             return MoveResult(is_accepted=False, reason=REASON_DESTINATION_RESERVED)
 
+        is_capture = self._state.board.piece_at(actual_to) is not None
         self._arbiter.start_motion(piece, actual_to)
-        self._move_log[piece.color].append(MoveLogEntry(self._total_elapsed_ms, from_pos, actual_to))
+        self._move_log[piece.color].append(
+            MoveLogEntry(self._total_elapsed_ms, from_pos, actual_to, piece.kind, is_capture)
+        )
         return MoveResult(is_accepted=True, reason=REASON_OK)
 
     def try_jump(self, position: Position) -> bool:

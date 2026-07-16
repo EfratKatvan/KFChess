@@ -38,11 +38,19 @@ class PieceView:
 
 @dataclass(frozen=True)
 class MoveLogEntry:
-    """A single completed move request, for the per-team move-log panel."""
+    """A single completed move request, for the per-team move-log panel.
+    kind/is_capture are the moving piece's kind and whether the
+    destination was occupied by an enemy *at request time* - enough for
+    view/renderer.py to format algebraic-style notation ("e4", "Nxf3")
+    without needing to look anything up itself. Since this is real-time
+    (not turn-based), is_capture reflects the attempt, not a guaranteed
+    outcome - the target may still flee before the motion lands."""
 
     elapsed_ms: int
     from_pos: Position
     to_pos: Position
+    kind: str
+    is_capture: bool
 
 
 @dataclass(frozen=True)
