@@ -70,7 +70,8 @@ def run(
             selected = controller.selected_pos
             legal_destinations = engine.legal_destinations(selected) if selected is not None else None
             canvas = frame_renderer.draw(
-                view_state, cell_size, piece_set, selected_position=selected, legal_destinations=legal_destinations
+                view_state, cell_size, piece_set, selected_position=selected, legal_destinations=legal_destinations,
+                invalid_target=controller.invalid_target,
             )
             key = canvas.show(WINDOW_NAME, wait_ms=TARGET_FRAME_MS)
 

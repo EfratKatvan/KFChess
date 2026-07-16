@@ -5,7 +5,7 @@ from typing import Iterable, Optional, Tuple
 import numpy as np
 
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET, asset_code
-from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry
+from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, PieceView
 from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.model.position import Position
@@ -22,6 +22,23 @@ SELECTION_HIGHLIGHT_THICKNESS = 4
 
 # Semi-transparent green - fills every legal destination cell for the selected piece (RuleEngine.legal_destinations).
 DESTINATION_HIGHLIGHT_COLOR_BGRA = (60, 200, 60, 130)
+
+# Semi-transparent red - fills a legal destination cell that also holds a capturable enemy piece.
+CAPTURE_HIGHLIGHT_COLOR_BGRA = (50, 50, 220, 150)
+
+# Red border - flashes on a cell the player clicked as a move target while
+# it was actually illegal for the selected piece (not just switching
+# selection to another friendly piece, which isn't an error).
+INVALID_TARGET_HIGHLIGHT_COLOR_BGRA = (0, 0, 255, 255)
+INVALID_TARGET_HIGHLIGHT_THICKNESS = 4
+
+# Bold white text over a dimmed band across the board once the game ends.
+GAME_OVER_TEXT = "GAME OVER"
+GAME_OVER_TEXT_COLOR_BGRA = (255, 255, 255, 255)
+GAME_OVER_FONT_SIZE = 2.0
+GAME_OVER_THICKNESS = 4
+GAME_OVER_BAND_HEIGHT = 90
+GAME_OVER_BAND_COLOR_BGRA = (20, 20, 20, 190)
 
 # Side panels flanking the board - one per team, with the running score
 # and a chronological move log (BoardViewState.scores / move_log).
@@ -71,14 +88,38 @@ def _draw_cooldown_overlay(canvas: Img, pixel_pos: Tuple[int, int], remaining_fr
     _blend_solid_rect(canvas, x, y + (cell_size - overlay_height), cell_size, overlay_height, COOLDOWN_OVERLAY_COLOR_BGRA)
 
 
+def _draw_border_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_size: int, color_bgra, thickness: int) -> None:
+    x, y = pixel_pos
+    canvas.draw_rect(x, y, cell_size, cell_size, color_bgra, thickness)
+
+
 def _draw_selection_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_size: int) -> None:
-    x, y = pixel_pos
-    canvas.draw_rect(x, y, cell_size, cell_size, SELECTION_HIGHLIGHT_COLOR_BGRA, SELECTION_HIGHLIGHT_THICKNESS)
+    _draw_border_highlight(canvas, pixel_pos, cell_size, SELECTION_HIGHLIGHT_COLOR_BGRA, SELECTION_HIGHLIGHT_THICKNESS)
 
 
-def _draw_destination_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_size: int) -> None:
+def _draw_invalid_target_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_size: int) -> None:
+    _draw_border_highlight(canvas, pixel_pos, cell_size, INVALID_TARGET_HIGHLIGHT_COLOR_BGRA, INVALID_TARGET_HIGHLIGHT_THICKNESS)
+
+
+def _draw_destination_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_size: int, color_bgra=DESTINATION_HIGHLIGHT_COLOR_BGRA) -> None:
     x, y = pixel_pos
-    _blend_solid_rect(canvas, x, y, cell_size, cell_size, DESTINATION_HIGHLIGHT_COLOR_BGRA)
+    _blend_solid_rect(canvas, x, y, cell_size, cell_size, color_bgra)
+
+
+def _piece_at(view_state: BoardViewState, position: Position) -> Optional[PieceView]:
+    for piece_view in view_state.pieces:
+        if piece_view.position == position:
+            return piece_view
+    return None
+
+
+def _draw_game_over_overlay(canvas: Img, board_x: int, board_pixel_width: int, board_pixel_height: int) -> None:
+    band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
+    _blend_solid_rect(canvas, board_x, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, GAME_OVER_BAND_COLOR_BGRA)
+    _draw_centered_text(
+        canvas, GAME_OVER_TEXT, board_x + board_pixel_width // 2, band_y + GAME_OVER_BAND_HEIGHT // 2,
+        GAME_OVER_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_THICKNESS,
+    )
 
 
 def _cell_pixel_pos(position: Position, cell_size: int) -> Tuple[int, int]:
@@ -169,6 +210,7 @@ class Renderer:
         piece_set: str = DEFAULT_PIECE_SET,
         selected_position: Optional[Position] = None,
         legal_destinations: Optional[Iterable[Position]] = None,
+        invalid_target: Optional[Position] = None,
     ) -> Img:
         """Pure logic - opens no window and never touches input, so it
         stays unit-testable. selected_position/legal_destinations are
@@ -206,8 +248,20 @@ class Renderer:
             _draw_selection_highlight(canvas, _cell_pixel_pos(selected_position, cell_size), cell_size)
 
         if legal_destinations is not None:
+            selected_piece = _piece_at(view_state, selected_position) if selected_position is not None else None
             for destination in legal_destinations:
-                _draw_destination_highlight(canvas, _cell_pixel_pos(destination, cell_size), cell_size)
+                occupant = _piece_at(view_state, destination)
+                is_capturable = (
+                    occupant is not None and selected_piece is not None and occupant.color != selected_piece.color
+                )
+                color_bgra = CAPTURE_HIGHLIGHT_COLOR_BGRA if is_capturable else DESTINATION_HIGHLIGHT_COLOR_BGRA
+                _draw_destination_highlight(canvas, _cell_pixel_pos(destination, cell_size), cell_size, color_bgra)
+
+        if invalid_target is not None:
+            _draw_invalid_target_highlight(canvas, _cell_pixel_pos(invalid_target, cell_size), cell_size)
+
+        if view_state.game_over:
+            _draw_game_over_overlay(canvas, SIDE_PANEL_WIDTH, board_pixel_width, board_pixel_height)
 
         _draw_side_panel(
             canvas, 0, board_pixel_height, "Black",

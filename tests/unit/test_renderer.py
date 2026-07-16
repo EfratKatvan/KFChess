@@ -208,6 +208,80 @@ def test_draw_side_panels_default_scores_to_zero_when_missing():
     assert canvas.img is not None
 
 
+def test_draw_destination_highlight_accepts_a_custom_color():
+    import numpy as np
+
+    from kungfu_chess.view.img import Img
+    from kungfu_chess.view.renderer import _draw_destination_highlight, CAPTURE_HIGHLIGHT_COLOR_BGRA, DESTINATION_HIGHLIGHT_COLOR_BGRA
+
+    green_canvas = Img()
+    green_canvas.img = np.zeros((100, 100, 4), dtype=np.uint8)
+    green_canvas.img[..., 3] = 255
+    _draw_destination_highlight(green_canvas, (0, 0), cell_size=100)  # default color
+
+    red_canvas = Img()
+    red_canvas.img = np.zeros((100, 100, 4), dtype=np.uint8)
+    red_canvas.img[..., 3] = 255
+    _draw_destination_highlight(red_canvas, (0, 0), cell_size=100, color_bgra=CAPTURE_HIGHLIGHT_COLOR_BGRA)
+
+    assert not (green_canvas.img == red_canvas.img).all()
+    assert DESTINATION_HIGHLIGHT_COLOR_BGRA != CAPTURE_HIGHLIGHT_COLOR_BGRA
+
+
+def test_draw_tints_a_capturable_destination_differently_than_an_empty_one():
+    """Identical board (same attacker, same enemy pawn sitting on the
+    requested destination) in both calls - the only difference is
+    whether a piece is selected, which is what decides "capturable" in
+    draw(). Comparing only the destination cell (0,1)'s own pixels -
+    not (0,0), which also gets a selection border in the second call -
+    isolates the highlight color from that unrelated difference."""
+    import numpy as np
+
+    from kungfu_chess.view.renderer import SIDE_PANEL_WIDTH
+
+    attacker = make_piece_view(WHITE, ROOK, 0, 0)
+    defender = make_piece_view(BLACK, PAWN, 0, 1)
+    view_state = BoardViewState(width=2, height=1, game_over=False, pieces=(attacker, defender))
+
+    canvas_unselected = Renderer().draw(view_state, cell_size=100, selected_position=None, legal_destinations=[Position(0, 1)])
+    canvas_selected = Renderer().draw(view_state, cell_size=100, selected_position=Position(0, 0), legal_destinations=[Position(0, 1)])
+
+    destination_cell = np.s_[0:100, SIDE_PANEL_WIDTH + 100:SIDE_PANEL_WIDTH + 200]
+    assert not (canvas_unselected.img[destination_cell] == canvas_selected.img[destination_cell]).all()
+
+
+def test_draw_highlights_an_invalid_target_in_red():
+    from kungfu_chess.view.renderer import SIDE_PANEL_WIDTH, INVALID_TARGET_HIGHLIGHT_COLOR_BGRA
+
+    view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
+
+    canvas = Renderer().draw(view_state, cell_size=100, invalid_target=Position(0, 1))
+
+    assert tuple(canvas.img[0, SIDE_PANEL_WIDTH + 100]) == INVALID_TARGET_HIGHLIGHT_COLOR_BGRA
+
+
+def test_draw_does_not_highlight_an_invalid_target_when_there_is_none():
+    from kungfu_chess.view.renderer import INVALID_TARGET_HIGHLIGHT_COLOR_BGRA
+    import numpy as np
+
+    view_state = BoardViewState(width=1, height=1, game_over=False, pieces=())
+
+    canvas = Renderer().draw(view_state, cell_size=100, invalid_target=None)
+
+    highlight = np.array(INVALID_TARGET_HIGHLIGHT_COLOR_BGRA, dtype=canvas.img.dtype)
+    assert not np.any(np.all(canvas.img == highlight, axis=-1))
+
+
+def test_draw_shows_a_game_over_overlay_once_the_game_ends():
+    playing = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    ended = BoardViewState(width=8, height=8, game_over=True, pieces=())
+
+    canvas_playing = Renderer().draw(playing, cell_size=100)
+    canvas_ended = Renderer().draw(ended, cell_size=100)
+
+    assert not (canvas_playing.img == canvas_ended.img).all()
+
+
 def test_draw_side_panel_renders_a_move_log_entry():
     from kungfu_chess.engine.board_view_state import MoveLogEntry
     from kungfu_chess.model.piece import WHITE
