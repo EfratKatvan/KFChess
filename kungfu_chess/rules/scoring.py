@@ -9,7 +9,7 @@ PIECE_VALUES: Dict[str, int] = {
     BISHOP: 3,
     ROOK: 5,
     QUEEN: 9,
-    KING: 0,  # לכידת מלך מסיימת את המשחק - אין טעם לנקד אותה
+    KING: 0,  # capturing a king ends the game - no point scoring it
 }
 
 

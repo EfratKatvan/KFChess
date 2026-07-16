@@ -30,8 +30,9 @@ SHORT_REST_DURATION_MS = 3000
 
 
 def _active_trajectory(motion: Motion) -> Optional[Trajectory]:
-    """בונה את ה-Trajectory הנוכחי של תנועה פעילה - None אם היא לא ישרה
-    (קפיצת-L של סוס, שאין לה מסלול רציף להתנגש עליו)."""
+    """Builds the current Trajectory of an active motion - None if it's
+    not straight (a knight's L-jump, which has no continuous path to
+    collide along)."""
     source = motion.piece.cell
     if not is_straight_line(source, motion.to_pos):
         return None
@@ -41,12 +42,15 @@ def _active_trajectory(motion: Motion) -> Optional[Trajectory]:
 
 
 class RealTimeArbiter:
-    """מנהל את התנועות והקפיצות הפעילות, ומקדם אותן עם חלוף הזמן.
+    """Manages the active motions and jumps, and advances them as time
+    passes.
 
-    לוגיקת ההגעה, הלכידה וזיהוי לכידת-מלך זהה 1:1 להתנהגות שהייתה קודם
-    ב-GameController._handle_wait, כולל העצירה המיידית של כל שאר העיבוד
-    (ודילוג על עדכון הקפיצות) ברגע שנלכד מלך. מה מסיים משחק (WinCondition)
-    ומה קורה בהגעה ליעד (PromotionRule) ניתנים להחלפה מבחוץ.
+    Arrival, capture, and king-capture-detection logic matches 1:1 the
+    behavior that used to live in GameController._handle_wait, including
+    the immediate stop of all further processing (and skipping the jump
+    update) the moment a king is captured. What ends the game
+    (WinCondition) and what happens on arrival (PromotionRule) are
+    swappable from outside.
     """
 
     def __init__(
@@ -79,35 +83,36 @@ class RealTimeArbiter:
     def scores(self) -> Dict[str, int]:
         return dict(self._scores)
 
-    #אם הכלי שיושב כרגע בתא הזה (אם יש) כבר באמצע תנועה משלו - True
     def is_piece_in_motion(self, position: Position) -> bool:
-        """True רק אם הכלי שיושב כרגע ב-position כבר באמצע תנועה משלו -
-        ואי אפשר לבחור/להזיז/לקפוץ בו שוב עד שהוא מגיע. במתכוון *לא* בודק
-        אם position הוא יעד של תנועה נכנסת של כלי אחר: כלי שרק מותקף
-        (עדיין לא זז בעצמו) חייב להישאר ניתן לבחירה כדי שאפשר יהיה לברוח
-        איתו לפני שהתוקף נוחת - ר' _resolve_arrival, שכבר תומך בכלי-קורבן
-        שברח בזמן."""
+        """True only if the piece currently sitting at position is
+        already mid-motion itself - and can't be selected/moved/jumped
+        again until it arrives. Intentionally does *not* check whether
+        position is the destination of an incoming motion by another
+        piece: a piece that's merely under attack (hasn't itself moved
+        yet) must remain selectable so it can flee before the attacker
+        lands - see _resolve_arrival, which already supports a victim
+        piece that fled in time."""
         return any(m.piece.cell == position for m in self._motions)
 
-    #אם התא הוא יעד של תנועה פעילה של כלי מאותו צבע - True (כלים מנוגדי-צבע
-    #כן יכולים להתחרות על אותו יעד - ר' advance_time; מי שמגיע מאוחר יותר אוכל את מי שהגיע קודם)
+    # Opposite-color pieces CAN compete for the same destination - see
+    # advance_time; whoever arrives later eats whoever arrived earlier.
     def is_destination_reserved(self, color: str, position: Position) -> bool:
         return any(m.to_pos == position and m.piece.color == color for m in self._motions)
 
-    #אם התא הוא יעד של קפיצה פעילה (קפיצות אינן נחשבות תפוסות) - True
+    # Jumps aren't counted as busy (is_piece_in_motion) - they have their own immunity check.
     def is_cell_airborne(self, position: Position) -> bool:
         return any(j.position == position and j.remaining_ms > 0 for j in self._jumps)
 
-    #אם כלי נחת בתא הזה לאחרונה ועדיין בתוך חלון הקירור - True (אי אפשר לבחור אותו/להזיז אותו עד שזה נגמר)
     def is_cell_cooling_down(self, position: Position) -> bool:
         return any(c.position == position and c.remaining_ms > 0 for c in self._cooldowns)
 
-    #בדיקה האם בטווח תנועה  של מסלול יש מפגש עם כלי בצבע מנוגד, כך ששני הכלים יהיו באותו מקום באותו זמן (מודל רציף בזמן - ר' realtime/motion.py).
     def has_route_conflict(self, color: str, from_pos: Position, to_pos: Position) -> bool:
-        """True אם כלי בצבע מנוגד כבר בתנועה כרגע, ושני הכלים יהיו באותה
-        נקודה בדיוק באותו רגע (מודל רציף בזמן - ר' realtime/motion.py),
-        לא רק אם המסלולים חוצים את אותו תא. כלים באותו צבע לא נחסמים
-        זה מזה. תנועות לא-ישרות (קפיצת סוס) פטורות - אין להן מסלול רציף."""
+        """True if an opposite-color piece is already in motion right
+        now, and both pieces would be at the exact same point at the
+        exact same moment (a continuous-time model - see
+        realtime/motion.py), not just if the paths cross the same cell.
+        Same-color pieces never block each other. Non-straight motions
+        (a knight's jump) are exempt - they have no continuous path."""
         if not is_straight_line(from_pos, to_pos):
             return False
 
@@ -121,19 +126,15 @@ class RealTimeArbiter:
             if active is None:
                 continue
 
-            #בדיקה אם שתי הכלים יפגשו באותו תע בו זמנית
             if trajectories_collide(requested, active):
                 return True
 
         return False
 
     def truncated_destination(self, color: str, from_pos: Position, to_pos: Position) -> Optional[Position]:
-        """אם המהלך המבוקש היה מתנגש (באותה נקודה ובאותו רגע) עם תנועה
-        פעילה של כלי מאותו צבע, מחזירה יעד מקוצר - תא אחד לפני נקודת
-        ההתנגשות לאורך אותו כיוון (הכלי "נתקע" שם במקום להמשיך). אם כמה
-        התנגשויות אפשריות, בוחרת את הקרובה ביותר למקור. אם ההתנגשות
-        קורית כבר בצעד הראשון, מחזירה None (אין יעד חוקי בכיוון הזה).
-        אחרת מחזירה את היעד המקורי ללא שינוי."""
+        """If several collisions are possible, picks the closest one to
+        the source - that's the first one the piece would actually get
+        stuck at."""
         if not is_straight_line(from_pos, to_pos):
             return to_pos
 
@@ -155,7 +156,6 @@ class RealTimeArbiter:
         if not cutoffs:
             return to_pos
         
-        #אם יש כמה התנגשות אפשריות, בוחרת את הקרובה ביותר למקור. אם ההתנגשות
         closest = min(cutoffs, key=lambda c: max(abs(c.row - from_pos.row), abs(c.col - from_pos.col)))
         return None if closest == from_pos else closest
 
@@ -169,13 +169,16 @@ class RealTimeArbiter:
         self._jumps.append(Jump(position, JUMP_DURATION_MS))
 
     def advance_time(self, time_ms: int) -> bool:
-        """מקדם את הזמן ב-time_ms. מחזיר True אם מלך נלכד בסיבוב הזה.
-        מעבד תנועות שמסתיימות באותו tick לפי סדר הגעה כרונולוגי (מי
-        שהיה לו פחות remaining_ms מגיע קודם) - כדי שאם שני כלים מגיעים
-        לאותו יעד באותו tick, זה שממתין קודם כבר יושב שם כשהשני מגיע
-        (ואז נלכד באופן טבעי דרך לכידה רגילה, לא לוגיקה נפרדת). מקדמת את
-        הקירורים הקיימים *לפני* עיבוד ההגעות - כדי שקירור חדש שנוצר
-        כתוצאה מהגעה באותו tick לא יקוצץ מיד באותה קריאה."""
+        """Advances time by time_ms. Returns True if a king was captured
+        this round. Processes motions that finish on the same tick in
+        chronological arrival order (whoever had less remaining_ms
+        arrives first) - so if two pieces arrive at the same destination
+        on the same tick, whoever gets there first is already sitting
+        there when the second one arrives (and then gets captured
+        naturally through ordinary capture logic, not separate handling).
+        Advances existing cooldowns *before* processing arrivals - so a
+        cooldown newly created by an arrival on this same tick isn't
+        immediately trimmed within the same call."""
         self._advance_cooldowns(time_ms)
 
         new_motions: List[Motion] = []
@@ -194,23 +197,26 @@ class RealTimeArbiter:
         return False
 
     def _resolve_arrival(self, motion: Motion) -> bool:
-        """מיישם הגעה של כלי ליעדו. מחזיר True אם מלך נלכד (כולל לכידת-אוויר)."""
+        """Returns True if a king was captured - including an airborne
+        capture, not just a normal landing."""
         piece = motion.piece
 
         if piece.state == CAPTURED:
-            # הכלי כבר נלכד במקום אחר (למשל: כלי אויב תקף בהצלחה את תא-המקור
-            # שלו בזמן שהוא עדיין "ריחף" משם - is_destination_reserved לא
-            # מגן על זה, כי הוא בודק רק יעדים של תנועות אחרות, לא מקורות).
-            # התנועה שלו מתבטלת - אין מה להנחית כלי שכבר לא קיים.
+            # The piece was already captured elsewhere (e.g. an enemy
+            # piece successfully attacked its source cell while it was
+            # still "in flight" from there - is_destination_reserved
+            # doesn't protect against this, since it only checks other
+            # motions' destinations, not sources). Its motion is
+            # cancelled - there's nothing to land, the piece no longer exists.
             return False
 
         from_pos = piece.cell
         to_pos = motion.to_pos
 
-        #אם היעד באויר -היעד אוכל אותו
         if self.is_cell_airborne(to_pos):
-            # הכלי הנע "נבלע" באוויר - הכלי שקפץ נשאר במקומו, ומקבל נקודות
-            # על השמדת הכלי שניסה לתקוף אותו (בדיוק כמו לכידה רגילה).
+            # The moving piece is "swallowed" mid-air - the piece that
+            # jumped stays in place, and gets points for destroying the
+            # piece that tried to attack it (just like an ordinary capture).
             defender = self._board.piece_at(to_pos)
             if defender is not None:
                 self._scores[defender.color] += piece_value(piece.kind)
@@ -220,8 +226,9 @@ class RealTimeArbiter:
 
         captured = self._board.piece_at(to_pos)
 
-        # מפנים את תא המקור רק אם הכלי עדיין באמת שם (יכול היה כבר להילכד
-        # שם ע"י מהלך אחר שהסתיים באותו tick - ר' realtime/motion.py)
+        # Vacate the source cell only if the piece is actually still
+        # there (it could have already been captured there by another
+        # motion that finished on the same tick - see realtime/motion.py)
         if self._board.piece_at(from_pos) is piece:
             self._board.remove_piece(piece)
 

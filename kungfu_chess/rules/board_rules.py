@@ -16,9 +16,10 @@ class BoardCheck:
 
 
 class BoardRules:
-    """חוקיות ברמת הלוח בלבד: גבולות ותפוסה - בלי שום ידיעה על צורת-התנועה
-    של כלי ספציפי. נפרדת מ-RuleEngine (piece_rules) כדי ששתי האחריויות
-    ייקראו, ייבדקו ויוחלפו בנפרד."""
+    """Board-level legality only: bounds and occupancy - no knowledge of
+    any specific piece's movement shape. Kept separate from RuleEngine
+    (piece_rules) so the two responsibilities can be read, tested, and
+    replaced independently."""
 
     def check(self, board: Board, from_pos: Position, to_pos: Position) -> BoardCheck:
         if not board.is_inside(from_pos) or not board.is_inside(to_pos):

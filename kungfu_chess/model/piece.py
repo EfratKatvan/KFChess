@@ -20,9 +20,9 @@ CAPTURED = "captured"
 
 @dataclass
 class Piece:
-    """כלי שחמט. id הוא זהות קבועה שלא משתנה - זה מה שמבדיל בין Piece
-    למחרוזת "wR": שני כלים לבנים שונים הם שני אובייקטים שונים, גם אם
-    color/kind זהים ביניהם."""
+    """A chess piece. id is a stable identity that never changes - what
+    distinguishes a Piece from a string like "wR": two different white
+    pieces are two different objects, even if their color/kind match."""
 
     id: str
     color: str

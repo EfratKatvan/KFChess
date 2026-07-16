@@ -6,17 +6,19 @@ from kungfu_chess.model.piece import Piece
 
 
 class CellOccupiedError(Exception):
-    """נזרקת כשמנסים להוסיף כלי לתא שכבר תפוס ע"י כלי אחר."""
+    """Raised when trying to add a piece to a cell already occupied by
+    another piece."""
 
 
 class DuplicatePieceIdError(Exception):
-    """נזרקת כשמנסים להוסיף כלי עם id שכבר קיים על הלוח - הזהות היציבה
-    של הכלי משמשת למעקב תנועה (RealTimeArbiter), אז היא חייבת להיות ייחודית."""
+    """Raised when trying to add a piece whose id is already on the
+    board - a piece's stable identity is used to track motion
+    (RealTimeArbiter), so it must be unique."""
 
 
 class Board:
-    """אוסף הכלים החיים על הלוח - יודע רק מי נמצא איפה.
-    לא יודע חוקי שחמט, פיקסלים, טקסט או תזמון."""
+    """The set of pieces currently on the board - only knows who's
+    where. Knows nothing about chess rules, pixels, text, or timing."""
 
     def __init__(self, width: int, height: int) -> None:
         self._width = width
@@ -51,10 +53,12 @@ class Board:
         self._piece_ids.discard(piece.id)
 
     def move_piece(self, piece: Piece, to: Position) -> None:
-        """מזיז כלי שכבר אומת ליעד. לא בודק חוקיות ולא מזהה לכידה בעצמו -
-        אם הקורא צריך לדעת שהתרחשה לכידה, עליו לבדוק piece_at(to) *לפני*
-        הקריאה לפונקציה הזו. אם התא כבר תפוס, הכלי שהיה שם מוסר בשקט
-        (כדי שה-id שלו לא יישאר "תפוס" על הלוח לנצח)."""
+        """Moves an already-validated piece to its destination. Doesn't
+        check legality or detect a capture itself - if the caller needs
+        to know a capture happened, it must check piece_at(to) *before*
+        calling this. If the cell is already occupied, the piece that
+        was there is silently removed (so its id doesn't stay "occupied"
+        on the board forever)."""
         del self._pieces[piece.cell]
         displaced = self._pieces.get(to)
         if displaced is not None:

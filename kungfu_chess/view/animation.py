@@ -24,10 +24,11 @@ def frame_index(elapsed_ms: int, animation: StateAnimation) -> int:
 
 
 class AnimationCache:
-    """טוענת (עם קאש) את הפריימים+config של כל (piece_set, קוד-כלי, state,
-    cell_size). מוזרקת מבחוץ במקום global state ברמת המודול - כדי שכל
-    צרכן (image_view בהרצה אמיתית, טסטים) יחזיק מופע משלו, בלי לדלוף
-    מצב בין הרצות/טסטים."""
+    """Loads (with caching) the frames+config for every (piece_set,
+    piece-code, state, cell_size). Injected from outside instead of
+    module-level global state - so every consumer (image_view in a real
+    run, tests) holds its own instance, with no state leaking between
+    runs/tests."""
 
     def __init__(self) -> None:
         self._animations: Dict[Tuple[str, str, str, int], StateAnimation] = {}
@@ -43,8 +44,9 @@ class AnimationCache:
 
         frames = []
         for path in sprite_paths:
-            # strip_background הוא no-op על תמונות שכבר עם alpha אמיתי (pieces2) -
-            # ורק מסיר בפועל רקע אחיד מ-pieces1 שאין להן ערוץ שקיפות.
+            # strip_background is a no-op on images that already have real
+            # alpha (pieces2) - it only actually strips a solid background
+            # from pieces1, which have no transparency channel.
             frame = Img().read(path, size=(cell_size, cell_size), keep_aspect=True)
             frame.strip_background()
             frames.append(frame)

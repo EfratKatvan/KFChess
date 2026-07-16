@@ -24,8 +24,9 @@ class MoveValidation:
 
 
 class RuleEngine:
-    """קריאה-בלבד: בהינתן תא מקור ותא יעד, האם הפקודה הזו חוקית כרגע?
-    לא נוגע בלוח, לא מזיז כלים, לא יודע כלום על game_over."""
+    """Read-only: given a source and destination cell, is this command
+    legal right now? Never touches the board, never moves pieces, knows
+    nothing about game_over."""
 
     def __init__(
         self,
@@ -38,11 +39,9 @@ class RuleEngine:
         self._board_rules = board_rules if board_rules is not None else BoardRules()
 
     def legal_destinations(self, from_pos: Position) -> Set[Position]:
-        """כל היעדים החוקיים לכלי בתא הזה, לפי חוקי סוג-הכלי בלבד (כמו
-        validate_move, אבל כל האפשרויות ביחד ולא בדיקת יעד בודד) - למשל
-        להדגשה ויזואלית של יעדים אפשריים אחרי בחירת כלי. לא בודק חסימות
-        זמן-אמת (מסלול/יעד תפוס) - זה תלוי-רגע ומשתנה כל הזמן, לא חלק
-        מ"מה שחוקי לפי חוקי השחמט"."""
+        """Doesn't check real-time blocking (route/destination busy) -
+        that's moment-dependent and constantly changing, not part of
+        "what's legal by chess rules"."""
         piece = self._board.piece_at(from_pos)
         if piece is None:
             return set()
@@ -56,7 +55,6 @@ class RuleEngine:
         if not board_check.is_valid:
             return MoveValidation(False, board_check.reason)
 
-        #בודקת האם היעד שלי נמצא באחד מהיעדים החוקיים שאפשריים
         if to_pos not in self.legal_destinations(from_pos):
             return MoveValidation(False, REASON_ILLEGAL_PIECE_MOVE)
 
@@ -64,8 +62,9 @@ class RuleEngine:
 
 
 class WinCondition(Protocol):
-    """מחליטה מתי לכידה מסיימת את המשחק - ניתנת להחלפה כדי לתמוך בחוק
-    ניצחון אחר (למשל: לכידת כל הצריחים) בלי לגעת ב-RealTimeArbiter."""
+    """Decides when a capture ends the game - swappable to support a
+    different win condition (e.g. capturing all rooks) without touching
+    RealTimeArbiter."""
 
     def is_game_over(self, captured_piece: Optional[Piece]) -> bool: ...
 
@@ -76,8 +75,9 @@ class KingCaptureWinCondition:
 
 
 class PromotionRule(Protocol):
-    """מחליטה מה קורה לכלי בהגעה ליעדו - ניתנת להחלפה כדי לתמוך בחוק
-    הכתרה אחר (למשל: הכתרה לצריח) בלי לגעת ב-RealTimeArbiter."""
+    """Decides what happens to a piece on arrival at its destination -
+    swappable to support a different promotion rule (e.g. promoting to
+    a rook) without touching RealTimeArbiter."""
 
     def promote(self, piece: Piece, board_height: int) -> None: ...
 

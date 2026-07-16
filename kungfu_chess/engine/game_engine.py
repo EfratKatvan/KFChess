@@ -24,10 +24,12 @@ class MoveResult:
 
 
 class GameEngine:
-    """שכבת התיאום (Application Service): הגבול הציבורי שדרכו Controller
-    ו-TextTestRunner מבקשים פעולות. מחזיקה את GameState (כולל game_over),
-    מאצילה ולידציה טהורה ל-RuleEngine, ומפעילה תנועות/זמן דרך
-    RealTimeArbiter. לא מכירה פיקסלים, ציור, פרסור טקסט, או לוגיקת-כלי."""
+    """The coordination layer (Application Service): the public boundary
+    through which Controller and TextTestRunner request actions. Holds
+    GameState (including game_over), delegates pure validation to
+    RuleEngine, and drives motions/time through RealTimeArbiter. Knows
+    nothing about pixels, drawing, text parsing, or piece-movement
+    logic."""
 
     def __init__(self, board: Board, rule_engine: RuleEngine, arbiter: RealTimeArbiter) -> None:
         self._state = GameState(board=board)
@@ -53,27 +55,28 @@ class GameEngine:
         return piece_a is not None and piece_b is not None and piece_a.color == piece_b.color
 
     def can_select(self, position: Position) -> bool:
-        """שער יחיד: game_over + has_piece + is_busy + is_cooling_down - כדי
-        שאף קורא לא יצטרך לבדוק game_over בעצמו לפני שהוא שואל 'אפשר
-        לבחור את התא הזה?'."""
+        """Single gate: game_over + has_piece + is_busy + is_cooling_down -
+        so no caller needs to check game_over itself before asking "can
+        I select this cell?"."""
         if self._state.game_over:
             return False
         return self.has_piece(position) and not self.is_busy(position) and not self.is_cooling_down(position)
 
     def legal_destinations(self, position: Position) -> Set[Position]:
-        """כל היעדים שחוקיים לכלי בתא הזה לפי חוקי השחמט - למשל להדגשת
-        יעדים אפשריים אחרי בחירת כלי. לא בודק חסימות זמן-אמת (אלה תלויות-
-        רגע, לא "מה שהיה חוקי ברגע הבחירה")."""
+        """Doesn't check real-time blocking (that's moment-dependent, not
+        "what was legal at the moment of selection")."""
         if self._state.game_over:
             return set()
         return self._rules.legal_destinations(position)
 
     def request_move(self, from_pos: Position, to_pos: Position) -> MoveResult:
-        """שערי היישום (game_over, motion_in_progress, cooling_down) קודם -
-        לפני שפונים בכלל ל-RuleEngine. רק לאחר ולידציה תקינה מתבצע הביצוע
-        עצמו: קודם מקצרים את היעד אם כלי ידידותי "כמעט חוצה" את הדרך
-        (truncated_destination), ואז בודקים קונפליקט תזמון מול כלי אויב
-        על הדרך *בפועל* (שעשויה להיות מקוצרת) - וזה קורה כאן, לא ב-RuleEngine."""
+        """Application-level gates (game_over, motion_in_progress,
+        cooling_down) first - before even reaching RuleEngine. Only once
+        validation passes does the actual execution happen: first the
+        destination is truncated if a friendly piece "almost crosses"
+        the path (truncated_destination), then a timing conflict with an
+        enemy piece is checked against the *actual* path (which may now
+        be truncated) - and that happens here, not in RuleEngine."""
         if self._state.game_over:
             return MoveResult(is_accepted=False, reason=REASON_GAME_OVER)
 
@@ -103,7 +106,7 @@ class GameEngine:
         return MoveResult(is_accepted=True, reason=REASON_OK)
 
     def try_jump(self, position: Position) -> bool:
-        """הרחבה מותאמת אישית (מחוץ ל-DSL הרשמי) - ר' plan/README."""
+        """A custom extension (outside the official DSL) - see plan/README."""
         if self._state.game_over:
             return False
         if not self.has_piece(position):
@@ -125,9 +128,7 @@ class GameEngine:
             self._state.game_over = True
 
     def snapshot(self) -> BoardViewState:
-        """תמונת-מצב read-only ל-view - "לוח תצוגה" נפרד מ-"לוח המשחק"
-        (Board האמיתי). לא חושף Board/Piece/Motion/Jump/Cooldown אמיתיים -
-        רק PieceView-ים מתורגמים (ר' engine/board_view_state.py)."""
+        # Separates the logic layer from the view - returns a DTO, not real Board/Piece objects
         return build_board_view_state(
             board=self._state.board,
             arbiter=self._arbiter,

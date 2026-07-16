@@ -13,43 +13,45 @@ from kungfu_chess.view.animation import AnimationCache, frame_index
 from kungfu_chess.view.board_view import BoardView
 from kungfu_chess.view.img import Img
 
-# תכלת-קרח שקופה-למחצה (BGRA) - "שעון החול" שמצטייר מעל כלי קפוא בקירור.
+# Semi-transparent ice-blue (BGRA) - the "hourglass" drawn over a piece frozen in cooldown.
 COOLDOWN_OVERLAY_COLOR_BGRA = (235, 206, 135, 120)
 
-# מסגרת זהובה - מדגישה את התא שנבחר כרגע (Controller.selected_pos).
+# Gold border - highlights the currently selected cell (Controller.selected_pos).
 SELECTION_HIGHLIGHT_COLOR_BGRA = (0, 215, 255, 255)
 SELECTION_HIGHLIGHT_THICKNESS = 4
 
-# ירוק שקוף-למחצה - צובע את כל התא-יעד האפשרי לכלי הנבחר (RuleEngine.legal_destinations).
+# Semi-transparent green - fills every legal destination cell for the selected piece (RuleEngine.legal_destinations).
 DESTINATION_HIGHLIGHT_COLOR_BGRA = (60, 200, 60, 130)
 
-# רצועת HUD מעל ומתחת ללוח - ניקוד לכל צבע (BoardViewState.scores). לא חלק
-# מהלוח עצמו (BoardView) בכוונה - זו תוספת של ה-Renderer, לא של "איך נראה
-# הלוח".
+# HUD strip above and below the board - score per color (BoardViewState.scores).
+# Intentionally not part of the board itself (BoardView) - it's an addition
+# from the Renderer, not part of "what the board looks like".
 HUD_HEIGHT = 60
 HUD_BACKGROUND_COLOR_BGRA = (40, 40, 40, 255)
 HUD_TEXT_COLOR_BGRA = (255, 255, 255, 255)
 HUD_FONT_SIZE = 0.9
 HUD_TEXT_THICKNESS = 2
 
-# קו מפריד דק בין רצועת ה-HUD ללוח עצמו - מבדיל ויזואלית בלי להיות בולט.
+# Thin divider line between the HUD strip and the board itself - visually distinguishes without being loud.
 HUD_DIVIDER_COLOR_BGRA = (90, 90, 90, 255)
 HUD_DIVIDER_THICKNESS = 2
 
 
 def _blend_solid_rect(canvas: Img, x: int, y: int, width: int, height: int, color_bgra) -> None:
-    """מבליטה (עם alpha blending אמיתי, ר' Img.draw_on) מלבן בצבע-אחיד על
-    הקנבס - הבסיס המשותף לשעון-החול ולצביעת יעדים אפשריים."""
+    """Blends (with real alpha blending, see Img.draw_on) a solid-color
+    rectangle onto the canvas - the shared basis for the hourglass and
+    for tinting legal destinations."""
     overlay = Img()
     overlay.img = np.full((height, width, 4), color_bgra, dtype=np.uint8)
     overlay.draw_on(canvas, x, y)
 
 
 def _draw_cooldown_overlay(canvas: Img, pixel_pos: Tuple[int, int], remaining_fraction: float, cell_size: int) -> None:
-    """"שעון חול": הצפה תכלת שקופה-למחצה שמכסה חלק מהתא היורד עם הזמן -
-    מלא כשהקירור מתחיל, ונעלם לגמרי (הכלי "משתחרר") כשהוא מסתיים. ה"חול"
-    מתרוקן מלמעלה - הקצה העליון של ההצפה יורד עם הזמן, וה"חול" שנשאר
-    נשקע כלפי מטה עד שהוא נעלם."""
+    """"Hourglass": a semi-transparent ice-blue flood covering a shrinking
+    part of the cell - full when the cooldown starts, and gone entirely
+    (the piece "frees up") when it ends. The "sand" drains from the top -
+    the flood's top edge drops over time, and the remaining "sand"
+    settles downward until it's gone."""
     if remaining_fraction <= 0:
         return
     overlay_height = max(1, round(cell_size * remaining_fraction))
@@ -68,17 +70,19 @@ def _draw_destination_highlight(canvas: Img, pixel_pos: Tuple[int, int], cell_si
 
 
 def _cell_pixel_pos(position: Position, cell_size: int) -> Tuple[int, int]:
-    """הופכת תא לוגי לפיקסל על הקנבס המלא (כולל רצועת ה-HUD העליונה) -
-    נקודה יחידה שמיישמת את היסט ה-HUD, כדי שלא יהיו כמה עותקים של אותו
-    +HUD_HEIGHT מפוזרים ב-draw() (בדיוק סוג הכפילות שגרמה בעבר לפער בין
-    מיפוי הקליקים לרינדור בפועל)."""
+    """Converts a logical cell to a pixel on the full canvas (including
+    the top HUD strip) - a single point that applies the HUD offset, so
+    there aren't several copies of the same +HUD_HEIGHT scattered across
+    draw() (exactly the kind of duplication that once caused the gap
+    between click mapping and actual rendering)."""
     x, y = BoardView.cell_to_pixel(position, cell_size)
     return x, y + HUD_HEIGHT
 
 
 def _draw_centered_text(canvas: Img, text: str, center_x: int, center_y: int) -> None:
-    """ממרכזת טקסט אופקית סביב center_x ואנכית סביב center_y - במקום לצייר
-    מפינה קבועה, כדי שהניקוד יעמוד באמצע רצועת ה-HUD ולא יידבק לצד."""
+    """Centers text horizontally around center_x and vertically around
+    center_y - instead of drawing from a fixed corner, so the score sits
+    in the middle of the HUD strip instead of sticking to one side."""
     width, height = canvas.text_size(text, HUD_FONT_SIZE, HUD_TEXT_THICKNESS)
     x = center_x - width // 2
     y = center_y + height // 2
@@ -86,8 +90,6 @@ def _draw_centered_text(canvas: Img, text: str, center_x: int, center_y: int) ->
 
 
 def _draw_score_hud(canvas: Img, scores: Dict[str, int], board_pixel_width: int, board_pixel_height: int) -> None:
-    """"Black: X" ברצועה העליונה, "White: Y" ברצועה התחתונה - ממורכזות
-    מעל רוחב הלוח (לא בצד), עם קו מפריד דק בינן לבין הלוח עצמו."""
     center_x = board_pixel_width // 2
     _draw_centered_text(canvas, f"Black: {scores.get(BLACK, 0)}", center_x, HUD_HEIGHT // 2)
     _draw_centered_text(
@@ -98,14 +100,13 @@ def _draw_score_hud(canvas: Img, scores: Dict[str, int], board_pixel_width: int,
 
 
 class Renderer:
-    """מרכיבה רקע-לוח (BoardView) + פריים-אנימציה נכון לכל כלי
-    (AnimationCache) + רצועת-ניקוד (HUD) לתוך Img אחד, לכל פריים -
-    מ-BoardViewState בלבד (ה"לוח תצוגה" הנפרד מ-Board האמיתי, ר'
-    engine/board_view_state.py). אין כאן שום ידיעה על Motion/Jump/Cooldown/
-    Piece.state - כל ה-state הויזואלי כבר מגיע פתור מראש בכל PieceView.
-    animation_cache ו-board_view מוזרקים (ולא state גלובלי ברמת המודול)
-    כדי שכל צרכן - image_view בהרצה אמיתית, או טסט - יחזיק את הקאש שלו,
-    בלי לדלוף בין הרצות."""
+    """Works from BoardViewState alone (the "display board" separate from
+    the real Board, see engine/board_view_state.py) - no knowledge here
+    of Motion/Jump/Cooldown/Piece.state, all visual state already
+    arrives pre-resolved on every PieceView. animation_cache and
+    board_view are injected (not module-level global state) so every
+    consumer - image_view in a real run, or a test - holds its own
+    cache, with no leaking between runs."""
 
     def __init__(self, animation_cache: Optional[AnimationCache] = None, board_view: Optional[BoardView] = None) -> None:
         self._animation_cache = animation_cache if animation_cache is not None else AnimationCache()
@@ -119,15 +120,10 @@ class Renderer:
         selected_position: Optional[Position] = None,
         legal_destinations: Optional[Iterable[Position]] = None,
     ) -> Img:
-        """מרנדרת פריים בודד: רצועת-ניקוד עליונה + הלוח (עם כל כלי בפריים/
-        מיקום הנכונים לפי ה-visual_state הכבר-פתור שלו) + רצועת-ניקוד
-        תחתונה. לוגיקה טהורה - לא פותחת חלון ולא נוגעת בקלט, כדי שתהיה
-        ניתנת לבדיקה ביחידה. piece_set בוחר בין pieces1/pieces2 (ר'
-        assets_config.PIECE_SETS). selected_position/legal_destinations -
-        לא חלק מ-BoardViewState (אלה בחירות/שאילתות בצד ה-view/קלט, לא
-        state של המשחק עצמו): selected_position מצייר מסגרת הדגשה על התא
-        הנבחר (Controller.selected_pos), legal_destinations צובע (שקוף-
-        למחצה) כל יעד אפשרי (GameEngine.legal_destinations)."""
+        """Pure logic - opens no window and never touches input, so it
+        stays unit-testable. selected_position/legal_destinations are
+        intentionally not part of BoardViewState - those are choices/
+        queries on the view/input side, not the game's own state."""
         board_pixel_width = view_state.width * cell_size
         board_pixel_height = view_state.height * cell_size
 

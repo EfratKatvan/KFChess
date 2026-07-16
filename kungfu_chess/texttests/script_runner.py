@@ -15,7 +15,7 @@ def run_commands(
     board: Board,
     print_fn: Callable[[str], None] = print,
 ) -> None:
-    """מריץ רשימת פקודות טקסט (click / jump / wait / print board) דרך הנתיב הציבורי בלבד."""
+    """Through the public path only - never bypasses straight to arbiter/board."""
     for line in commands:
         command = parse_line(line)
         if command is None:

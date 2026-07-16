@@ -7,9 +7,10 @@ from kungfu_chess.engine.game_engine import GameEngine, REASON_DESTINATION_RESER
 
 
 class Controller:
-    """מפרש קליקים ומנהל את מצב הבחירה (selected_pos) בלבד.
-    לא מחזיק Board, לא בודק חוקיות שחמט, ולא נוגע בלוח - כל שאלה על מצב
-    המשחק היא קריאה בשם מפורש ל-GameEngine (השירות), לא קריאה ישירה ללוח."""
+    """Interprets clicks and owns only the selection state (selected_pos).
+    Doesn't hold a Board, doesn't check chess legality, and never
+    touches the board - every question about game state is an explicit
+    call to GameEngine (the service), not a direct board read."""
 
     def __init__(self, mapper: BoardMapper, engine: GameEngine) -> None:
         self._mapper = mapper
@@ -21,31 +22,27 @@ class Controller:
         if cell is None:
             return
 
-        #אם לא נבחר תא עדיין-קליק שני, נבדוק אם יש כלי בתא זה ואם הוא פנוי - אם כן, נבחר אותו
-        # (can_select כולל בתוכו את בדיקת game_over - אין צורך לבדוק אותה כאן שוב)
+        # (can_select already covers the game_over check - no need to check it again here)
         if self.selected_pos is None:
             if self._engine.can_select(cell):
                 self.selected_pos = cell
             return
-        #אם תא המקור והיעד שוים, אין צורך לעשות כלום
         if self.selected_pos == cell:
             return
 
-        #אם נבחר כלי של אותו צבע, נבדוק אם הוא פנוי - אם כן, נשנה את הבחירה אליו
         if self._engine.is_same_color(self.selected_pos, cell):
             if self._engine.can_select(cell):
                 self.selected_pos = cell
             return
 
-        # game_over וחוקיות המהלך נבדקים שניהם בתוך request_move - שער יחיד
+        # game_over and move legality are both checked inside request_move - single gate
         result = self._engine.request_move(self.selected_pos, cell)
         if result.is_accepted or result.reason == REASON_DESTINATION_RESERVED:
             self.selected_pos = None
-        # אם המהלך לא חוקי - הבחירה נשארת כפי שהיא
 
     def handle_jump(self, x: int, y: int) -> None:
         cell = self._mapper.to_cell(x, y)
         if cell is None:
             return
-        # game_over נבדק בתוך try_jump - שער יחיד
+        # game_over is checked inside try_jump - single gate
         self._engine.try_jump(cell)

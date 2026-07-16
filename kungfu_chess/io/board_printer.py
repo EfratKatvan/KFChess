@@ -7,7 +7,6 @@ from kungfu_chess.io.board_parser import piece_to_token, EMPTY_CELL
 
 
 def format_board(board: Board) -> list[str]:
-    """מייצר את הייצוג הטקסטואלי הקנוני של הלוח, שורה לכל תא-שורה."""
     lines = []
     for row in range(board.height):
         tokens = []

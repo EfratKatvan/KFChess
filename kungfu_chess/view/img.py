@@ -7,10 +7,11 @@ import numpy as np
 
 
 class Img:
-    """עטיפה דקה סביב opencv לטעינה/ציור של תמונות - מבוססת על py/img.py
-    מ-https://github.com/KamaTechOrg/CTD26 (הנכס הגרפי היחיד המורשה
-    לפרויקט הזה). show() כאן לא-חוסם כברירת מחדל (wait_ms=1), בניגוד
-    למקור שתמיד חסם עם waitKey(0) - כדי להתאים ללולאת זמן-אמת."""
+    """A thin wrapper around opencv for loading/drawing images - based
+    on py/img.py from https://github.com/KamaTechOrg/CTD26 (the only
+    graphics asset authorized for this project). show() here is
+    non-blocking by default (wait_ms=1), unlike the original which
+    always blocked with waitKey(0) - to fit a real-time render loop."""
 
     def __init__(self):
         self.img = None
@@ -73,10 +74,11 @@ class Img:
             other_img.img[y:y + h, x:x + w] = self.img
 
     def strip_background(self, tolerance: int = 30) -> "Img":
-        """הופכת רקע כמעט-אחיד (נדגם מארבע הפינות של התמונה) לשקוף - עבור
-        תמונות בלי ערוץ alpha אמיתי (כמו כלי pieces1 ב-CTD26, שיש להן ריבוע
-        רקע צבוע-מלא מאחורי הצללית, בניגוד ל-pieces2 שכבר מגיעות עם alpha
-        אמיתי). על תמונה שכבר יש לה 4 ערוצים לא עושה כלום - אין צורך."""
+        """Turns a near-uniform background (sampled from the image's four
+        corners) transparent - for images without a real alpha channel
+        (like CTD26's pieces1, which have a solid-colored square behind
+        the silhouette, unlike pieces2 which already come with real
+        alpha). A no-op on an image that already has 4 channels."""
         if self.img is None:
             raise ValueError("Image not loaded.")
         if self.img.shape[2] == 4:
@@ -97,7 +99,6 @@ class Img:
         return self
 
     def draw_rect(self, x: int, y: int, width: int, height: int, color, thickness: int = 3) -> None:
-        """מסגרת מלבן (לא מלא) - למשל להדגשת תא נבחר על הלוח."""
         if self.img is None:
             raise ValueError("Image not loaded.")
         cv2.rectangle(self.img, (x, y), (x + width - 1, y + height - 1), color, thickness)
@@ -110,20 +111,21 @@ class Img:
                     color, thickness, cv2.LINE_AA)
 
     def text_size(self, txt, font_size, thickness=1) -> tuple[int, int]:
-        """(width, height) בפיקסלים שטקסט נתון יתפוס עם put_text - כדי
-        שאפשר יהיה למרכז אותו לפני הציור בפועל."""
+        """So text can be centered before it's actually drawn with put_text."""
         (width, height), _baseline = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, font_size, thickness)
         return width, height
 
     def show(self, window_name: str = "Image", wait_ms: int = 1) -> int:
-        """מציג את התמונה בחלון cv2. wait_ms=1 (ברירת מחדל) לא חוסם - מתאים
-        ללולאת רינדור בזמן-אמת. מחזיר את קוד המקש שנלחץ (cv2.waitKey).
+        """Shows the image in a cv2 window. wait_ms=1 (default) is
+        non-blocking - fits a real-time render loop. Returns the key
+        code that was pressed (cv2.waitKey).
 
-        אם יש ל-self.img ערוץ alpha, ממירים ל-BGR לפני ההצגה - הבלנדינג
-        (שקיפות הרקע של הכלים) כבר בוצע בעצמנו ב-draw_on לתוך ערוצי ה-BGR,
-        אז אין צורך ב-alpha בשלב התצוגה - ול-cv2.imshow יש התנהגות לא
-        עקבית בהצגת תמונות עם 4 ערוצים (ההבדל בין imwrite לבין imshow
-        בפועל)."""
+        If self.img has an alpha channel, it's converted to BGR before
+        display - the blending (piece background transparency) was
+        already done ourselves in draw_on into the BGR channels, so no
+        alpha is needed at display time - and cv2.imshow behaves
+        inconsistently with 4-channel images (the gap between imwrite
+        and imshow in practice)."""
         if self.img is None:
             raise ValueError("Image not loaded.")
         display_img = cv2.cvtColor(self.img, cv2.COLOR_BGRA2BGR) if self.img.shape[2] == 4 else self.img

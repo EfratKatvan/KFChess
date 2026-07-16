@@ -18,13 +18,12 @@ PROCESS_PER_MONITOR_DPI_AWARE = 2
 
 
 def _disable_windows_dpi_scaling() -> None:
-    """בלי זה, אם ה-Display Scaling של Windows מוגדר לא 100% (למשל 125%/150% -
-    נפוץ במסכי מחשב ניידים), חלון ה-GUI מצויר במלואו ואז "נמתח" ע"י מערכת
-    ההפעלה על יותר פיקסלים פיזיים ממה שיש בתמונה עצמה - וקואורדינטת העכבר
-    שחוזרת מ-setMouseCallback כבר לא תואמת 1:1 לפיקסל בלוח (BoardMapper
-    מניח יחס 1:1). קריאה הזו ("Process DPI Awareness") אומרת לחלונות
-    "אל תמתח, תן לי את הפיקסלים הפיזיים כמו שהם" - וזה חייב לרוץ *לפני*
-    יצירת כל חלון (cv2.namedWindow)."""
+    """Without this, when Windows Display Scaling isn't 100% (common on
+    laptop screens), the window is drawn in full and then "stretched" by
+    the OS onto more physical pixels than the image actually has - and
+    the mouse coordinate returned from setMouseCallback no longer maps
+    1:1 to a board pixel (BoardMapper assumes a 1:1 ratio). Must run
+    *before* cv2.namedWindow."""
     if sys.platform != "win32":
         return
     import ctypes
@@ -39,8 +38,6 @@ def _disable_windows_dpi_scaling() -> None:
 
 
 def _on_mouse(event: int, x: int, y: int, controller: Controller) -> None:
-    """קליק שמאלי מנותב ל-handle_click (בחירה/בקשת מהלך), קליק ימני
-    ל-handle_jump (ההרחבה המותאמת אישית שמעבר ל-DSL הרשמי)."""
     if event == cv2.EVENT_LBUTTONDOWN:
         controller.handle_click(x, y)
     elif event == cv2.EVENT_RBUTTONDOWN:
@@ -53,11 +50,8 @@ def run(
     cell_size: int = CELL_SIZE,
     piece_set: str = DEFAULT_PIECE_SET,
 ) -> None:
-    """הלולאה האינטראקטיבית: בכל פריים מקדמת את הזמן לפי ה-dt שחלף בפועל
-    (engine.wait), מרנדרת (Renderer.draw) ומציגה. רצה עד ESC, סגירת
-    החלון, או סיום המשחק. piece_set בוחר בין חבילות הגרפיקה (ר'
-    assets_config.PIECE_SETS). ה-Renderer נוצר פעם אחת כאן (לא global
-    state) - הקאשים שלו (אנימציות/רקע-לוח) נשארים חיים לאורך כל ההרצה."""
+    """The Renderer is created once here (not global state) - its caches
+    (animations/board background) stay alive for the whole run."""
     _disable_windows_dpi_scaling()
     cv2.namedWindow(WINDOW_NAME)
     cv2.setMouseCallback(WINDOW_NAME, lambda event, x, y, flags, param: _on_mouse(event, x, y, controller))

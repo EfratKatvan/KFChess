@@ -6,26 +6,30 @@ from typing import Any, Dict, List
 
 from kungfu_chess.io.board_parser import color_kind_to_token
 
-"""קורא-נכסים משותף ל-view וגם ל-realtime - שתי השכבות צריכות מידע מאותם
-קבצי config.json של CTD26 (view: graphics.frames_per_sec/is_loop לרינדור,
-realtime: physics.speed_m_per_sec/next_state_when_finished ללוגיקת המשחק
-עצמה - ר' realtime/motion.py). הקובץ הזה לא שייך לאף אחת מהשכבות - הוא
-פשוט יודע לקרוא נכס לפי (piece_set, asset_code, state)."""
+"""A shared asset reader for both view and realtime - both layers need
+information from the same CTD26 config.json files (view:
+graphics.frames_per_sec/is_loop for rendering, realtime:
+physics.speed_m_per_sec/next_state_when_finished for the game logic
+itself - see realtime/motion.py). This file doesn't belong to either
+layer - it simply knows how to read an asset by
+(piece_set, asset_code, state)."""
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 
-# pieces1 הם נכסי-פיתוח (placeholder) - בלי alpha אמיתי, עם תווית state+frame
-# צרובה בתוך כל תמונה. pieces2 הם אמנות סופית עם ערוץ alpha אמיתי. שתיהן
-# מ-CTD26 בלבד - ברירת המחדל היא pieces2, אבל אפשר להחליף חופשית.
+# pieces1 are development (placeholder) assets - no real alpha, with a
+# state+frame label baked into every image. pieces2 are the final art
+# with a real alpha channel. Both are from CTD26 only - the default is
+# pieces2, but it can be freely swapped.
 PIECE_SETS = ("pieces1", "pieces2")
 DEFAULT_PIECE_SET = "pieces2"
 
 
 class MissingAssetError(Exception):
-    """נזרקת כשלא נמצאו נכסים (config.json או תמונות sprites) עבור
-    כלי/state/piece_set נתונים תחת kungfu_chess/assets - למשל בעקבות קוד
-    כלי שגוי, piece_set לא מוכר, או תיקייה חסרה - במקום FileNotFoundError
-    גנרי שלא אומר במפורש מה בדיוק חסר."""
+    """Raised when no assets (config.json or sprite images) are found
+    for a given piece/state/piece_set under kungfu_chess/assets - e.g.
+    due to a wrong piece code, an unknown piece_set, or a missing
+    directory - instead of a generic FileNotFoundError that doesn't
+    explicitly say what's missing."""
 
 
 def pieces_dir(piece_set: str) -> Path:
@@ -35,9 +39,10 @@ def pieces_dir(piece_set: str) -> Path:
 
 
 def asset_code(color: str, kind: str) -> str:
-    """הטוקן של הפרויקט הוא <color><KIND> (למשל "wP"), וב-CTD26 זה הפוך:
-    <KIND><COLOR> (למשל "PW"). מקבלת color/kind גולמיים (לא Piece שלם) -
-    כי גם PieceView (ר' engine/board_view_state.py) צריך לקרוא לזה."""
+    """This project's token is <color><KIND> (e.g. "wP"), while in CTD26
+    it's reversed: <KIND><COLOR> (e.g. "PW"). Takes raw color/kind
+    (not a full Piece) - because PieceView (see
+    engine/board_view_state.py) needs to call this too."""
     token = color_kind_to_token(color, kind)
     color_letter, kind_letter = token[0], token[1]
     return f"{kind_letter}{color_letter.upper()}"
@@ -48,9 +53,6 @@ def _state_dir(asset_code: str, state: str, piece_set: str) -> Path:
 
 
 def load_state_config(asset_code: str, state: str, piece_set: str = DEFAULT_PIECE_SET) -> Dict[str, Any]:
-    """קוראת ומפרסרת את config.json בפועל, בזמן ריצה - הן physics
-    (speed_m_per_sec, next_state_when_finished) והן graphics (frames_per_sec,
-    is_loop)."""
     config_path = _state_dir(asset_code, state, piece_set) / "config.json"
     if not config_path.is_file():
         raise MissingAssetError(

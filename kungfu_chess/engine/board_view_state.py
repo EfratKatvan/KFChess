@@ -21,9 +21,10 @@ JUMP_STATE = "jump"
 
 @dataclass(frozen=True)
 class PieceView:
-    """ייצוג read-only, מינימלי, של כלי בשביל ה-view - לא Piece אמיתי.
-    אין כאן id, ואין דרך למוטט/להזיז שום דבר דרך זה - רק מה שנדרש כדי
-    לצייר: איפה, איזה כלי, ובאיזה state ויזואלי."""
+    """A minimal, read-only representation of a piece for the view - not
+    a real Piece. No id here, and no way to mutate or move anything
+    through it - only what's needed to draw: where, which piece, and in
+    what visual state."""
 
     position: Position
     color: str
@@ -37,9 +38,10 @@ class PieceView:
 
 @dataclass(frozen=True)
 class BoardViewState:
-    """תמונת-מצב read-only שלמה בשביל ה-view - "לוח התצוגה" הנפרד מ-"לוח
-    המשחק" (Board האמיתי). זה כל מה שה-view מקבל; הוא לא נחשף בכלל
-    ל-Board/Piece/Motion/Jump/Cooldown האמיתיים."""
+    """A complete, read-only state snapshot for the view - the "display
+    board" separate from the "game board" (the real Board). This is
+    everything the view gets; it's never exposed to the real
+    Board/Piece/Motion/Jump/Cooldown at all."""
 
     width: int
     height: int
@@ -49,12 +51,10 @@ class BoardViewState:
 
 
 def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms: int) -> PieceView:
-    """מכונת-המצבים: הופכת Piece.state (בקנד) + Motion/Jump/Cooldown
-    (ה-arbiter) ל-piece_state ויזואלי אחד (idle/move/jump/short_rest/
-    long_rest). זו בדיוק נקודת-הגבול שבה מידע בקנד מתורגם למה שה-GUI
-    צריך לדעת - לא יותר. סדר הבדיקה (קפיצה -> תנועה -> קירור -> idle)
-    תואם לכך שכלי לא יכול להיות בו-זמנית בקפיצה ובתנועה (RealTimeArbiter
-    חוסם את זה) - אין דו-משמעות איזה state "מנצח"."""
+    """The check order (jump -> motion -> cooldown -> idle) matches the
+    fact that a piece can never be in a jump and a motion at once
+    (RealTimeArbiter blocks that) - there's no ambiguity about which
+    state "wins"."""
     for jump in arbiter.jumps:
         if jump.position == piece.cell:
             elapsed_ms = JUMP_DURATION_MS - jump.remaining_ms

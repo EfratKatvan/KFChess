@@ -7,16 +7,14 @@ from kungfu_chess.model.position import Position
 
 
 class PieceRule(Protocol):
-    """חוזה שכל חוק-תנועה של סוג כלי צריך לקיים - נקודת הרחבה: אפשר להוסיף
-    כלי חדש (או להחליף חוק קיים) בלי לגעת ב-RuleEngine, כל עוד יש מתודה
-    כזו עם החתימה הזו."""
+    """The contract every piece-kind's movement rule must satisfy - an
+    extension point: a new piece kind (or a replacement rule) can be
+    added without touching RuleEngine, as long as it has a method with
+    this signature."""
 
     def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]: ...
 
-#עבור כלים שנעים בקו ישר/אלכסוני (צריח, רץ, מלכה), סורק במרחקים בלתי מוגבלים מהכלי והלאה בכל כיוון, עד חסימה (כולל אכילה).
-#בודק את כל היעדים החוקיים
 def _sliding_destinations(board: Board, piece: Piece, directions) -> Set[Position]:
-    """סורק בקווים ישרים מהכלי והלאה בכל כיוון, עד חסימה (כולל אכילה)."""
     destinations: Set[Position] = set()
     for dr, dc in directions:
         row, col = piece.cell.row + dr, piece.cell.col + dc
@@ -34,10 +32,7 @@ def _sliding_destinations(board: Board, piece: Piece, directions) -> Set[Positio
             position = Position(row, col)
     return destinations
 
-#סורק את תאי היעד האפשריים עבור כלים שמבצעים "צעד" אחד בלבד (סוס, מלך) - לא סוריקה, אין חסימה בדרך.
-#בודק את כל היעדים החוקיים עבור כלים שמבצעים צעד אחד בלבד (סוס, מלך).
 def _step_destinations(board: Board, piece: Piece, offsets) -> Set[Position]:
-    """בודק קבוצת תאי-יעד קבועים (סוס/מלך) - לא סוריקה, אין חסימה בדרך."""
     destinations: Set[Position] = set()
     for dr, dc in offsets:
         position = Position(piece.cell.row + dr, piece.cell.col + dc)
@@ -49,28 +44,24 @@ def _step_destinations(board: Board, piece: Piece, offsets) -> Set[Position]:
     return destinations
 
 
-# 1. Rook - סורק ישר ומאונך עד חסימה
 class RookRules:
     @staticmethod
     def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
         return _sliding_destinations(board, piece, [(1, 0), (-1, 0), (0, 1), (0, -1)])
 
 
-# 2. Bishop - סורק באלכסון עד חסימה
 class BishopRules:
     @staticmethod
     def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
         return _sliding_destinations(board, piece, [(1, 1), (1, -1), (-1, 1), (-1, -1)])
 
 
-# 3. Queen - צירוף של צריח ורץ
 class QueenRules:
     @staticmethod
     def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
         return RookRules.legal_destinations(board, piece) | BishopRules.legal_destinations(board, piece)
 
 
-# 4. Knight - קפיצות L, מתעלם מחסימות בדרך
 class KnightRules:
     _OFFSETS = [(1, 2), (1, -2), (-1, 2), (-1, -2), (2, 1), (2, -1), (-2, 1), (-2, -1)]
 
@@ -79,7 +70,6 @@ class KnightRules:
         return _step_destinations(board, piece, KnightRules._OFFSETS)
 
 
-# 5. King - תא אחד לכל כיוון
 class KingRules:
     _OFFSETS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
 
@@ -89,12 +79,11 @@ class KingRules:
 
 
 def _pawn_start_row(board: Board, color: str) -> int:
-    """שורת ההתחלה של חייל - שורה אחת פנימה מהקצה שלו, בכל גובה לוח."""
+    """A pawn's starting row - one row in from its edge, at any board height."""
     return board.height - 2 if color == WHITE else 1
 
 
-# 6. Pawn - תנועה מפושטת: צעד אחד קדימה (או צעד כפול משורת ההתחלה),
-# אכילה אלכסונית קדימה בלבד. אין en passant, אין הכתרה כאן (זה ב-RealTimeArbiter).
+# Intentional: no en passant, no promotion here (that's in RealTimeArbiter).
 class PawnRules:
     @staticmethod
     def legal_destinations(board: Board, piece: Piece) -> Set[Position]:

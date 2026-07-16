@@ -4,9 +4,10 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Position:
-    """תא לוחי (row, col) - לא פיקסלים, לא אינדקס במערך.
+    """A board cell (row, col) - not pixels, not an array index.
 
-    Position לא בודק גבולות לוח בכוונה - זו אחריות של Board בלבד."""
+    Position intentionally doesn't validate board bounds - that's
+    Board's job alone."""
 
     row: int
     col: int

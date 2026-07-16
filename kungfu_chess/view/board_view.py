@@ -10,16 +10,16 @@ BOARD_IMAGE_PATH = ASSETS_DIR / "board.png"
 
 
 class BoardView:
-    """טוענת (עם קאש) את רקע הלוח, ומספקת קנבס טרי לכל פריים + המרות
-    תא<->פיקסל. מוזרקת מבחוץ במקום global state ברמת המודול, מאותה סיבה
-    כמו AnimationCache."""
+    """Injected from outside instead of module-level global state, for
+    the same reason as AnimationCache."""
 
     def __init__(self) -> None:
         self._backgrounds: Dict[Tuple[int, int, int], Img] = {}
 
     def new_canvas(self, board_width: int, board_height: int, cell_size: int) -> Img:
-        """קנבס טרי (עותק) של רקע הלוח - אסור להחזיר את התמונה הממוזכרת
-        עצמה, כי ציור כלים עליה היה מזהם את הקאש לפריימים הבאים."""
+        """A fresh copy of the board background - must not return the
+        cached image itself, since drawing pieces onto it would
+        contaminate the cache for later frames."""
         background = self._background(board_width, board_height, cell_size)
         canvas = Img()
         canvas.img = background.img.copy()

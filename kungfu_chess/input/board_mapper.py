@@ -8,19 +8,19 @@ CELL_SIZE = 100
 
 
 class BoardMapper:
-    """ממיר קואורדינטת פיקסלים לתא לוגי על הלוח (Position).
+    """Converts a pixel coordinate to a logical board cell (Position).
 
-    y_offset - כמה פיקסלים הלוח מוזח כלפי מטה בקנבס (למשל רצועת ה-HUD
-    שהרנדרר מצייר מעל הלוח, ר' view/renderer.py:HUD_HEIGHT). ברירת המחדל
-    0 שומרת על ההתנהגות המקורית לכל צרכן שלא מרנדר HUD (טסטים, זרימת
-    הטקסט)."""
+    y_offset - how many pixels the board is shifted down on the canvas
+    (e.g. the HUD strip the renderer draws above the board, see
+    view/renderer.py:HUD_HEIGHT). The default of 0 preserves the
+    original behavior for any consumer that doesn't render a HUD
+    (tests, the text flow)."""
 
     def __init__(self, board: Board, cell_size: int = CELL_SIZE, y_offset: int = 0) -> None:
         self._board = board
         self._cell_size = cell_size
         self._y_offset = y_offset
 
-    #פונקציה שמקבלת קואורדינטות פיקסלים ומחזירה את התא המתאים בלוח (Position) או None אם מחוץ ללוח
     def to_cell(self, x: int, y: int) -> Optional[Position]:
         y -= self._y_offset
         if y < 0:
