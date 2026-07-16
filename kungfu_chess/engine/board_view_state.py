@@ -37,6 +37,15 @@ class PieceView:
 
 
 @dataclass(frozen=True)
+class MoveLogEntry:
+    """A single completed move request, for the per-team move-log panel."""
+
+    elapsed_ms: int
+    from_pos: Position
+    to_pos: Position
+
+
+@dataclass(frozen=True)
 class BoardViewState:
     """A complete, read-only state snapshot for the view - the "display
     board" separate from the "game board" (the real Board). This is
@@ -48,6 +57,7 @@ class BoardViewState:
     game_over: bool
     pieces: Tuple[PieceView, ...] = field(default_factory=tuple)
     scores: Dict[str, int] = field(default_factory=dict)
+    move_log: Dict[str, Tuple[MoveLogEntry, ...]] = field(default_factory=dict)
 
 
 def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms: int) -> PieceView:
@@ -92,7 +102,11 @@ def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms
 
 
 def build_board_view_state(
-    board: Board, arbiter: RealTimeArbiter, game_over: bool, total_elapsed_ms: int
+    board: Board,
+    arbiter: RealTimeArbiter,
+    game_over: bool,
+    total_elapsed_ms: int,
+    move_log: Optional[Dict[str, Tuple[MoveLogEntry, ...]]] = None,
 ) -> BoardViewState:
     pieces = []
     for row in range(board.height):
@@ -104,5 +118,5 @@ def build_board_view_state(
 
     return BoardViewState(
         width=board.width, height=board.height, game_over=game_over,
-        pieces=tuple(pieces), scores=arbiter.scores,
+        pieces=tuple(pieces), scores=arbiter.scores, move_log=move_log or {},
     )

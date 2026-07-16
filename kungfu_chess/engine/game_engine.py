@@ -1,10 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Set
+from typing import Dict, List, Set
 
-from kungfu_chess.engine.board_view_state import BoardViewState, build_board_view_state
+from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, build_board_view_state
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.game_state import GameState
+from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.rules.rule_engine import RuleEngine, REASON_OK
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
@@ -36,6 +37,7 @@ class GameEngine:
         self._rules = rule_engine
         self._arbiter = arbiter
         self._total_elapsed_ms = 0
+        self._move_log: Dict[str, List[MoveLogEntry]] = {WHITE: [], BLACK: []}
 
     def is_game_over(self) -> bool:
         return self._state.game_over
@@ -103,6 +105,7 @@ class GameEngine:
             return MoveResult(is_accepted=False, reason=REASON_DESTINATION_RESERVED)
 
         self._arbiter.start_motion(piece, actual_to)
+        self._move_log[piece.color].append(MoveLogEntry(self._total_elapsed_ms, from_pos, actual_to))
         return MoveResult(is_accepted=True, reason=REASON_OK)
 
     def try_jump(self, position: Position) -> bool:
@@ -134,4 +137,5 @@ class GameEngine:
             arbiter=self._arbiter,
             game_over=self._state.game_over,
             total_elapsed_ms=self._total_elapsed_ms,
+            move_log={color: tuple(entries) for color, entries in self._move_log.items()},
         )

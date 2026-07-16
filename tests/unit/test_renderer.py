@@ -17,15 +17,15 @@ def test_asset_code_converts_color_kind_to_ctd26_order():
     assert asset_code(BLACK, KING) == "KB"
 
 
-def test_draw_returns_a_canvas_sized_to_the_board_plus_the_score_hud():
-    from kungfu_chess.view.renderer import HUD_HEIGHT
+def test_draw_returns_a_canvas_sized_to_the_board_plus_the_side_panels():
+    from kungfu_chess.view.renderer import SIDE_PANEL_WIDTH
 
     view_state = BoardViewState(width=2, height=3, game_over=False, pieces=(make_piece_view(WHITE, ROOK, 0, 0),))
 
     canvas = Renderer().draw(view_state, cell_size=100)
 
     height, width = canvas.img.shape[:2]
-    assert (width, height) == (200, 300 + 2 * HUD_HEIGHT)
+    assert (width, height) == (200 + 2 * SIDE_PANEL_WIDTH, 300)
 
 
 def test_draw_accepts_either_piece_set():
@@ -126,16 +126,16 @@ def test_draw_does_not_crash_for_a_piece_that_is_cooling_down():
 def test_draw_highlights_the_selected_cell():
     import numpy as np
 
-    from kungfu_chess.view.renderer import HUD_HEIGHT, SELECTION_HIGHLIGHT_COLOR_BGRA
+    from kungfu_chess.view.renderer import SIDE_PANEL_WIDTH, SELECTION_HIGHLIGHT_COLOR_BGRA
 
     view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
 
     canvas = Renderer().draw(view_state, cell_size=100, selected_position=Position(0, 1))
 
-    # top-left border pixel of the selected cell (0,1) - shifted down by the HUD strip
-    assert tuple(canvas.img[HUD_HEIGHT, 100]) == SELECTION_HIGHLIGHT_COLOR_BGRA
+    # top-left border pixel of the selected cell (0,1) - shifted right by the left side panel
+    assert tuple(canvas.img[0, SIDE_PANEL_WIDTH + 100]) == SELECTION_HIGHLIGHT_COLOR_BGRA
     # deep in the interior of the non-selected cell (0,0) - never painted by the border
-    assert tuple(canvas.img[HUD_HEIGHT + 50, 50]) != SELECTION_HIGHLIGHT_COLOR_BGRA
+    assert tuple(canvas.img[50, SIDE_PANEL_WIDTH + 50]) != SELECTION_HIGHLIGHT_COLOR_BGRA
 
 
 def test_draw_does_not_highlight_anything_when_no_cell_is_selected():
@@ -168,16 +168,16 @@ def test_draw_destination_highlight_tints_the_whole_cell():
 
 
 def test_draw_marks_legal_destination_cells_by_tinting_them():
-    from kungfu_chess.view.renderer import HUD_HEIGHT
+    from kungfu_chess.view.renderer import SIDE_PANEL_WIDTH
 
     view_state = BoardViewState(width=2, height=1, game_over=False, pieces=())
 
     baseline = Renderer().draw(view_state, cell_size=100, legal_destinations=None)
     highlighted = Renderer().draw(view_state, cell_size=100, legal_destinations=[Position(0, 1)])
 
-    row = HUD_HEIGHT + 50
-    assert tuple(highlighted.img[row, 150]) != tuple(baseline.img[row, 150])  # marked cell: changed
-    assert tuple(highlighted.img[row, 50]) == tuple(baseline.img[row, 50])    # other cell: untouched
+    row = 50
+    assert tuple(highlighted.img[row, SIDE_PANEL_WIDTH + 150]) != tuple(baseline.img[row, SIDE_PANEL_WIDTH + 150])  # marked cell: changed
+    assert tuple(highlighted.img[row, SIDE_PANEL_WIDTH + 50]) == tuple(baseline.img[row, SIDE_PANEL_WIDTH + 50])    # other cell: untouched
 
 
 def test_draw_marks_nothing_when_no_destinations_are_given():
@@ -189,21 +189,36 @@ def test_draw_marks_nothing_when_no_destinations_are_given():
     assert (with_none.img == with_empty.img).all()
 
 
-def test_draw_renders_a_different_score_hud_for_different_scores():
-    # wide enough board that the score text actually has room to render and differ
+def test_draw_renders_different_side_panels_for_different_scores():
     no_score = BoardViewState(width=8, height=1, game_over=False, pieces=(), scores={WHITE: 0, BLACK: 0})
     with_score = BoardViewState(width=8, height=1, game_over=False, pieces=(), scores={WHITE: 9, BLACK: 3})
 
     canvas_no_score = Renderer().draw(no_score, cell_size=100)
     canvas_with_score = Renderer().draw(with_score, cell_size=100)
 
-    # the two HUD strips (top+bottom) must differ - the score text is different
+    # the two side panels (left+right) must differ - the score text is different
     assert not (canvas_no_score.img == canvas_with_score.img).all()
 
 
-def test_draw_hud_defaults_scores_to_zero_when_missing():
+def test_draw_side_panels_default_scores_to_zero_when_missing():
     view_state = BoardViewState(width=1, height=1, game_over=False, pieces=())  # no scores passed
 
     canvas = Renderer().draw(view_state, cell_size=100)  # must not raise
 
     assert canvas.img is not None
+
+
+def test_draw_side_panel_renders_a_move_log_entry():
+    from kungfu_chess.engine.board_view_state import MoveLogEntry
+    from kungfu_chess.model.piece import WHITE
+
+    no_moves = BoardViewState(width=8, height=8, game_over=False, pieces=(), move_log={WHITE: ()})
+    with_move = BoardViewState(
+        width=8, height=8, game_over=False, pieces=(),
+        move_log={WHITE: (MoveLogEntry(elapsed_ms=1000, from_pos=Position(6, 4), to_pos=Position(4, 4)),)},
+    )
+
+    canvas_no_moves = Renderer().draw(no_moves, cell_size=100)
+    canvas_with_move = Renderer().draw(with_move, cell_size=100)
+
+    assert not (canvas_no_moves.img == canvas_with_move.img).all()
