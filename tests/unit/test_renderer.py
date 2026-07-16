@@ -282,6 +282,35 @@ def test_draw_shows_a_game_over_overlay_once_the_game_ends():
     assert not (canvas_playing.img == canvas_ended.img).all()
 
 
+def test_game_over_button_rect_sits_inside_the_board_and_side_panels():
+    """Regression guard for the HUD_HEIGHT-style bug: the button's
+    geometry (used both to draw it and to hit-test clicks in
+    image_view.py) must fall entirely within the actual canvas draw()
+    produces for the same board_width/height/cell_size."""
+    from kungfu_chess.view.renderer import game_over_button_rect
+
+    view_state = BoardViewState(width=8, height=8, game_over=True, pieces=())
+    canvas = Renderer().draw(view_state, cell_size=100)
+    canvas_height, canvas_width = canvas.img.shape[:2]
+
+    x, y, width, height = game_over_button_rect(view_state.width, view_state.height, cell_size=100)
+
+    assert 0 <= x and x + width <= canvas_width
+    assert 0 <= y and y + height <= canvas_height
+
+
+def test_draw_paints_the_game_over_button_at_its_own_reported_rect():
+    from kungfu_chess.view.renderer import game_over_button_rect, GAME_OVER_BUTTON_BORDER_COLOR_BGRA
+
+    view_state = BoardViewState(width=8, height=8, game_over=True, pieces=())
+    canvas = Renderer().draw(view_state, cell_size=100)
+
+    x, y, width, height = game_over_button_rect(view_state.width, view_state.height, cell_size=100)
+    border_pixel = tuple(canvas.img[y, x + width // 2])  # top edge of the border, mid-width
+
+    assert border_pixel == GAME_OVER_BUTTON_BORDER_COLOR_BGRA
+
+
 def test_draw_side_panel_renders_a_move_log_entry():
     from kungfu_chess.engine.board_view_state import MoveLogEntry
     from kungfu_chess.model.piece import WHITE

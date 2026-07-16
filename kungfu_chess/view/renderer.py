@@ -37,14 +37,30 @@ GAME_OVER_TEXT = "GAME OVER"
 GAME_OVER_TEXT_COLOR_BGRA = (255, 255, 255, 255)
 GAME_OVER_FONT_SIZE = 2.0
 GAME_OVER_THICKNESS = 4
-GAME_OVER_BAND_HEIGHT = 90
-GAME_OVER_BAND_COLOR_BGRA = (20, 20, 20, 190)
+GAME_OVER_BAND_HEIGHT = 190
+GAME_OVER_BAND_COLOR_BGRA = (20, 20, 20, 195)
+GAME_OVER_TITLE_OFFSET_Y = 55  # from the band's top edge
 
-# Smaller hint line under GAME OVER - matches image_view.RESTART_KEYS.
-GAME_OVER_HINT_TEXT = "Press R to restart, ESC to quit"
-GAME_OVER_HINT_FONT_SIZE = 0.6
+# Clickable "New Game" button on the game-over overlay - image_view.py
+# hit-tests clicks against game_over_button_rect() below, the same
+# geometry this draws with, so the clickable area can never drift from
+# what's actually drawn on screen (same class of bug as the old
+# HUD_HEIGHT click-mapping gap).
+GAME_OVER_BUTTON_WIDTH = 200
+GAME_OVER_BUTTON_HEIGHT = 46
+GAME_OVER_BUTTON_OFFSET_Y = 118  # from the band's top edge, to the button's center
+GAME_OVER_BUTTON_COLOR_BGRA = (70, 70, 70, 255)
+GAME_OVER_BUTTON_BORDER_COLOR_BGRA = (255, 255, 255, 255)
+GAME_OVER_BUTTON_BORDER_THICKNESS = 2
+GAME_OVER_BUTTON_TEXT = "New Game"
+GAME_OVER_BUTTON_FONT_SIZE = 0.7
+GAME_OVER_BUTTON_TEXT_THICKNESS = 2
+
+# Smaller hint line under the button.
+GAME_OVER_HINT_TEXT = "or press ESC to quit"
+GAME_OVER_HINT_FONT_SIZE = 0.55
 GAME_OVER_HINT_THICKNESS = 1
-GAME_OVER_HINT_OFFSET_Y = 34
+GAME_OVER_HINT_OFFSET_Y = 165  # from the band's top edge
 
 # Side panels flanking the board - one per team, with the running score
 # and a chronological move log (BoardViewState.scores / move_log).
@@ -119,14 +135,45 @@ def _piece_at(view_state: BoardViewState, position: Position) -> Optional[PieceV
     return None
 
 
-def _draw_game_over_overlay(canvas: Img, board_x: int, board_pixel_width: int, board_pixel_height: int) -> None:
+def game_over_button_rect(board_width: int, board_height: int, cell_size: int) -> Tuple[int, int, int, int]:
+    """(x, y, width, height) of the "New Game" button on the game-over
+    overlay, in full-canvas pixel coordinates - shared by drawing and by
+    image_view.py's click hit-testing."""
+    board_pixel_width = board_width * cell_size
+    board_pixel_height = board_height * cell_size
     band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
-    center_x = board_x + board_pixel_width // 2
-    center_y = band_y + GAME_OVER_BAND_HEIGHT // 2
-    _blend_solid_rect(canvas, board_x, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, GAME_OVER_BAND_COLOR_BGRA)
-    _draw_centered_text(canvas, GAME_OVER_TEXT, center_x, center_y, GAME_OVER_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_THICKNESS)
+    center_x = SIDE_PANEL_WIDTH + board_pixel_width // 2
+    button_center_y = band_y + GAME_OVER_BUTTON_OFFSET_Y
+    return (
+        center_x - GAME_OVER_BUTTON_WIDTH // 2,
+        button_center_y - GAME_OVER_BUTTON_HEIGHT // 2,
+        GAME_OVER_BUTTON_WIDTH,
+        GAME_OVER_BUTTON_HEIGHT,
+    )
+
+
+def _draw_game_over_overlay(canvas: Img, view_state: BoardViewState, cell_size: int) -> None:
+    board_pixel_width = view_state.width * cell_size
+    board_pixel_height = view_state.height * cell_size
+    band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
+    center_x = SIDE_PANEL_WIDTH + board_pixel_width // 2
+
+    _blend_solid_rect(canvas, SIDE_PANEL_WIDTH, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, GAME_OVER_BAND_COLOR_BGRA)
     _draw_centered_text(
-        canvas, GAME_OVER_HINT_TEXT, center_x, center_y + GAME_OVER_HINT_OFFSET_Y,
+        canvas, GAME_OVER_TEXT, center_x, band_y + GAME_OVER_TITLE_OFFSET_Y,
+        GAME_OVER_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_THICKNESS,
+    )
+
+    button_x, button_y, button_w, button_h = game_over_button_rect(view_state.width, view_state.height, cell_size)
+    _blend_solid_rect(canvas, button_x, button_y, button_w, button_h, GAME_OVER_BUTTON_COLOR_BGRA)
+    canvas.draw_rect(button_x, button_y, button_w, button_h, GAME_OVER_BUTTON_BORDER_COLOR_BGRA, GAME_OVER_BUTTON_BORDER_THICKNESS)
+    _draw_centered_text(
+        canvas, GAME_OVER_BUTTON_TEXT, button_x + button_w // 2, button_y + button_h // 2,
+        GAME_OVER_BUTTON_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_BUTTON_TEXT_THICKNESS,
+    )
+
+    _draw_centered_text(
+        canvas, GAME_OVER_HINT_TEXT, center_x, band_y + GAME_OVER_HINT_OFFSET_Y,
         GAME_OVER_HINT_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_HINT_THICKNESS,
     )
 
@@ -270,7 +317,7 @@ class Renderer:
             _draw_invalid_target_highlight(canvas, _cell_pixel_pos(invalid_target, cell_size), cell_size)
 
         if view_state.game_over:
-            _draw_game_over_overlay(canvas, SIDE_PANEL_WIDTH, board_pixel_width, board_pixel_height)
+            _draw_game_over_overlay(canvas, view_state, cell_size)
 
         _draw_side_panel(
             canvas, 0, board_pixel_height, "Black",

@@ -10,7 +10,7 @@ from kungfu_chess.assets_config import DEFAULT_PIECE_SET
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.input.controller import Controller
-from kungfu_chess.view.renderer import Renderer
+from kungfu_chess.view.renderer import Renderer, game_over_button_rect
 
 WINDOW_NAME = "Kung Fu Chess"
 ESC_KEY = 27
@@ -39,11 +39,9 @@ def _disable_windows_dpi_scaling() -> None:
             pass
 
 
-def _on_mouse(event: int, x: int, y: int, controller: Controller) -> None:
-    if event == cv2.EVENT_LBUTTONDOWN:
-        controller.handle_click(x, y)
-    elif event == cv2.EVENT_RBUTTONDOWN:
-        controller.handle_jump(x, y)
+def _point_in_rect(x: int, y: int, rect: Tuple[int, int, int, int]) -> bool:
+    rect_x, rect_y, width, height = rect
+    return rect_x <= x < rect_x + width and rect_y <= y < rect_y + height
 
 
 def run(
@@ -66,9 +64,23 @@ def run(
         engine, controller = build_game()
         current["engine"] = engine
         current["controller"] = controller
-        cv2.setMouseCallback(WINDOW_NAME, lambda event, x, y, flags, param: _on_mouse(event, x, y, current["controller"]))
+
+    def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
+        engine = current["engine"]
+        controller = current["controller"]
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if engine.is_game_over():
+                view_state = engine.snapshot()
+                button_rect = game_over_button_rect(view_state.width, view_state.height, cell_size)
+                if _point_in_rect(x, y, button_rect):
+                    start_new_game()
+                return
+            controller.handle_click(x, y)
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            controller.handle_jump(x, y)
 
     start_new_game()
+    cv2.setMouseCallback(WINDOW_NAME, on_mouse)
     frame_renderer = Renderer()
     last_time = time.perf_counter()
 
