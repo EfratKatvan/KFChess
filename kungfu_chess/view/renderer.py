@@ -7,7 +7,7 @@ import numpy as np
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET, asset_code
 from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, PieceView
 from kungfu_chess.input.board_mapper import CELL_SIZE
-from kungfu_chess.model.piece import WHITE, BLACK, KING, QUEEN, ROOK, BISHOP, KNIGHT, PAWN
+from kungfu_chess.model.piece import WHITE, BLACK, KING, QUEEN, ROOK, BISHOP, KNIGHT
 from kungfu_chess.model.position import Position
 from kungfu_chess.view.animation import AnimationCache, frame_index
 from kungfu_chess.view.board_view import BoardView
@@ -230,22 +230,17 @@ _ALGEBRAIC_LETTER_BY_KIND = {KING: "K", QUEEN: "Q", ROOK: "R", BISHOP: "B", KNIG
 
 
 def _move_notation(entry: MoveLogEntry, board_height: int) -> str:
-    """Simplified algebraic-style notation ("e4", "Nf3", "exd5") for the
-    move-log panel. Deliberately simplified vs standard chess SAN: no
-    check/checkmate suffix (this variant ends on a direct king capture,
-    not "check"), and no disambiguation between two same-kind pieces
-    that could both reach the same square - a display-only
-    simplification, not a full SAN replacement."""
+    """Piece letter (omitted for pawns) + source square + destination
+    square, e.g. "e2-e4", "Ng1-f3", "Qd1xh5" (capture). Standard
+    algebraic notation drops the source square because in turn-based
+    chess it's inferable from context (only one legal piece could have
+    made the move) - that assumption doesn't hold here, where several
+    pieces can be mid-move at once, so the source stays in."""
+    source = _square_name(entry.from_pos, board_height)
     dest = _square_name(entry.to_pos, board_height)
-
-    if entry.kind == PAWN:
-        if entry.is_capture:
-            source_file = chr(ord("a") + entry.from_pos.col)
-            return f"{source_file}x{dest}"
-        return dest
-
-    letter = _ALGEBRAIC_LETTER_BY_KIND[entry.kind]
-    return f"{letter}x{dest}" if entry.is_capture else f"{letter}{dest}"
+    letter = _ALGEBRAIC_LETTER_BY_KIND.get(entry.kind, "")
+    separator = "x" if entry.is_capture else "-"
+    return f"{letter}{source}{separator}{dest}"
 
 
 def _draw_side_panel(

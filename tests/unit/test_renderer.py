@@ -376,8 +376,8 @@ def test_move_notation_formats_pawn_moves_without_a_piece_letter():
     quiet = MoveLogEntry(elapsed_ms=0, from_pos=Position(6, 4), to_pos=Position(4, 4), kind=PAWN, is_capture=False)
     capture = MoveLogEntry(elapsed_ms=0, from_pos=Position(4, 4), to_pos=Position(3, 3), kind=PAWN, is_capture=True)
 
-    assert _move_notation(quiet, board_height=8) == "e4"
-    assert _move_notation(capture, board_height=8) == "exd5"
+    assert _move_notation(quiet, board_height=8) == "e2-e4"
+    assert _move_notation(capture, board_height=8) == "e4xd5"
 
 
 def test_move_notation_formats_piece_moves_with_a_letter():
@@ -388,5 +388,5 @@ def test_move_notation_formats_piece_moves_with_a_letter():
     knight_move = MoveLogEntry(elapsed_ms=0, from_pos=Position(7, 6), to_pos=Position(5, 5), kind=KNIGHT, is_capture=False)
     queen_capture = MoveLogEntry(elapsed_ms=0, from_pos=Position(4, 4), to_pos=Position(0, 4), kind=QUEEN, is_capture=True)
 
-    assert _move_notation(knight_move, board_height=8) == "Nf3"
-    assert _move_notation(queen_capture, board_height=8) == "Qxe8"
+    assert _move_notation(knight_move, board_height=8) == "Ng1-f3"
+    assert _move_notation(queen_capture, board_height=8) == "Qe4xe8"
