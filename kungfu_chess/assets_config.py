@@ -9,9 +9,12 @@ from kungfu_chess.io.board_parser import color_kind_to_token
 """A shared asset reader for both view and realtime - both layers need
 information from the same CTD26 config.json files (view:
 graphics.frames_per_sec/is_loop for rendering, realtime:
-physics.speed_m_per_sec/next_state_when_finished for the game logic
-itself - see realtime/motion.py). This file doesn't belong to either
-layer - it simply knows how to read an asset by
+physics.next_state_when_finished for the game logic itself - see
+realtime/motion.py). Deliberately does NOT hand physics.speed_m_per_sec
+to the logic layer - that would leak a physical unit into code that
+should only know board cells and milliseconds; see MS_PER_CELL in
+realtime/motion.py for where that boundary is drawn. This file doesn't
+belong to either layer - it simply knows how to read an asset by
 (piece_set, asset_code, state)."""
 
 ASSETS_DIR = Path(__file__).resolve().parent / "assets"

@@ -15,11 +15,15 @@ _PHYSICS_REFERENCE_ASSET_CODE = "PW"
 _move_physics = load_state_config(_PHYSICS_REFERENCE_ASSET_CODE, "move", DEFAULT_PIECE_SET)["physics"]
 _jump_physics = load_state_config(_PHYSICS_REFERENCE_ASSET_CODE, "jump", DEFAULT_PIECE_SET)["physics"]
 
-# "Meter" isn't defined anywhere else in CTD26 - we set the conversion
-# ratio between board cell and meter ourselves: one square = one meter.
-METERS_PER_CELL = 1.0
-MOVE_SPEED_M_PER_SEC = _move_physics["speed_m_per_sec"]
-MS_PER_CELL = round(METERS_PER_CELL / MOVE_SPEED_M_PER_SEC * 1000)
+# A game-design constant, not read from config.json or any physical
+# unit at runtime - the logic layer only ever deals in board squares and
+# plain millisecond durations. Derived once, by hand, from CTD26's
+# physics.speed_m_per_sec=1.5 (one square = one meter, our own
+# assumption - CTD26 doesn't define "meter" anywhere else): 1 / 1.5 *
+# 1000 = 667. If CTD26's speed value ever changes, recompute this by
+# hand too - it must not silently re-derive itself from the asset on
+# every run.
+MS_PER_CELL = 667
 
 # Not our own arbitrary choice - read for real from config.json (physics.next_state_when_finished)
 MOVE_NEXT_STATE = _move_physics["next_state_when_finished"]  # "long_rest"
