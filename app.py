@@ -1,8 +1,6 @@
 # Git repo: https://github.com/EfratKatvan/KFChess.git
 from __future__ import annotations
 
-from typing import Tuple
-
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.input.controller import Controller
@@ -10,6 +8,8 @@ from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.view import image_view
+from kungfu_chess.view.image_view import GameSession
+from kungfu_chess.view.observers import MoveLogObserver
 from kungfu_chess.view.renderer import side_panel_width_for
 
 
@@ -27,14 +27,18 @@ STARTING_POSITION = [
 ]
 
 
-def build_game(cell_size: int) -> Tuple[GameEngine, Controller]:
+def build_game(cell_size: int) -> GameSession:
     board = build_board(STARTING_POSITION)
     rule_engine = RuleEngine(board)
     arbiter = RealTimeArbiter(board)
     engine = GameEngine(board, rule_engine, arbiter)
     mapper = BoardMapper(board, cell_size=cell_size, x_offset=side_panel_width_for(cell_size))
     controller = Controller(mapper, engine)
-    return engine, controller
+
+    move_log = MoveLogObserver()
+    engine.add_observer(move_log)
+
+    return GameSession(engine=engine, controller=controller, move_log=move_log)
 
 
 def main() -> None:

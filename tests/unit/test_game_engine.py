@@ -66,6 +66,58 @@ def test_snapshot_reflects_a_moving_piece_as_move_state():
 
 
 # ==========================================
+# add_observer - GameEngine fires MoveLoggedEvent, doesn't store history itself
+# ==========================================
+
+def test_request_move_notifies_registered_observers_of_the_move():
+    from kungfu_chess.model.game_state import GameObserver
+
+    _, _, engine, _ = make_stack([["wR", ".", "."]])
+    events = []
+
+    class SpyObserver(GameObserver):
+        def on_move_logged(self, event):
+            events.append(event)
+
+    engine.add_observer(SpyObserver())
+    engine.request_move(Position(0, 0), Position(0, 2))
+
+    [event] = events
+    assert event.color == WHITE
+    assert event.from_pos == Position(0, 0)
+    assert event.to_pos == Position(0, 2)
+    assert event.kind == "rook"
+    assert event.is_capture is False
+
+
+def test_request_move_does_not_notify_observers_when_the_move_is_rejected():
+    from kungfu_chess.model.game_state import GameObserver
+
+    _, _, engine, _ = make_stack([["wR", "wB", "."]])  # wB blocks wR's only destination on this row
+    events = []
+
+    class SpyObserver(GameObserver):
+        def on_move_logged(self, event):
+            events.append(event)
+
+    engine.add_observer(SpyObserver())
+    result = engine.request_move(Position(0, 0), Position(0, 1))
+
+    assert result.is_accepted is False
+    assert events == []
+
+
+def test_snapshot_passes_through_the_move_log_the_caller_supplies():
+    """GameEngine doesn't hold move history itself anymore - snapshot()
+    just forwards whatever the caller (see view/observers.py's
+    MoveLogObserver) already accumulated from the events it fired."""
+    _, _, engine, _ = make_stack([["wR", ".", "."]])
+
+    assert engine.snapshot().move_log == {}
+    assert engine.snapshot(move_log={WHITE: ()}).move_log == {WHITE: ()}
+
+
+# ==========================================
 # legal_destinations - ליעדים אפשריים להדגשה ויזואלית אחרי בחירת כלי
 # ==========================================
 

@@ -1,11 +1,10 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, build_board_view_state
 from kungfu_chess.model.board import BoardRepresentation
-from kungfu_chess.model.game_state import GameState
-from kungfu_chess.model.piece import WHITE, BLACK
+from kungfu_chess.model.game_state import GameObserver, GameState, MoveLoggedEvent
 from kungfu_chess.model.position import Position
 from kungfu_chess.rules.rule_engine import RuleEngine, REASON_OK
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
@@ -37,7 +36,13 @@ class GameEngine:
         self._rules = rule_engine
         self._arbiter = arbiter
         self._total_elapsed_ms = 0
-        self._move_log: Dict[str, List[MoveLogEntry]] = {WHITE: [], BLACK: []}
+        self._observers: List[GameObserver] = []
+
+    def add_observer(self, observer: GameObserver) -> None:
+        """Registers something that wants to react to game events
+        (currently: a completed move request) without this class holding
+        that data itself - see model.game_state.GameObserver."""
+        self._observers.append(observer)
 
     def is_game_over(self) -> bool:
         return self._state.game_over
@@ -106,9 +111,11 @@ class GameEngine:
 
         is_capture = self._state.board.piece_at(actual_to) is not None
         self._arbiter.start_motion(piece, actual_to)
-        self._move_log[piece.color].append(
-            MoveLogEntry(self._total_elapsed_ms, from_pos, actual_to, piece.kind, is_capture)
+        event = MoveLoggedEvent(
+            piece.color, from_pos, actual_to, piece.kind, is_capture, self._total_elapsed_ms
         )
+        for observer in self._observers:
+            observer.on_move_logged(event)
         return MoveResult(is_accepted=True, reason=REASON_OK)
 
     def try_jump(self, position: Position) -> bool:
@@ -133,12 +140,16 @@ class GameEngine:
         if self._arbiter.advance_time(time_ms):
             self._state.game_over = True
 
-    def snapshot(self) -> BoardViewState:
+    def snapshot(self, move_log: Optional[Dict[str, Tuple[MoveLogEntry, ...]]] = None) -> BoardViewState:
+        """move_log comes from the caller (see view/observers.py's
+        MoveLogObserver) - this class fires MoveLoggedEvent when a move
+        starts (see request_move) but doesn't store move history itself,
+        so it has nothing of its own to put here."""
         # Separates the logic layer from the view - returns a DTO, not real Board/Piece objects
         return build_board_view_state(
             board=self._state.board,
             arbiter=self._arbiter,
             game_over=self._state.game_over,
             total_elapsed_ms=self._total_elapsed_ms,
-            move_log={color: tuple(entries) for color, entries in self._move_log.items()},
+            move_log=move_log,
         )

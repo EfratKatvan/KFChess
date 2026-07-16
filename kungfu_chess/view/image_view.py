@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 import time
+from dataclasses import dataclass
 from typing import Callable, Optional, Tuple
 
 import cv2
@@ -10,7 +11,20 @@ from kungfu_chess.assets_config import DEFAULT_PIECE_SET
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.input.controller import Controller
+from kungfu_chess.view.observers import MoveLogObserver
 from kungfu_chess.view.renderer import Renderer, SIDE_PANEL_WIDTH, game_over_button_rect, side_panel_width_for
+
+
+@dataclass
+class GameSession:
+    """Everything a single run of the game needs, bundled so build_game
+    (see app.py) can hand it over in one piece - engine/controller as
+    before, plus the observers that now hold data GameEngine itself no
+    longer does (see model.game_state.GameObserver)."""
+
+    engine: GameEngine
+    controller: Controller
+    move_log: MoveLogObserver
 
 WINDOW_NAME = "Kung Fu Chess"
 ESC_KEY = 27
@@ -95,43 +109,41 @@ def compute_cell_size(board_width: int, board_height: int, screen_size: Callable
 
 
 def run(
-    build_game: Callable[[int], Tuple[GameEngine, Controller]],
+    build_game: Callable[[int], GameSession],
     cell_size: int = CELL_SIZE,
     piece_set: str = DEFAULT_PIECE_SET,
 ) -> None:
     """build_game(cell_size) is called once to start, and again every
     time the player restarts from the game-over screen - it must return a
-    fresh GameEngine/Controller pair each time (a new board, a new
-    arbiter), not reset an existing one, since neither type has a
-    reset() method. It takes cell_size so it can size its BoardMapper's
-    x_offset to match whatever this Renderer actually draws with (see
-    compute_cell_size for how callers typically pick that cell_size) -
-    a mismatch here would reproduce the old HUD_HEIGHT click-mapping gap.
-    The Renderer is created once here (not global state) - its caches
-    (animations/board background) stay alive across restarts too."""
+    fresh GameSession each time (a new board, a new arbiter, fresh
+    observers), not reset an existing one, since none of those types
+    have a reset() method. It takes cell_size so it can size its
+    BoardMapper's x_offset to match whatever this Renderer actually
+    draws with (see compute_cell_size for how callers typically pick
+    that cell_size) - a mismatch here would reproduce the old
+    HUD_HEIGHT click-mapping gap. The Renderer is created once here (not
+    global state) - its caches (animations/board background) stay alive
+    across restarts too."""
     _disable_windows_dpi_scaling()
     cv2.namedWindow(WINDOW_NAME)
 
     current = {}
 
     def start_new_game() -> None:
-        engine, controller = build_game(cell_size)
-        current["engine"] = engine
-        current["controller"] = controller
+        current["session"] = build_game(cell_size)
 
     def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
-        engine = current["engine"]
-        controller = current["controller"]
+        session = current["session"]
         if event == cv2.EVENT_LBUTTONDOWN:
-            if engine.is_game_over():
-                view_state = engine.snapshot()
+            if session.engine.is_game_over():
+                view_state = session.engine.snapshot()
                 button_rect = game_over_button_rect(view_state.width, view_state.height, cell_size)
                 if _point_in_rect(x, y, button_rect):
                     start_new_game()
                 return
-            controller.handle_click(x, y)
+            session.controller.handle_click(x, y)
         elif event == cv2.EVENT_RBUTTONDOWN:
-            controller.handle_jump(x, y)
+            session.controller.handle_jump(x, y)
 
     start_new_game()
     cv2.setMouseCallback(WINDOW_NAME, on_mouse)
@@ -144,11 +156,12 @@ def run(
             dt_ms = int((now - last_time) * 1000)
             last_time = now
 
-            engine = current["engine"]
-            controller = current["controller"]
+            session = current["session"]
+            engine = session.engine
+            controller = session.controller
 
             engine.wait(dt_ms)
-            view_state = engine.snapshot()
+            view_state = engine.snapshot(move_log=session.move_log.as_dict())
             selected = controller.selected_pos
             legal_destinations = engine.legal_destinations(selected) if selected is not None else None
             canvas = frame_renderer.draw(
