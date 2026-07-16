@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Callable, List
 
-from kungfu_chess.model.board import Board
+from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.input.controller import Controller
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.io.board_printer import print_board
@@ -12,7 +12,7 @@ def run_commands(
     commands: List[str],
     controller: Controller,
     engine: GameEngine,
-    board: Board,
+    board: BoardRepresentation,
     print_fn: Callable[[str], None] = print,
 ) -> None:
     """Through the public path only - never bypasses straight to arbiter/board."""

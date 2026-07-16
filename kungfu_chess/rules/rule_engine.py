@@ -2,8 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Optional, Protocol, Set
 
-from kungfu_chess.model.board import Board
-from kungfu_chess.model.piece import KING, PAWN, QUEEN, WHITE, Piece
+from kungfu_chess.model.board import BoardRepresentation
+from kungfu_chess.model.piece import KING, PAWN, QUEEN, WHITE, PieceRepresentation
 from kungfu_chess.model.position import Position
 from kungfu_chess.rules.board_rules import (
     BoardRules,
@@ -30,7 +30,7 @@ class RuleEngine:
 
     def __init__(
         self,
-        board: Board,
+        board: BoardRepresentation,
         piece_rules: Optional[Dict[str, PieceRule]] = None,
         board_rules: Optional[BoardRules] = None,
     ) -> None:
@@ -66,11 +66,11 @@ class WinCondition(Protocol):
     different win condition (e.g. capturing all rooks) without touching
     RealTimeArbiter."""
 
-    def is_game_over(self, captured_piece: Optional[Piece]) -> bool: ...
+    def is_game_over(self, captured_piece: Optional[PieceRepresentation]) -> bool: ...
 
 
 class KingCaptureWinCondition:
-    def is_game_over(self, captured_piece: Optional[Piece]) -> bool:
+    def is_game_over(self, captured_piece: Optional[PieceRepresentation]) -> bool:
         return captured_piece is not None and captured_piece.kind == KING
 
 
@@ -79,11 +79,11 @@ class PromotionRule(Protocol):
     swappable to support a different promotion rule (e.g. promoting to
     a rook) without touching RealTimeArbiter."""
 
-    def promote(self, piece: Piece, board_height: int) -> None: ...
+    def promote(self, piece: PieceRepresentation, board_height: int) -> None: ...
 
 
 class LastRankPromotion:
-    def promote(self, piece: Piece, board_height: int) -> None:
+    def promote(self, piece: PieceRepresentation, board_height: int) -> None:
         if piece.kind != PAWN:
             return
         last_rank = 0 if piece.color == WHITE else board_height - 1

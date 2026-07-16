@@ -1,8 +1,8 @@
 from __future__ import annotations
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Protocol, Set
 
 from kungfu_chess.model.position import Position
-from kungfu_chess.model.piece import Piece
+from kungfu_chess.model.piece import Piece, PieceRepresentation
 
 
 class CellOccupiedError(Exception):
@@ -14,6 +14,31 @@ class DuplicatePieceIdError(Exception):
     """Raised when trying to add a piece whose id is already on the
     board - a piece's stable identity is used to track motion
     (RealTimeArbiter), so it must be unique."""
+
+
+class BoardRepresentation(Protocol):
+    """The shape rules/engine/realtime actually call on a board - Board
+    (below) satisfies this structurally, without inheriting from it.
+    move_piece is deliberately not part of this: nothing outside
+    Board's own tests calls it, every real mutation goes through
+    add_piece/remove_piece. See
+    tests/unit/test_board_representation.py for a second, list-backed
+    implementation proving rule/engine code runs unchanged against
+    either one - the actual point of this Protocol."""
+
+    @property
+    def width(self) -> int: ...
+
+    @property
+    def height(self) -> int: ...
+
+    def is_inside(self, position: Position) -> bool: ...
+
+    def piece_at(self, position: Position) -> Optional[PieceRepresentation]: ...
+
+    def add_piece(self, piece: PieceRepresentation) -> None: ...
+
+    def remove_piece(self, piece: PieceRepresentation) -> None: ...
 
 
 class Board:

@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import Protocol, Set
 
-from kungfu_chess.model.board import Board
-from kungfu_chess.model.piece import Piece, WHITE, ROOK, BISHOP, QUEEN, KNIGHT, KING, PAWN
+from kungfu_chess.model.board import BoardRepresentation
+from kungfu_chess.model.piece import PieceRepresentation, WHITE, ROOK, BISHOP, QUEEN, KNIGHT, KING, PAWN
 from kungfu_chess.model.position import Position
 
 
@@ -12,9 +12,9 @@ class PieceRule(Protocol):
     added without touching RuleEngine, as long as it has a method with
     this signature."""
 
-    def legal_destinations(self, board: Board, piece: Piece) -> Set[Position]: ...
+    def legal_destinations(self, board: BoardRepresentation, piece: PieceRepresentation) -> Set[Position]: ...
 
-def _sliding_destinations(board: Board, piece: Piece, directions) -> Set[Position]:
+def _sliding_destinations(board: BoardRepresentation, piece: PieceRepresentation, directions) -> Set[Position]:
     destinations: Set[Position] = set()
     for dr, dc in directions:
         row, col = piece.cell.row + dr, piece.cell.col + dc
@@ -32,7 +32,7 @@ def _sliding_destinations(board: Board, piece: Piece, directions) -> Set[Positio
             position = Position(row, col)
     return destinations
 
-def _step_destinations(board: Board, piece: Piece, offsets) -> Set[Position]:
+def _step_destinations(board: BoardRepresentation, piece: PieceRepresentation, offsets) -> Set[Position]:
     destinations: Set[Position] = set()
     for dr, dc in offsets:
         position = Position(piece.cell.row + dr, piece.cell.col + dc)
@@ -46,19 +46,19 @@ def _step_destinations(board: Board, piece: Piece, offsets) -> Set[Position]:
 
 class RookRules:
     @staticmethod
-    def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(board: BoardRepresentation, piece: PieceRepresentation) -> Set[Position]:
         return _sliding_destinations(board, piece, [(1, 0), (-1, 0), (0, 1), (0, -1)])
 
 
 class BishopRules:
     @staticmethod
-    def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(board: BoardRepresentation, piece: PieceRepresentation) -> Set[Position]:
         return _sliding_destinations(board, piece, [(1, 1), (1, -1), (-1, 1), (-1, -1)])
 
 
 class QueenRules:
     @staticmethod
-    def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(board: BoardRepresentation, piece: PieceRepresentation) -> Set[Position]:
         return RookRules.legal_destinations(board, piece) | BishopRules.legal_destinations(board, piece)
 
 
@@ -66,7 +66,7 @@ class KnightRules:
     _OFFSETS = [(1, 2), (1, -2), (-1, 2), (-1, -2), (2, 1), (2, -1), (-2, 1), (-2, -1)]
 
     @staticmethod
-    def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(board: BoardRepresentation, piece: PieceRepresentation) -> Set[Position]:
         return _step_destinations(board, piece, KnightRules._OFFSETS)
 
 
@@ -74,11 +74,11 @@ class KingRules:
     _OFFSETS = [(dr, dc) for dr in (-1, 0, 1) for dc in (-1, 0, 1) if (dr, dc) != (0, 0)]
 
     @staticmethod
-    def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(board: BoardRepresentation, piece: PieceRepresentation) -> Set[Position]:
         return _step_destinations(board, piece, KingRules._OFFSETS)
 
 
-def _pawn_start_row(board: Board, color: str) -> int:
+def _pawn_start_row(board: BoardRepresentation, color: str) -> int:
     """A pawn's starting row - one row in from its edge, at any board height."""
     return board.height - 2 if color == WHITE else 1
 
@@ -86,7 +86,7 @@ def _pawn_start_row(board: Board, color: str) -> int:
 # Intentional: no en passant, no promotion here (that's in RealTimeArbiter).
 class PawnRules:
     @staticmethod
-    def legal_destinations(board: Board, piece: Piece) -> Set[Position]:
+    def legal_destinations(board: BoardRepresentation, piece: PieceRepresentation) -> Set[Position]:
         direction = -1 if piece.color == WHITE else 1
         destinations: Set[Position] = set()
 

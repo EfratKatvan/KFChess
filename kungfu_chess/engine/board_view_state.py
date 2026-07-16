@@ -3,9 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 
-from kungfu_chess.model.board import Board
+from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.model.piece import IDLE as IDLE_STATE
-from kungfu_chess.model.piece import Piece
+from kungfu_chess.model.piece import PieceRepresentation
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import SHORT_REST, motion_duration_ms
 from kungfu_chess.realtime.real_time_arbiter import (
@@ -60,7 +60,7 @@ class BoardViewState:
     move_log: Dict[str, Tuple[MoveLogEntry, ...]] = field(default_factory=dict)
 
 
-def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms: int) -> PieceView:
+def _resolve_piece_view(piece: PieceRepresentation, arbiter: RealTimeArbiter, total_elapsed_ms: int) -> PieceView:
     """The check order (jump -> motion -> cooldown -> idle) matches the
     fact that a piece can never be in a jump and a motion at once
     (RealTimeArbiter blocks that) - there's no ambiguity about which
@@ -102,7 +102,7 @@ def _resolve_piece_view(piece: Piece, arbiter: RealTimeArbiter, total_elapsed_ms
 
 
 def build_board_view_state(
-    board: Board,
+    board: BoardRepresentation,
     arbiter: RealTimeArbiter,
     game_over: bool,
     total_elapsed_ms: int,

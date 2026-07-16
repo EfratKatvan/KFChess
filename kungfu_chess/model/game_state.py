@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
-from kungfu_chess.model.board import Board
+from kungfu_chess.model.board import BoardRepresentation
 
 
 @dataclass
@@ -13,5 +13,5 @@ class GameState:
     parsing - those belong to other layers (RealTimeArbiter, Controller,
     Renderer, IO)."""
 
-    board: Board
+    board: BoardRepresentation
     game_over: bool = False

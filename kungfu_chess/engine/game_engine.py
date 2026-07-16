@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Dict, List, Set
 
 from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, build_board_view_state
-from kungfu_chess.model.board import Board
+from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.model.game_state import GameState
 from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.model.position import Position
@@ -32,7 +32,7 @@ class GameEngine:
     nothing about pixels, drawing, text parsing, or piece-movement
     logic."""
 
-    def __init__(self, board: Board, rule_engine: RuleEngine, arbiter: RealTimeArbiter) -> None:
+    def __init__(self, board: BoardRepresentation, rule_engine: RuleEngine, arbiter: RealTimeArbiter) -> None:
         self._state = GameState(board=board)
         self._rules = rule_engine
         self._arbiter = arbiter

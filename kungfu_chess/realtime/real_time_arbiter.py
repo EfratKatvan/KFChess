@@ -1,8 +1,8 @@
 from __future__ import annotations
 from typing import Dict, List, Optional
 
-from kungfu_chess.model.board import Board
-from kungfu_chess.model.piece import Piece, IDLE, MOVING, CAPTURED, WHITE, BLACK
+from kungfu_chess.model.board import BoardRepresentation
+from kungfu_chess.model.piece import PieceRepresentation, IDLE, MOVING, CAPTURED, WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import (
     JUMP_NEXT_STATE,
@@ -55,7 +55,7 @@ class RealTimeArbiter:
 
     def __init__(
         self,
-        board: Board,
+        board: BoardRepresentation,
         win_condition: Optional[WinCondition] = None,
         promotion_rule: Optional[PromotionRule] = None,
     ) -> None:
@@ -159,7 +159,7 @@ class RealTimeArbiter:
         closest = min(cutoffs, key=lambda c: max(abs(c.row - from_pos.row), abs(c.col - from_pos.col)))
         return None if closest == from_pos else closest
 
-    def start_motion(self, piece: Piece, to_pos: Position) -> None:
+    def start_motion(self, piece: PieceRepresentation, to_pos: Position) -> None:
         from_pos = piece.cell
         travel_time = motion_duration_ms(from_pos, to_pos)
         piece.state = MOVING

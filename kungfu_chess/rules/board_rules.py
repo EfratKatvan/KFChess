@@ -1,7 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
-from kungfu_chess.model.board import Board
+from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.model.position import Position
 
 REASON_OUTSIDE_BOARD = "outside_board"
@@ -21,7 +21,7 @@ class BoardRules:
     (piece_rules) so the two responsibilities can be read, tested, and
     replaced independently."""
 
-    def check(self, board: Board, from_pos: Position, to_pos: Position) -> BoardCheck:
+    def check(self, board: BoardRepresentation, from_pos: Position, to_pos: Position) -> BoardCheck:
         if not board.is_inside(from_pos) or not board.is_inside(to_pos):
             return BoardCheck(False, REASON_OUTSIDE_BOARD)
 

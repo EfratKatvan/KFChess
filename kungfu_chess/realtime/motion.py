@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET, load_state_config
-from kungfu_chess.model.piece import Piece
+from kungfu_chess.model.piece import PieceRepresentation
 from kungfu_chess.model.position import Position
 
 # Reads physics.* for real from CTD26's config.json - not hand-copied
@@ -59,7 +59,7 @@ class Motion:
     while this motion is active (is_piece_in_motion prevents this piece
     from being selected for a second, simultaneous motion)."""
 
-    piece: Piece
+    piece: PieceRepresentation
     to_pos: Position
     remaining_ms: int
 

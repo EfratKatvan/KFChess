@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import Optional
 
-from kungfu_chess.model.board import Board
+from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.model.position import Position
 
 CELL_SIZE = 100
@@ -16,7 +16,7 @@ class BoardMapper:
     preserve the original behavior for any consumer that doesn't render
     those panels (tests, the text flow)."""
 
-    def __init__(self, board: Board, cell_size: int = CELL_SIZE, x_offset: int = 0, y_offset: int = 0) -> None:
+    def __init__(self, board: BoardRepresentation, cell_size: int = CELL_SIZE, x_offset: int = 0, y_offset: int = 0) -> None:
         self._board = board
         self._cell_size = cell_size
         self._x_offset = x_offset
