@@ -74,7 +74,15 @@ def compute_cell_size(board_width: int, board_height: int, screen_size: Callable
     mid-game), so the whole layout fits whatever screen is actually
     available instead of always being the fixed default CELL_SIZE.
     screen_size is injectable so tests can supply a fixed fake resolution
-    instead of depending on the real display."""
+    instead of depending on the real display.
+
+    Calls _disable_windows_dpi_scaling() itself, before querying the
+    resolution - callers (see app.py) may run this before ever calling
+    run(), and without DPI-awareness set first, Windows silently hands
+    back the *scaled-down* resolution instead of the real one, on any
+    machine with Display Scaling != 100% - producing a board sized as if
+    the screen were smaller than it actually is."""
+    _disable_windows_dpi_scaling()
     screen_width, screen_height = screen_size()
     if screen_width is None or screen_height is None:
         return CELL_SIZE
