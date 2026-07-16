@@ -40,6 +40,12 @@ GAME_OVER_THICKNESS = 4
 GAME_OVER_BAND_HEIGHT = 90
 GAME_OVER_BAND_COLOR_BGRA = (20, 20, 20, 190)
 
+# Smaller hint line under GAME OVER - matches image_view.RESTART_KEYS.
+GAME_OVER_HINT_TEXT = "Press R to restart, ESC to quit"
+GAME_OVER_HINT_FONT_SIZE = 0.6
+GAME_OVER_HINT_THICKNESS = 1
+GAME_OVER_HINT_OFFSET_Y = 34
+
 # Side panels flanking the board - one per team, with the running score
 # and a chronological move log (BoardViewState.scores / move_log).
 # Intentionally not part of the board itself (BoardView) - an addition
@@ -115,10 +121,13 @@ def _piece_at(view_state: BoardViewState, position: Position) -> Optional[PieceV
 
 def _draw_game_over_overlay(canvas: Img, board_x: int, board_pixel_width: int, board_pixel_height: int) -> None:
     band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
+    center_x = board_x + board_pixel_width // 2
+    center_y = band_y + GAME_OVER_BAND_HEIGHT // 2
     _blend_solid_rect(canvas, board_x, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, GAME_OVER_BAND_COLOR_BGRA)
+    _draw_centered_text(canvas, GAME_OVER_TEXT, center_x, center_y, GAME_OVER_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_THICKNESS)
     _draw_centered_text(
-        canvas, GAME_OVER_TEXT, board_x + board_pixel_width // 2, band_y + GAME_OVER_BAND_HEIGHT // 2,
-        GAME_OVER_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_THICKNESS,
+        canvas, GAME_OVER_HINT_TEXT, center_x, center_y + GAME_OVER_HINT_OFFSET_Y,
+        GAME_OVER_HINT_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_HINT_THICKNESS,
     )
 
 
