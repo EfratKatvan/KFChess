@@ -28,6 +28,45 @@ def test_draw_returns_a_canvas_sized_to_the_board_plus_the_side_panels():
     assert (width, height) == (200 + 2 * SIDE_PANEL_WIDTH, 300)
 
 
+def test_side_panel_width_for_scales_proportionally_with_cell_size():
+    from kungfu_chess.view.renderer import SIDE_PANEL_WIDTH, side_panel_width_for
+    from kungfu_chess.input.board_mapper import CELL_SIZE
+
+    assert side_panel_width_for(CELL_SIZE) == SIDE_PANEL_WIDTH  # the reference size is a no-op
+    assert side_panel_width_for(CELL_SIZE * 2) == SIDE_PANEL_WIDTH * 2
+    assert side_panel_width_for(CELL_SIZE // 2) == SIDE_PANEL_WIDTH // 2
+
+
+def test_draw_scales_the_canvas_and_panels_together_at_a_non_default_cell_size():
+    from kungfu_chess.view.renderer import side_panel_width_for
+
+    view_state = BoardViewState(width=2, height=2, game_over=False, pieces=())
+    cell_size = 60
+
+    canvas = Renderer().draw(view_state, cell_size=cell_size)
+
+    height, width = canvas.img.shape[:2]
+    expected_panel_width = side_panel_width_for(cell_size)
+    assert (width, height) == (2 * cell_size + 2 * expected_panel_width, 2 * cell_size)
+
+
+def test_draw_maps_a_piece_at_a_non_default_cell_size_into_the_shifted_board_area():
+    """A regression guard for the click-mapping-gap bug class: a piece
+    drawn at a scaled cell_size must land to the right of the (also
+    scaled) side panel, not at some stale fixed offset."""
+    from kungfu_chess.view.renderer import side_panel_width_for
+
+    cell_size = 60
+    piece = make_piece_view(WHITE, ROOK, 0, 0)
+    view_state = BoardViewState(width=1, height=1, game_over=False, pieces=(piece,))
+
+    canvas = Renderer().draw(view_state, cell_size=cell_size)
+
+    panel_width = side_panel_width_for(cell_size)
+    # the piece's own cell should not be blank/background-colored at its expected pixel origin
+    assert tuple(canvas.img[cell_size // 2, panel_width + cell_size // 2]) != tuple(canvas.img[0, 0])
+
+
 def test_draw_accepts_either_piece_set():
     view_state = BoardViewState(width=1, height=1, game_over=False, pieces=(make_piece_view(WHITE, QUEEN, 0, 0),))
     renderer = Renderer()

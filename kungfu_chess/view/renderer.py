@@ -65,7 +65,12 @@ GAME_OVER_HINT_OFFSET_Y = 165  # from the band's top edge
 # Side panels flanking the board - one per team, with the running score
 # and a chronological move log (BoardViewState.scores / move_log).
 # Intentionally not part of the board itself (BoardView) - an addition
-# from the Renderer, not part of "what the board looks like".
+# from the Renderer, not part of "what the board looks like". SIDE_PANEL_WIDTH
+# is the reference width at the reference CELL_SIZE (image_view.py may pick a
+# different cell_size to fit the real screen - see compute_cell_size there) -
+# side_panel_width_for() scales it to whatever cell_size is actually in use,
+# so the panel stays legible relative to the board instead of the board
+# scaling while the panel stays pinned at a fixed pixel width.
 SIDE_PANEL_WIDTH = 220
 SIDE_PANEL_BACKGROUND_COLOR_BGRA = (40, 40, 40, 255)
 SIDE_PANEL_TEXT_COLOR_BGRA = (255, 255, 255, 255)
@@ -86,6 +91,13 @@ SIDE_PANEL_MOVE_COLUMN_FRACTION = 0.45  # how far across the panel the "Move" co
 # Thin divider line between each side panel and the board itself.
 SIDE_PANEL_DIVIDER_COLOR_BGRA = (90, 90, 90, 255)
 SIDE_PANEL_DIVIDER_THICKNESS = 2
+
+
+def side_panel_width_for(cell_size: int) -> int:
+    """Scales SIDE_PANEL_WIDTH to whatever cell_size is actually being
+    rendered at, keeping the same ratio it has to CELL_SIZE (the
+    reference size) - see the SIDE_PANEL_WIDTH comment above."""
+    return round(SIDE_PANEL_WIDTH / CELL_SIZE * cell_size)
 
 
 def _blend_solid_rect(canvas: Img, x: int, y: int, width: int, height: int, color_bgra) -> None:
@@ -142,7 +154,7 @@ def game_over_button_rect(board_width: int, board_height: int, cell_size: int) -
     board_pixel_width = board_width * cell_size
     board_pixel_height = board_height * cell_size
     band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
-    center_x = SIDE_PANEL_WIDTH + board_pixel_width // 2
+    center_x = side_panel_width_for(cell_size) + board_pixel_width // 2
     button_center_y = band_y + GAME_OVER_BUTTON_OFFSET_Y
     return (
         center_x - GAME_OVER_BUTTON_WIDTH // 2,
@@ -156,9 +168,10 @@ def _draw_game_over_overlay(canvas: Img, view_state: BoardViewState, cell_size: 
     board_pixel_width = view_state.width * cell_size
     board_pixel_height = view_state.height * cell_size
     band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
-    center_x = SIDE_PANEL_WIDTH + board_pixel_width // 2
+    side_panel_width = side_panel_width_for(cell_size)
+    center_x = side_panel_width + board_pixel_width // 2
 
-    _blend_solid_rect(canvas, SIDE_PANEL_WIDTH, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, GAME_OVER_BAND_COLOR_BGRA)
+    _blend_solid_rect(canvas, side_panel_width, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, GAME_OVER_BAND_COLOR_BGRA)
     _draw_centered_text(
         canvas, GAME_OVER_TEXT, center_x, band_y + GAME_OVER_TITLE_OFFSET_Y,
         GAME_OVER_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_THICKNESS,
@@ -181,11 +194,11 @@ def _draw_game_over_overlay(canvas: Img, view_state: BoardViewState, cell_size: 
 def _cell_pixel_pos(position: Position, cell_size: int) -> Tuple[int, int]:
     """Converts a logical cell to a pixel on the full canvas (including
     the left side panel) - a single point that applies the panel offset,
-    so there aren't several copies of the same +SIDE_PANEL_WIDTH
+    so there aren't several copies of the same side-panel-width math
     scattered across draw() (exactly the kind of duplication that once
     caused the gap between click mapping and actual rendering)."""
     x, y = BoardView.cell_to_pixel(position, cell_size)
-    return x + SIDE_PANEL_WIDTH, y
+    return x + side_panel_width_for(cell_size), y
 
 
 def _draw_centered_text(canvas: Img, text: str, center_x: int, center_y: int, font_size: float, color_bgra, thickness: int) -> None:
@@ -220,10 +233,12 @@ def _draw_side_panel(
     score: int,
     entries: Tuple[MoveLogEntry, ...],
     board_height: int,
+    cell_size: int,
 ) -> None:
-    _blend_solid_rect(canvas, x, 0, SIDE_PANEL_WIDTH, panel_height, SIDE_PANEL_BACKGROUND_COLOR_BGRA)
+    panel_width = side_panel_width_for(cell_size)
+    _blend_solid_rect(canvas, x, 0, panel_width, panel_height, SIDE_PANEL_BACKGROUND_COLOR_BGRA)
 
-    center_x = x + SIDE_PANEL_WIDTH // 2
+    center_x = x + panel_width // 2
     _draw_centered_text(
         canvas, team_label, center_x, SIDE_PANEL_TEAM_LABEL_Y,
         SIDE_PANEL_HEADER_FONT_SIZE, SIDE_PANEL_TEXT_COLOR_BGRA, SIDE_PANEL_HEADER_THICKNESS,
@@ -234,7 +249,7 @@ def _draw_side_panel(
     )
 
     time_column_x = x + SIDE_PANEL_PADDING
-    move_column_x = x + round(SIDE_PANEL_WIDTH * SIDE_PANEL_MOVE_COLUMN_FRACTION)
+    move_column_x = x + round(panel_width * SIDE_PANEL_MOVE_COLUMN_FRACTION)
     canvas.put_text("Time", time_column_x, SIDE_PANEL_COLUMNS_Y, SIDE_PANEL_ROW_FONT_SIZE, SIDE_PANEL_ACCENT_COLOR_BGRA, SIDE_PANEL_ROW_THICKNESS)
     canvas.put_text("Move", move_column_x, SIDE_PANEL_COLUMNS_Y, SIDE_PANEL_ROW_FONT_SIZE, SIDE_PANEL_ACCENT_COLOR_BGRA, SIDE_PANEL_ROW_THICKNESS)
 
@@ -272,23 +287,24 @@ class Renderer:
         stays unit-testable. selected_position/legal_destinations are
         intentionally not part of BoardViewState - those are choices/
         queries on the view/input side, not the game's own state."""
+        side_panel_width = side_panel_width_for(cell_size)
         board_pixel_width = view_state.width * cell_size
         board_pixel_height = view_state.height * cell_size
-        canvas_width = 2 * SIDE_PANEL_WIDTH + board_pixel_width
+        canvas_width = 2 * side_panel_width + board_pixel_width
 
         canvas = Img()
         canvas.img = np.full(
             (board_pixel_height, canvas_width, 4), SIDE_PANEL_BACKGROUND_COLOR_BGRA, dtype=np.uint8
         )
         board_background = self._board_view.new_canvas(view_state.width, view_state.height, cell_size)
-        board_background.draw_on(canvas, SIDE_PANEL_WIDTH, 0)
+        board_background.draw_on(canvas, side_panel_width, 0)
 
         for piece_view in view_state.pieces:
             if piece_view.target_position is not None and piece_view.progress is not None:
                 x, y = BoardView.lerp_pixel(
                     piece_view.position, piece_view.target_position, piece_view.progress, cell_size
                 )
-                pixel_pos = (x + SIDE_PANEL_WIDTH, y)
+                pixel_pos = (x + side_panel_width, y)
             else:
                 pixel_pos = _cell_pixel_pos(piece_view.position, cell_size)
 
@@ -321,13 +337,13 @@ class Renderer:
 
         _draw_side_panel(
             canvas, 0, board_pixel_height, "Black",
-            view_state.scores.get(BLACK, 0), view_state.move_log.get(BLACK, ()), view_state.height,
+            view_state.scores.get(BLACK, 0), view_state.move_log.get(BLACK, ()), view_state.height, cell_size,
         )
         _draw_side_panel(
-            canvas, SIDE_PANEL_WIDTH + board_pixel_width, board_pixel_height, "White",
-            view_state.scores.get(WHITE, 0), view_state.move_log.get(WHITE, ()), view_state.height,
+            canvas, side_panel_width + board_pixel_width, board_pixel_height, "White",
+            view_state.scores.get(WHITE, 0), view_state.move_log.get(WHITE, ()), view_state.height, cell_size,
         )
-        _blend_solid_rect(canvas, SIDE_PANEL_WIDTH - SIDE_PANEL_DIVIDER_THICKNESS, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)
-        _blend_solid_rect(canvas, SIDE_PANEL_WIDTH + board_pixel_width, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)
+        _blend_solid_rect(canvas, side_panel_width - SIDE_PANEL_DIVIDER_THICKNESS, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)
+        _blend_solid_rect(canvas, side_panel_width + board_pixel_width, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)
 
         return canvas

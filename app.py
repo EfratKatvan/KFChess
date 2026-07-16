@@ -10,7 +10,7 @@ from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.view import image_view
-from kungfu_chess.view.renderer import SIDE_PANEL_WIDTH
+from kungfu_chess.view.renderer import side_panel_width_for
 
 
 PIECE_SET = "pieces2"
@@ -27,18 +27,20 @@ STARTING_POSITION = [
 ]
 
 
-def build_game() -> Tuple[GameEngine, Controller]:
+def build_game(cell_size: int) -> Tuple[GameEngine, Controller]:
     board = build_board(STARTING_POSITION)
     rule_engine = RuleEngine(board)
     arbiter = RealTimeArbiter(board)
     engine = GameEngine(board, rule_engine, arbiter)
-    mapper = BoardMapper(board, x_offset=SIDE_PANEL_WIDTH)
+    mapper = BoardMapper(board, cell_size=cell_size, x_offset=side_panel_width_for(cell_size))
     controller = Controller(mapper, engine)
     return engine, controller
 
 
 def main() -> None:
-    image_view.run(build_game, piece_set=PIECE_SET)
+    board_width, board_height = len(STARTING_POSITION[0]), len(STARTING_POSITION)
+    cell_size = image_view.compute_cell_size(board_width, board_height)
+    image_view.run(build_game, cell_size=cell_size, piece_set=PIECE_SET)
 
 
 if __name__ == "__main__":
