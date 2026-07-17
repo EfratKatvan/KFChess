@@ -1,7 +1,7 @@
-from kungfu_chess.model.game_state import MoveLoggedEvent
-from kungfu_chess.model.piece import WHITE, BLACK, PAWN, KNIGHT
+from kungfu_chess.model.game_state import MoveLoggedEvent, PieceCapturedEvent
+from kungfu_chess.model.piece import WHITE, BLACK, PAWN, KNIGHT, QUEEN, ROOK
 from kungfu_chess.model.position import Position
-from kungfu_chess.view.observers import MoveLogObserver
+from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
 
 
 def test_move_log_observer_starts_empty():
@@ -48,3 +48,28 @@ def test_move_log_observer_as_dict_is_a_snapshot_not_a_live_reference():
     observer.on_move_logged(MoveLoggedEvent(WHITE, Position(6, 3), Position(4, 3), PAWN, False, 1000))
 
     assert len(first[WHITE]) == 1
+
+
+def test_score_observer_starts_at_zero_for_both_colors():
+    observer = ScoreObserver()
+    assert observer.as_dict() == {WHITE: 0, BLACK: 0}
+
+
+def test_score_observer_accumulates_points_per_color():
+    observer = ScoreObserver()
+
+    observer.on_piece_captured(PieceCapturedEvent(WHITE, QUEEN, 9))
+    observer.on_piece_captured(PieceCapturedEvent(WHITE, PAWN, 1))
+    observer.on_piece_captured(PieceCapturedEvent(BLACK, ROOK, 5))
+
+    assert observer.as_dict() == {WHITE: 10, BLACK: 5}
+
+
+def test_score_observer_as_dict_is_a_snapshot_not_a_live_reference():
+    observer = ScoreObserver()
+    observer.on_piece_captured(PieceCapturedEvent(WHITE, QUEEN, 9))
+
+    first = observer.as_dict()
+    observer.on_piece_captured(PieceCapturedEvent(WHITE, PAWN, 1))
+
+    assert first[WHITE] == 9

@@ -63,31 +63,59 @@ def test_arriving_piece_captures_enemy_piece():
     assert king_captured is False
 
 
-def test_capturing_a_piece_awards_its_point_value_to_the_capturer():
+def test_capturing_a_piece_fires_a_piece_captured_event_with_its_point_value():
+    """RealTimeArbiter doesn't keep a running score itself anymore - it
+    fires PieceCapturedEvent the instant a capture resolves, and moves
+    on (see view/observers.py's ScoreObserver, which is what actually
+    accumulates this for the real game - the same split already used
+    for move logging)."""
+    from kungfu_chess.model.game_state import GameObserver
+
     board = Board(width=3, height=1)
     rook = add(board, "wR", WHITE, ROOK, 0, 0)
     add(board, "bQ", BLACK, QUEEN, 0, 2)  # queen = 9 points
     arbiter = RealTimeArbiter(board)
-    arbiter.start_motion(rook, Position(0, 2))
+    events = []
 
+    class SpyObserver(GameObserver):
+        def on_piece_captured(self, event):
+            events.append(event)
+
+    arbiter.add_observer(SpyObserver())
+    arbiter.start_motion(rook, Position(0, 2))
     arbiter.advance_time(2000)
 
-    assert arbiter.scores == {WHITE: 9, BLACK: 0}
+    [event] = events
+    assert event.color == WHITE
+    assert event.kind == QUEEN
+    assert event.points == 9
 
 
-def test_swallowing_an_attacker_mid_air_awards_points_to_the_jumper():
+def test_swallowing_an_attacker_mid_air_fires_a_piece_captured_event_for_the_jumper():
     """מקביל ל-test_jump_saves_piece_from_arriving_enemy - הכלי הקופץ
     (wK) "בולע" את התוקף (bR, 5 נקודות) בלי לנחות בפועל."""
+    from kungfu_chess.model.game_state import GameObserver
+
     board = Board(width=3, height=1)
     add(board, "wK", WHITE, KING, 0, 0)
     enemy = add(board, "bR", BLACK, ROOK, 0, 1)
     arbiter = RealTimeArbiter(board)
+    events = []
+
+    class SpyObserver(GameObserver):
+        def on_piece_captured(self, event):
+            events.append(event)
+
+    arbiter.add_observer(SpyObserver())
     arbiter.start_jump(Position(0, 0))
     arbiter.start_motion(enemy, Position(0, 0))
 
     arbiter.advance_time(1000)
 
-    assert arbiter.scores == {WHITE: 5, BLACK: 0}
+    [event] = events
+    assert event.color == WHITE
+    assert event.kind == ROOK
+    assert event.points == 5
 
 
 def test_a_piece_captured_mid_flight_does_not_resurrect_on_its_own_arrival():

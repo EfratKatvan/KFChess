@@ -117,6 +117,41 @@ def test_snapshot_passes_through_the_move_log_the_caller_supplies():
     assert engine.snapshot(move_log={WHITE: ()}).move_log == {WHITE: ()}
 
 
+def test_snapshot_passes_through_the_scores_the_caller_supplies():
+    """Same pass-through as move_log, but for scores (see
+    view/observers.py's ScoreObserver) - RealTimeArbiter no longer holds
+    a running score itself either."""
+    _, _, engine, _ = make_stack([["wR", ".", "."]])
+
+    assert engine.snapshot().scores == {}
+    assert engine.snapshot(scores={WHITE: 9}).scores == {WHITE: 9}
+
+
+def test_add_observer_also_registers_with_the_arbiter_for_capture_events():
+    """A single engine.add_observer() call must reach both move events
+    (fired by GameEngine.request_move) and capture events (fired by
+    RealTimeArbiter._resolve_arrival) - callers shouldn't need to know
+    those two event kinds actually come from two different objects."""
+    from kungfu_chess.model.game_state import GameObserver
+
+    _, controller, engine, _ = make_stack([["wR", "bQ"]])
+    events = []
+
+    class SpyObserver(GameObserver):
+        def on_piece_captured(self, event):
+            events.append(event)
+
+    engine.add_observer(SpyObserver())
+    controller.handle_click(50, 50)
+    controller.handle_click(150, 50)
+    engine.wait(1000)
+
+    [event] = events
+    assert event.color == WHITE
+    assert event.kind == "queen"
+    assert event.points == 9
+
+
 # ==========================================
 # legal_destinations - ליעדים אפשריים להדגשה ויזואלית אחרי בחירת כלי
 # ==========================================

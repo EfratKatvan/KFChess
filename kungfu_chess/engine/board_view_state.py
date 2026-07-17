@@ -115,6 +115,7 @@ def build_board_view_state(
     game_over: bool,
     total_elapsed_ms: int,
     move_log: Optional[Dict[str, Tuple[MoveLogEntry, ...]]] = None,
+    scores: Optional[Dict[str, int]] = None,
 ) -> BoardViewState:
     pieces = []
     for row in range(board.height):
@@ -126,5 +127,5 @@ def build_board_view_state(
 
     return BoardViewState(
         width=board.width, height=board.height, game_over=game_over,
-        pieces=tuple(pieces), scores=arbiter.scores, move_log=move_log or {},
+        pieces=tuple(pieces), scores=scores or {}, move_log=move_log or {},
     )

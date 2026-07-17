@@ -11,7 +11,7 @@ from kungfu_chess.assets_config import DEFAULT_PIECE_SET
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.input.controller import Controller
-from kungfu_chess.view.observers import MoveLogObserver
+from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
 from kungfu_chess.view.renderer import Renderer, SIDE_PANEL_WIDTH, game_over_button_rect, side_panel_width_for
 
 
@@ -19,12 +19,14 @@ from kungfu_chess.view.renderer import Renderer, SIDE_PANEL_WIDTH, game_over_but
 class GameSession:
     """Everything a single run of the game needs, bundled so build_game
     (see app.py) can hand it over in one piece - engine/controller as
-    before, plus the observers that now hold data GameEngine itself no
-    longer does (see model.game_state.GameObserver)."""
+    before, plus the observers that now hold data GameEngine/
+    RealTimeArbiter themselves no longer do (see
+    model.game_state.GameObserver)."""
 
     engine: GameEngine
     controller: Controller
     move_log: MoveLogObserver
+    score: ScoreObserver
 
 WINDOW_NAME = "Kung Fu Chess"
 ESC_KEY = 27
@@ -161,7 +163,7 @@ def run(
             controller = session.controller
 
             engine.wait(dt_ms)
-            view_state = engine.snapshot(move_log=session.move_log.as_dict())
+            view_state = engine.snapshot(move_log=session.move_log.as_dict(), scores=session.score.as_dict())
             selected = controller.selected_pos
             legal_destinations = engine.legal_destinations(selected) if selected is not None else None
             canvas = frame_renderer.draw(

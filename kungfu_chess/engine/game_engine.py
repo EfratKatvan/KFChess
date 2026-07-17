@@ -40,9 +40,13 @@ class GameEngine:
 
     def add_observer(self, observer: GameObserver) -> None:
         """Registers something that wants to react to game events
-        (currently: a completed move request) without this class holding
-        that data itself - see model.game_state.GameObserver."""
+        (a completed move request, or a resolved capture) without this
+        class - or RealTimeArbiter - holding that data itself. A single
+        call reaches both event sources, so callers don't need to know
+        move events and capture events actually come from two different
+        objects - see model.game_state.GameObserver."""
         self._observers.append(observer)
+        self._arbiter.add_observer(observer)
 
     def is_game_over(self) -> bool:
         return self._state.game_over
@@ -140,11 +144,16 @@ class GameEngine:
         if self._arbiter.advance_time(time_ms):
             self._state.game_over = True
 
-    def snapshot(self, move_log: Optional[Dict[str, Tuple[MoveLogEntry, ...]]] = None) -> BoardViewState:
-        """move_log comes from the caller (see view/observers.py's
-        MoveLogObserver) - this class fires MoveLoggedEvent when a move
-        starts (see request_move) but doesn't store move history itself,
-        so it has nothing of its own to put here."""
+    def snapshot(
+        self,
+        move_log: Optional[Dict[str, Tuple[MoveLogEntry, ...]]] = None,
+        scores: Optional[Dict[str, int]] = None,
+    ) -> BoardViewState:
+        """move_log/scores both come from the caller (see
+        view/observers.py's MoveLogObserver/ScoreObserver) - this class
+        fires MoveLoggedEvent on request_move and RealTimeArbiter fires
+        PieceCapturedEvent on a resolved capture, but neither stores that
+        history itself, so there's nothing of the kind to put here."""
         # Separates the logic layer from the view - returns a DTO, not real Board/Piece objects
         return build_board_view_state(
             board=self._state.board,
@@ -152,4 +161,5 @@ class GameEngine:
             game_over=self._state.game_over,
             total_elapsed_ms=self._total_elapsed_ms,
             move_log=move_log,
+            scores=scores,
         )

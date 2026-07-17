@@ -1,8 +1,9 @@
 from __future__ import annotations
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from kungfu_chess.model.board import BoardRepresentation
-from kungfu_chess.model.piece import PieceRepresentation, IDLE, MOVING, CAPTURED, WHITE, BLACK
+from kungfu_chess.model.game_state import GameObserver, PieceCapturedEvent
+from kungfu_chess.model.piece import PieceRepresentation, IDLE, MOVING, CAPTURED
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import (
     JUMP_NEXT_STATE,
@@ -63,9 +64,15 @@ class RealTimeArbiter:
         self._motions: List[Motion] = []
         self._jumps: List[Jump] = []
         self._cooldowns: List[Cooldown] = []
-        self._scores: Dict[str, int] = {WHITE: 0, BLACK: 0}
+        self._observers: List[GameObserver] = []
         self._win_condition = win_condition if win_condition is not None else KingCaptureWinCondition()
         self._promotion_rule = promotion_rule if promotion_rule is not None else LastRankPromotion()
+
+    def add_observer(self, observer: GameObserver) -> None:
+        """Registers something that wants to react to a capture as it
+        resolves - see GameEngine.add_observer, the single public entry
+        point callers actually use (it forwards here too)."""
+        self._observers.append(observer)
 
     @property
     def motions(self) -> List[Motion]:
@@ -78,10 +85,6 @@ class RealTimeArbiter:
     @property
     def cooldowns(self) -> List[Cooldown]:
         return list(self._cooldowns)
-
-    @property
-    def scores(self) -> Dict[str, int]:
-        return dict(self._scores)
 
     def is_piece_in_motion(self, position: Position) -> bool:
         """True only if the piece currently sitting at position is
@@ -219,7 +222,7 @@ class RealTimeArbiter:
             # piece that tried to attack it (just like an ordinary capture).
             defender = self._board.piece_at(to_pos)
             if defender is not None:
-                self._scores[defender.color] += piece_value(piece.kind)
+                self._notify_captured(defender.color, piece.kind)
             if self._board.piece_at(from_pos) is piece:
                 self._board.remove_piece(piece)
             return self._win_condition.is_game_over(piece)
@@ -235,7 +238,7 @@ class RealTimeArbiter:
         if captured is not None:
             self._board.remove_piece(captured)
             captured.state = CAPTURED
-            self._scores[piece.color] += piece_value(captured.kind)
+            self._notify_captured(piece.color, captured.kind)
 
         piece.cell = to_pos
         piece.state = IDLE
@@ -244,6 +247,11 @@ class RealTimeArbiter:
         self._cooldowns.append(Cooldown(to_pos, COOLDOWN_DURATION_MS, kind=MOVE_NEXT_STATE))
 
         return self._win_condition.is_game_over(captured)
+
+    def _notify_captured(self, color: str, destroyed_kind: str) -> None:
+        event = PieceCapturedEvent(color, destroyed_kind, piece_value(destroyed_kind))
+        for observer in self._observers:
+            observer.on_piece_captured(event)
 
     def _advance_jumps(self, time_ms: int) -> None:
         new_jumps: List[Jump] = []

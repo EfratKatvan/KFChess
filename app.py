@@ -9,7 +9,7 @@ from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.view import image_view
 from kungfu_chess.view.image_view import GameSession
-from kungfu_chess.view.observers import MoveLogObserver
+from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
 from kungfu_chess.view.renderer import side_panel_width_for
 
 
@@ -38,7 +38,10 @@ def build_game(cell_size: int) -> GameSession:
     move_log = MoveLogObserver()
     engine.add_observer(move_log)
 
-    return GameSession(engine=engine, controller=controller, move_log=move_log)
+    score = ScoreObserver()
+    engine.add_observer(score)
+
+    return GameSession(engine=engine, controller=controller, move_log=move_log, score=score)
 
 
 def main() -> None:
