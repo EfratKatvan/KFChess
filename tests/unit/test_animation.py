@@ -25,8 +25,8 @@ def test_loading_an_unknown_state_raises_missing_asset_error():
 
 
 def test_loading_an_unknown_piece_set_raises_missing_asset_error():
-    with pytest.raises(MissingAssetError, match="pieces3"):
-        AnimationCache().load("PW", "idle", cell_size=100, piece_set="pieces3")
+    with pytest.raises(MissingAssetError, match="pieces99"):
+        AnimationCache().load("PW", "idle", cell_size=100, piece_set="pieces99")
 
 
 def test_both_shipped_piece_sets_load_successfully():

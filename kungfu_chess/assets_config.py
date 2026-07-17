@@ -23,7 +23,7 @@ ASSETS_DIR = Path(__file__).resolve().parent / "assets"
 # state+frame label baked into every image. pieces2 are the final art
 # with a real alpha channel. Both are from CTD26 only - the default is
 # pieces2, but it can be freely swapped.
-PIECE_SETS = ("pieces1", "pieces2")
+PIECE_SETS = ("pieces1", "pieces2","pieces3")
 DEFAULT_PIECE_SET = "pieces2"
 
 
