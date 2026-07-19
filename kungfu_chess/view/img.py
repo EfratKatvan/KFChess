@@ -5,6 +5,8 @@ import pathlib
 import cv2
 import numpy as np
 
+DEFAULT_TEXT_COLOR_BGRA = (255, 255, 255, 255)
+
 
 class Img:
     """A thin wrapper around opencv for loading/drawing images - based
@@ -103,7 +105,7 @@ class Img:
             raise ValueError("Image not loaded.")
         cv2.rectangle(self.img, (x, y), (x + width - 1, y + height - 1), color, thickness)
 
-    def put_text(self, txt, x, y, font_size, color=(255, 255, 255, 255), thickness=1):
+    def put_text(self, txt, x, y, font_size, color=DEFAULT_TEXT_COLOR_BGRA, thickness=1):
         if self.img is None:
             raise ValueError("Image not loaded.")
         cv2.putText(self.img, txt, (x, y),

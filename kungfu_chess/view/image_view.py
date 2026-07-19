@@ -3,7 +3,7 @@ from __future__ import annotations
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import cv2
 
@@ -129,7 +129,7 @@ def run(
     _disable_windows_dpi_scaling()
     cv2.namedWindow(WINDOW_NAME)
 
-    current = {}
+    current: Dict[str, GameSession] = {}
 
     def start_new_game() -> None:
         current["session"] = build_game(cell_size)
