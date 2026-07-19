@@ -1,4 +1,5 @@
 from kungfu_chess.model.position import Position
+from kungfu_chess.model.piece import WHITE
 from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.rules.rule_engine import RuleEngine
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
@@ -132,3 +133,43 @@ def test_click_does_not_select_a_piece_after_game_over():
 
     controller.handle_click(50, 50)   # ניסיון לבחור כלי אחרי סיום המשחק
     assert controller.selected_pos is None
+
+
+# ==========================================
+# owner_color - a networked player can only select/jump their own color.
+# None (the default, used by every test above) keeps single-player behavior.
+# ==========================================
+
+def test_owner_color_none_keeps_ungated_single_player_behavior():
+    board, _, engine = make_stack([["wR", "bR"]])
+    controller = Controller(BoardMapper(board), engine, owner_color=None)
+    controller.handle_click(150, 50)  # bR - no owner restriction
+    assert controller.selected_pos == Position(0, 1)
+
+
+def test_owner_cannot_select_opponents_piece():
+    board, _, engine = make_stack([["wR", "bR"]])
+    controller = Controller(BoardMapper(board), engine, owner_color=WHITE)
+    controller.handle_click(150, 50)  # bR belongs to black
+    assert controller.selected_pos is None
+
+
+def test_owner_can_select_own_piece():
+    board, _, engine = make_stack([["wR", "bR"]])
+    controller = Controller(BoardMapper(board), engine, owner_color=WHITE)
+    controller.handle_click(50, 50)  # wR belongs to white
+    assert controller.selected_pos == Position(0, 0)
+
+
+def test_owner_cannot_jump_opponents_piece():
+    board, _, engine = make_stack([["wR", "bR"]])
+    controller = Controller(BoardMapper(board), engine, owner_color=WHITE)
+    controller.handle_jump(150, 50)  # bR - gate should block this before it reaches the engine
+    assert engine.try_jump(Position(0, 1)) is True  # still free to jump - the earlier attempt never started
+
+
+def test_owner_can_jump_own_piece():
+    board, _, engine = make_stack([["wR", "bR"]])
+    controller = Controller(BoardMapper(board), engine, owner_color=WHITE)
+    controller.handle_jump(50, 50)  # wR belongs to white
+    assert engine.try_jump(Position(0, 0)) is False  # already airborne from the controller's jump

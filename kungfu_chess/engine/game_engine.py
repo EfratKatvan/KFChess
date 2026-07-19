@@ -60,6 +60,10 @@ class GameEngine:
     def has_piece(self, position: Position) -> bool:
         return self._state.board.piece_at(position) is not None
 
+    def color_at(self, position: Position) -> Optional[str]:
+        piece = self._state.board.piece_at(position)
+        return piece.color if piece is not None else None
+
     def is_same_color(self, pos_a: Position, pos_b: Position) -> bool:
         piece_a = self._state.board.piece_at(pos_a)
         piece_b = self._state.board.piece_at(pos_b)
