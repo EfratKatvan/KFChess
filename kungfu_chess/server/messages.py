@@ -15,6 +15,25 @@ protocol.py for the raw "type" string constants referenced below."""
 
 
 @dataclass(frozen=True)
+class LoginMessage:
+    username: str
+    password: str
+    type: str = protocol.LOGIN
+
+
+@dataclass(frozen=True)
+class LoginOkMessage:
+    rating: int
+    type: str = protocol.LOGIN_OK
+
+
+@dataclass(frozen=True)
+class LoginFailedMessage:
+    reason: str
+    type: str = protocol.LOGIN_FAILED
+
+
+@dataclass(frozen=True)
 class WaitingForOpponentMessage:
     type: str = protocol.WAITING_FOR_OPPONENT
 

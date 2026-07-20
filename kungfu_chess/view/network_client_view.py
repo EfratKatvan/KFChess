@@ -17,6 +17,9 @@ from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
     JumpMessage,
+    LoginFailedMessage,
+    LoginMessage,
+    LoginOkMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
     RestartMessage,
@@ -36,9 +39,9 @@ All real game logic now lives server-side (see kungfu_chess/server/) -
 this module only draws whatever BoardViewState the server last sent,
 and forwards clicks as messages instead of calling a local Controller."""
 
+LOGGING_IN_TEXT = "Logging in..."
 WAITING_TEXT = "Waiting for opponent..."
 NO_OPPONENT_TEXT = "No opponent found - try again later"
-CONNECTING_TEXT = "Connected - waiting for game to start..."
 
 # How long the "You are White/Black - starting in N..." countdown holds
 # the board back after match_found, and how long the game-over overlay
@@ -57,8 +60,10 @@ class ClientState:
     by field) so a read from the main thread can't see a torn mix of an
     old view_state with a newer selected_pos."""
 
-    phase: str = "connecting"  # connecting -> waiting -> matched, or no_opponent/disconnected
+    phase: str = "connecting"  # connecting -> waiting -> matched, or login_failed/no_opponent/disconnected
     color: Optional[str] = None
+    rating: Optional[int] = None
+    login_failure_reason: Optional[str] = None
     view_state: Optional[BoardViewState] = None
     selected_pos: Optional[Position] = None
     legal_destinations: Set[Position] = field(default_factory=set)
@@ -111,7 +116,11 @@ def _game_over_started_at(previous: Optional[float], board_game_over: bool) -> O
 
 def _handle_message(raw: str, box: ClientBox) -> None:
     message = deserialize_message(raw)
-    if isinstance(message, WaitingForOpponentMessage):
+    if isinstance(message, LoginOkMessage):
+        box.state = ClientState(phase="connecting", rating=message.rating)  # server moves straight on to matchmaking next
+    elif isinstance(message, LoginFailedMessage):
+        box.state = ClientState(phase="login_failed", login_failure_reason=message.reason)
+    elif isinstance(message, WaitingForOpponentMessage):
         box.state = ClientState(phase="waiting")
     elif isinstance(message, NoOpponentFoundMessage):
         box.state = ClientState(phase="no_opponent")
@@ -130,11 +139,12 @@ def _handle_message(raw: str, box: ClientBox) -> None:
         )
 
 
-def _network_thread_main(server_uri: str, box: ClientBox) -> None:
+def _network_thread_main(server_uri: str, username: str, password: str, box: ClientBox) -> None:
     async def client_main() -> None:
         async with connect(server_uri) as ws:
             box.ws = ws
             box.loop = asyncio.get_running_loop()
+            await ws.send(serialize_message(LoginMessage(username=username, password=password)))
             async for raw in ws:
                 _handle_message(raw, box)
 
@@ -144,12 +154,12 @@ def _network_thread_main(server_uri: str, box: ClientBox) -> None:
         box.state = ClientState(phase="disconnected")
 
 
-def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_SET) -> None:
+def run_client(server_uri: str, username: str, password: str, cell_size: int, piece_set: str = DEFAULT_PIECE_SET) -> None:
     image_view._disable_windows_dpi_scaling()
     cv2.namedWindow(image_view.WINDOW_NAME)
 
     box = ClientBox()
-    threading.Thread(target=_network_thread_main, args=(server_uri, box), daemon=True).start()
+    threading.Thread(target=_network_thread_main, args=(server_uri, username, password, box), daemon=True).start()
 
     # A throwaway local board, used only so BoardMapper can bounds-check clicks - no game logic reads it.
     bounds_board = build_board(STARTING_POSITION)
@@ -191,12 +201,14 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
                 if state.matched_at is not None else None
             )
 
-            if state.phase == "no_opponent":
+            if state.phase == "login_failed":
+                canvas = _text_screen(screen_width, screen_height, f"Login failed: {state.login_failure_reason}")
+            elif state.phase == "no_opponent":
                 canvas = _text_screen(screen_width, screen_height, NO_OPPONENT_TEXT)
             elif starting_remaining_s is not None and starting_remaining_s > 0:
                 canvas = _text_screen(screen_width, screen_height, _starting_text(state.color, starting_remaining_s))
             elif state.phase in ("connecting", "disconnected") or state.view_state is None:
-                canvas = _text_screen(screen_width, screen_height, WAITING_TEXT if state.phase == "waiting" else CONNECTING_TEXT)
+                canvas = _text_screen(screen_width, screen_height, WAITING_TEXT if state.phase == "waiting" else LOGGING_IN_TEXT)
             else:
                 game_over_progress = 1.0
                 if state.game_over_started_at is not None:

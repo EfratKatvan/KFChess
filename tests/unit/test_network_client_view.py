@@ -1,7 +1,7 @@
 from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.model.piece import WHITE
 from kungfu_chess.model.position import Position
-from kungfu_chess.server.messages import MatchFoundMessage, StateMessage
+from kungfu_chess.server.messages import LoginFailedMessage, LoginOkMessage, MatchFoundMessage, StateMessage
 from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.view.network_client_view import (
     ClientBox,
@@ -36,6 +36,22 @@ def test_game_over_started_at_is_set_once_the_game_ends():
 
 def test_game_over_started_at_keeps_the_original_timestamp_across_later_ticks():
     assert _game_over_started_at(previous=42.0, board_game_over=True) == 42.0
+
+
+def test_handle_message_login_ok_stores_the_rating_and_stays_in_the_connecting_phase():
+    box = ClientBox()
+    _handle_message(serialize_message(LoginOkMessage(rating=1234)), box)
+
+    assert box.state.phase == "connecting"  # server moves straight on to matchmaking next, no separate "logged in" phase
+    assert box.state.rating == 1234
+
+
+def test_handle_message_login_failed_sets_the_terminal_phase_and_reason():
+    box = ClientBox()
+    _handle_message(serialize_message(LoginFailedMessage(reason="wrong password")), box)
+
+    assert box.state.phase == "login_failed"
+    assert box.state.login_failure_reason == "wrong password"
 
 
 def test_handle_message_match_found_sets_phase_color_and_matched_at():

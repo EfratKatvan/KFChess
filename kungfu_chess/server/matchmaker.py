@@ -1,43 +1,49 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 from websockets.asyncio.server import ServerConnection
 
 from kungfu_chess.server import protocol
+from kungfu_chess.server.accounts import DEFAULT_DB_PATH
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import NoOpponentFoundMessage, WaitingForOpponentMessage
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
 
 class Matchmaker:
-    """Pairs connecting players into GameRooms. At most one connection
-    ever waits at a time - the instant a second player connects, they're
-    matched (first-come = White, second = Black) into their own
-    independent GameRoom, freeing the matchmaker to pair whoever
-    connects next. A lone waiting player who isn't matched within
-    protocol.MATCHMAKING_TIMEOUT_SECONDS gets a "no opponent found"
-    message instead of waiting forever."""
+    """Pairs connecting, already-authenticated players into GameRooms. At
+    most one connection ever waits at a time - the instant a second
+    player connects, they're matched (first-come = White, second =
+    Black) into their own independent GameRoom, freeing the matchmaker
+    to pair whoever connects next. A lone waiting player who isn't
+    matched within protocol.MATCHMAKING_TIMEOUT_SECONDS gets a "no
+    opponent found" message instead of waiting forever."""
 
-    def __init__(self) -> None:
-        self._waiting: Optional[ServerConnection] = None
+    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+        self._db_path = db_path
+        self._waiting: Optional[Tuple[ServerConnection, str]] = None
         self._waiting_timeout_task: Optional[asyncio.Task] = None
         self._rooms: Dict[ServerConnection, GameRoom] = {}
 
-    async def on_connect(self, ws: ServerConnection) -> None:
+    async def on_connect(self, ws: ServerConnection, username: str) -> None:
         if self._waiting is None:
-            self._waiting = ws
+            self._waiting = (ws, username)
             await ws.send(serialize_message(WaitingForOpponentMessage()))
             self._waiting_timeout_task = asyncio.create_task(self._timeout_waiting(ws))
             return
 
-        opponent = self._waiting
+        opponent_ws, opponent_username = self._waiting
         self._cancel_waiting_timeout()
         self._waiting = None
 
-        room = GameRoom(white_ws=opponent, black_ws=ws)
-        self._rooms[opponent] = room
+        room = GameRoom(
+            white_ws=opponent_ws, white_username=opponent_username,
+            black_ws=ws, black_username=username,
+            db_path=self._db_path,
+        )
+        self._rooms[opponent_ws] = room
         self._rooms[ws] = room
         await room.start()
 
@@ -54,7 +60,7 @@ class Matchmaker:
             await room.handle_message(color, message)
 
     async def on_disconnect(self, ws: ServerConnection) -> None:
-        if self._waiting is ws:
+        if self._waiting is not None and self._waiting[0] is ws:
             self._cancel_waiting_timeout()
             self._waiting = None
             return
@@ -68,7 +74,7 @@ class Matchmaker:
 
     async def _timeout_waiting(self, ws: ServerConnection) -> None:
         await asyncio.sleep(protocol.MATCHMAKING_TIMEOUT_SECONDS)
-        if self._waiting is not ws:
+        if self._waiting is None or self._waiting[0] is not ws:
             return  # already matched or already disconnected
         self._waiting = None
         self._waiting_timeout_task = None

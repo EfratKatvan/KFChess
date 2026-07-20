@@ -3,6 +3,9 @@ from kungfu_chess.model.piece import WHITE, BLACK, PAWN, ROOK
 from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
     JumpMessage,
+    LoginFailedMessage,
+    LoginMessage,
+    LoginOkMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
     RestartMessage,
@@ -76,6 +79,21 @@ def test_board_view_state_round_trips_an_empty_board():
 # ==========================================
 # message_to_wire / message_from_wire - the typed envelopes in server/messages.py
 # ==========================================
+
+def test_login_message_round_trips_username_and_password():
+    original = LoginMessage(username="efrat", password="hunter2")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_login_ok_message_round_trips_the_rating():
+    original = LoginOkMessage(rating=1216)
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_login_failed_message_round_trips_the_reason():
+    original = LoginFailedMessage(reason="wrong password")
+    assert message_from_wire(message_to_wire(original)) == original
+
 
 def test_waiting_for_opponent_message_round_trips():
     assert message_from_wire(message_to_wire(WaitingForOpponentMessage())) == WaitingForOpponentMessage()
