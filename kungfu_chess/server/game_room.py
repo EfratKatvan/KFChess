@@ -28,7 +28,8 @@ from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
 
-TICK_SECONDS = 0.016
+TICK_SECONDS = 0.016  # physics granularity - engine.wait() runs at this rate regardless of broadcast rate
+BROADCAST_INTERVAL_SECONDS = 1 / 15  # how often a full state snapshot actually goes out over the network
 
 
 class GameRoom:
@@ -68,6 +69,7 @@ class GameRoom:
         self._score = ScoreObserver()
         self._engine.add_observer(self._score)
         self._last_tick = time.perf_counter()
+        self._last_broadcast = time.perf_counter()
         self._rating_update_applied = False
         self._disconnected_color: Optional[str] = None
         self._paused = False
@@ -155,12 +157,19 @@ class GameRoom:
             await self._tick_once()
 
     async def _tick_once(self) -> None:
+        """Physics still advances every tick (full precision, unaffected
+        by the line below) - only the network send is throttled to
+        BROADCAST_INTERVAL_SECONDS, since that's the expensive/chatty
+        part, not the math. Events (match_found, disconnect, etc.) are
+        separate direct sends elsewhere and are never throttled."""
         now = time.perf_counter()
         dt_ms = int((now - self._last_tick) * 1000)
         self._last_tick = now
         if not self._paused:
             self._engine.wait(dt_ms)
-        await self._broadcast()
+        if now - self._last_broadcast >= BROADCAST_INTERVAL_SECONDS:
+            self._last_broadcast = now
+            await self._broadcast()
 
     async def _auto_resign_after_grace(self, surviving_color: str) -> None:
         await asyncio.sleep(protocol.DISCONNECT_GRACE_SECONDS)

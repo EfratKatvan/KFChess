@@ -164,6 +164,70 @@ async def _paused_clock_scenario(db_path):
     room.stop()
 
 
+# ==========================================
+# Broadcast throttling - physics ticks every TICK_SECONDS, but the network
+# send is throttled to BROADCAST_INTERVAL_SECONDS
+# ==========================================
+
+def test_tick_once_does_not_broadcast_again_before_the_interval_elapses(db_path):
+    asyncio.run(_no_broadcast_yet_scenario(db_path))
+
+
+async def _no_broadcast_yet_scenario(db_path):
+    white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
+    accounts.authenticate(db_path, "white_player", "pw")
+    accounts.authenticate(db_path, "black_player", "pw")
+    await room.start()  # sends match_found - one message each, not a broadcast
+
+    sent_count_after_start = len(white_ws.sent)
+    await room._tick_once()  # immediately after start() - well within the throttle interval
+    assert len(white_ws.sent) == sent_count_after_start  # no new "state" message yet
+
+    room.stop()
+
+
+def test_tick_once_broadcasts_once_the_interval_has_elapsed(db_path):
+    asyncio.run(_broadcast_after_interval_scenario(db_path))
+
+
+async def _broadcast_after_interval_scenario(db_path):
+    from kungfu_chess.server.game_room import BROADCAST_INTERVAL_SECONDS
+
+    room = _make_room(db_path)
+    await room.start()
+    white_ws = room._connections[WHITE]
+    sent_count_after_start = len(white_ws.sent)
+
+    room._last_broadcast -= BROADCAST_INTERVAL_SECONDS  # pretend the interval already elapsed
+    await room._tick_once()
+
+    assert len(white_ws.sent) == sent_count_after_start + 1
+    assert _last_type(white_ws) == protocol.STATE
+
+    room.stop()
+
+
+def test_physics_advances_every_tick_regardless_of_the_broadcast_throttle(db_path):
+    """The throttle only affects whether _broadcast() is called - engine.wait()
+    must still run on every single _tick_once(), so motion timing stays accurate."""
+    asyncio.run(_physics_unaffected_scenario(db_path))
+
+
+async def _physics_unaffected_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+
+    room._last_tick -= 1.0  # pretend a full second has passed
+    elapsed_before = room._engine._total_elapsed_ms
+    await room._tick_once()  # well within the broadcast throttle window - but physics must still run
+    elapsed_after = room._engine._total_elapsed_ms
+
+    assert elapsed_after > elapsed_before
+
+    room.stop()
+
+
 def test_try_reconnect_resumes_the_clock_and_notifies_the_survivor(db_path):
     asyncio.run(_reconnect_scenario(db_path))
 
