@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional, Set
 
@@ -39,6 +40,12 @@ WAITING_TEXT = "Waiting for opponent..."
 NO_OPPONENT_TEXT = "No opponent found - try again later"
 CONNECTING_TEXT = "Connected - waiting for game to start..."
 
+# How long the "You are White/Black - starting in N..." countdown holds
+# the board back after match_found, and how long the game-over overlay
+# takes to fade in (see Renderer.draw's game_over_progress).
+STARTING_DURATION_S = 3.0
+GAME_OVER_FADE_DURATION_S = 0.6
+
 _TEXT_COLOR_BGRA = (255, 255, 255, 255)
 _BACKGROUND_COLOR_BGRA = (30, 30, 30, 255)
 
@@ -56,6 +63,8 @@ class ClientState:
     selected_pos: Optional[Position] = None
     legal_destinations: Set[Position] = field(default_factory=set)
     invalid_target: Optional[Position] = None
+    matched_at: Optional[float] = None
+    game_over_started_at: Optional[float] = None
 
 
 @dataclass
@@ -78,10 +87,26 @@ def _text_screen(width: int, height: int, text: str) -> Img:
     return canvas
 
 
+def _starting_text(color: Optional[str], remaining_s: float) -> str:
+    you_are = f"You are {color.capitalize()} - " if color else ""
+    if remaining_s <= 0:
+        return f"{you_are}GO!"
+    return f"{you_are}starting in {int(remaining_s) + 1}..."
+
+
 def _send(box: ClientBox, message: Any) -> None:
     if box.loop is None or box.ws is None:
         return
     asyncio.run_coroutine_threadsafe(box.ws.send(serialize_message(message)), box.loop)
+
+
+def _game_over_started_at(previous: Optional[float], board_game_over: bool) -> Optional[float]:
+    """Tracks the moment game_over first turned True (for the fade-in
+    animation) - set once on the transition, cleared once a fresh game
+    (restart) reports game_over False again."""
+    if not board_game_over:
+        return None
+    return previous if previous is not None else time.perf_counter()
 
 
 def _handle_message(raw: str, box: ClientBox) -> None:
@@ -91,7 +116,7 @@ def _handle_message(raw: str, box: ClientBox) -> None:
     elif isinstance(message, NoOpponentFoundMessage):
         box.state = ClientState(phase="no_opponent")
     elif isinstance(message, MatchFoundMessage):
-        box.state = ClientState(phase="matched", color=message.color)
+        box.state = ClientState(phase="matched", color=message.color, matched_at=time.perf_counter())
     elif isinstance(message, StateMessage):
         box.state = ClientState(
             phase="matched",
@@ -100,6 +125,8 @@ def _handle_message(raw: str, box: ClientBox) -> None:
             selected_pos=message.your_selected_pos,
             legal_destinations=message.your_legal_destinations,
             invalid_target=message.your_invalid_target,
+            matched_at=box.state.matched_at,
+            game_over_started_at=_game_over_started_at(box.state.game_over_started_at, message.board.game_over),
         )
 
 
@@ -133,11 +160,14 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
     screen_height = board_height * cell_size
 
     def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
-        if box.state.phase != "matched":
+        state = box.state
+        if state.phase != "matched" or state.view_state is None:
             return
+        if state.matched_at is not None and time.perf_counter() - state.matched_at < STARTING_DURATION_S:
+            return  # still in the starting countdown - no board is shown yet, ignore clicks
         if event == cv2.EVENT_LBUTTONDOWN:
-            view_state = box.state.view_state
-            if view_state is not None and view_state.game_over:
+            view_state = state.view_state
+            if view_state.game_over:
                 button_rect = game_over_button_rect(view_state.width, view_state.height, cell_size)
                 if image_view._point_in_rect(x, y, button_rect):
                     _send(box, RestartMessage())
@@ -156,16 +186,28 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
     try:
         while True:
             state = box.state
+            starting_remaining_s = (
+                STARTING_DURATION_S - (time.perf_counter() - state.matched_at)
+                if state.matched_at is not None else None
+            )
+
             if state.phase == "no_opponent":
                 canvas = _text_screen(screen_width, screen_height, NO_OPPONENT_TEXT)
+            elif starting_remaining_s is not None and starting_remaining_s > 0:
+                canvas = _text_screen(screen_width, screen_height, _starting_text(state.color, starting_remaining_s))
             elif state.phase in ("connecting", "disconnected") or state.view_state is None:
                 canvas = _text_screen(screen_width, screen_height, WAITING_TEXT if state.phase == "waiting" else CONNECTING_TEXT)
             else:
+                game_over_progress = 1.0
+                if state.game_over_started_at is not None:
+                    elapsed_s = time.perf_counter() - state.game_over_started_at
+                    game_over_progress = min(1.0, elapsed_s / GAME_OVER_FADE_DURATION_S)
                 canvas = frame_renderer.draw(
                     state.view_state, cell_size, piece_set,
                     selected_position=state.selected_pos,
                     legal_destinations=state.legal_destinations,
                     invalid_target=state.invalid_target,
+                    game_over_progress=game_over_progress,
                 )
 
             key = canvas.show(image_view.WINDOW_NAME, wait_ms=image_view.TARGET_FRAME_MS)

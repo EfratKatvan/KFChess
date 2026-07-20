@@ -123,14 +123,27 @@ def game_over_button_rect(board_width: int, board_height: int, cell_size: int) -
     )
 
 
-def _draw_game_over_overlay(canvas: Img, view_state: BoardViewState, cell_size: int) -> None:
+def _faded(color_bgra, progress: float):
+    r, g, b, a = color_bgra
+    return (r, g, b, int(a * max(0.0, min(1.0, progress))))
+
+
+def _draw_game_over_overlay(canvas: Img, view_state: BoardViewState, cell_size: int, progress: float = 1.0) -> None:
+    """progress (0..1) animates the dimming band fading in; the title,
+    button and hint only appear once progress reaches 1 - text can't be
+    alpha-blended the way the band's solid rect can (put_text draws
+    straight onto the canvas), so it pops in at the end of the fade
+    instead of fading itself."""
     board_pixel_width = view_state.width * cell_size
     board_pixel_height = view_state.height * cell_size
     band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
     side_panel_width = side_panel_width_for(cell_size)
     center_x = side_panel_width + board_pixel_width // 2
 
-    _blend_solid_rect(canvas, side_panel_width, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, GAME_OVER_BAND_COLOR_BGRA)
+    _blend_solid_rect(canvas, side_panel_width, band_y, board_pixel_width, GAME_OVER_BAND_HEIGHT, _faded(GAME_OVER_BAND_COLOR_BGRA, progress))
+    if progress < 1.0:
+        return
+
     _draw_centered_text(
         canvas, GAME_OVER_TEXT, center_x, band_y + GAME_OVER_TITLE_OFFSET_Y,
         GAME_OVER_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_THICKNESS,
@@ -244,6 +257,7 @@ class Renderer:
         selected_position: Optional[Position] = None,
         legal_destinations: Optional[Iterable[Position]] = None,
         invalid_target: Optional[Position] = None,
+        game_over_progress: float = 1.0,
     ) -> Img:
         side_panel_width = side_panel_width_for(cell_size)
         board_pixel_width = view_state.width * cell_size
@@ -291,7 +305,7 @@ class Renderer:
             _draw_invalid_target_highlight(canvas, _cell_pixel_pos(invalid_target, cell_size), cell_size)
 
         if view_state.game_over:
-            _draw_game_over_overlay(canvas, view_state, cell_size)
+            _draw_game_over_overlay(canvas, view_state, cell_size, game_over_progress)
 
         _draw_side_panel(
             canvas, 0, board_pixel_height, "Black",

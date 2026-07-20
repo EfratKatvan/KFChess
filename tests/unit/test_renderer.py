@@ -321,6 +321,35 @@ def test_draw_shows_a_game_over_overlay_once_the_game_ends():
     assert not (canvas_playing.img == canvas_ended.img).all()
 
 
+def test_draw_with_a_partial_game_over_progress_only_shows_the_dimming_band():
+    """game_over_progress < 1.0 (mid fade-in) should not yet paint the
+    "GAME OVER" text/button - see network_client_view.py's fade-in
+    animation, which starts at 0 the instant game_over turns True."""
+    from kungfu_chess.view.renderer import game_over_button_rect
+
+    view_state = BoardViewState(width=8, height=8, game_over=True, pieces=())
+
+    mid_fade = Renderer().draw(view_state, cell_size=100, game_over_progress=0.3)
+    full = Renderer().draw(view_state, cell_size=100, game_over_progress=1.0)
+
+    x, y, width, height = game_over_button_rect(view_state.width, view_state.height, cell_size=100)
+    button_border_pixel_mid_fade = tuple(mid_fade.img[y, x + width // 2])
+    button_border_pixel_full = tuple(full.img[y, x + width // 2])
+
+    assert button_border_pixel_mid_fade != button_border_pixel_full
+    assert not (mid_fade.img == full.img).all()
+
+
+def test_draw_with_zero_game_over_progress_still_shows_some_dimming():
+    playing = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    just_ended = BoardViewState(width=8, height=8, game_over=True, pieces=())
+
+    canvas_playing = Renderer().draw(playing, cell_size=100)
+    canvas_just_ended = Renderer().draw(just_ended, cell_size=100, game_over_progress=0.0)
+
+    assert (canvas_playing.img == canvas_just_ended.img).all()  # progress 0 - band fully transparent, no visible change yet
+
+
 def test_game_over_button_rect_sits_inside_the_board_and_side_panels():
     """Regression guard for the HUD_HEIGHT-style bug: the button's
     geometry (used both to draw it and to hit-test clicks in
