@@ -51,6 +51,14 @@ class GameEngine:
     def is_game_over(self) -> bool:
         return self._state.game_over
 
+    def resign(self) -> None:
+        """Force-ends the game without a capture - e.g. auto-resign after
+        a player disconnects and doesn't return within the grace period
+        (see server/game_room.py). Unlike a real king capture, doesn't
+        touch the board - callers that need to know who resigned track
+        that themselves, since the board alone can't say."""
+        self._state.game_over = True
+
     def is_busy(self, position: Position) -> bool:
         return self._arbiter.is_piece_in_motion(position)
 

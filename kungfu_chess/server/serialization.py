@@ -13,6 +13,8 @@ from kungfu_chess.server.messages import (
     LoginOkMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
+    OpponentDisconnectedMessage,
+    OpponentReconnectedMessage,
     RestartMessage,
     SelectOrMoveMessage,
     StateMessage,
@@ -125,7 +127,7 @@ def legal_destinations_from_wire(value: List[List[int]]) -> Set[Position]:
 
 
 def message_to_wire(message: Any) -> Dict[str, Any]:
-    if isinstance(message, (WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage)):
+    if isinstance(message, (WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage)):
         return {"type": message.type}
     if isinstance(message, LoginMessage):
         return {"type": message.type, "username": message.username, "password": message.password}
@@ -133,6 +135,8 @@ def message_to_wire(message: Any) -> Dict[str, Any]:
         return {"type": message.type, "rating": message.rating}
     if isinstance(message, LoginFailedMessage):
         return {"type": message.type, "reason": message.reason}
+    if isinstance(message, OpponentDisconnectedMessage):
+        return {"type": message.type, "grace_seconds": message.grace_seconds}
     if isinstance(message, MatchFoundMessage):
         return {"type": message.type, "color": message.color}
     if isinstance(message, StateMessage):
@@ -160,6 +164,10 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
         return WaitingForOpponentMessage()
     if message_type == protocol.NO_OPPONENT_FOUND:
         return NoOpponentFoundMessage()
+    if message_type == protocol.OPPONENT_DISCONNECTED:
+        return OpponentDisconnectedMessage(grace_seconds=data["grace_seconds"])
+    if message_type == protocol.OPPONENT_RECONNECTED:
+        return OpponentReconnectedMessage()
     if message_type == protocol.MATCH_FOUND:
         return MatchFoundMessage(color=data["color"])
     if message_type == protocol.STATE:

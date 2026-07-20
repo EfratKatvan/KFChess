@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional, Set
 
 import cv2
@@ -22,6 +22,8 @@ from kungfu_chess.server.messages import (
     LoginOkMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
+    OpponentDisconnectedMessage,
+    OpponentReconnectedMessage,
     RestartMessage,
     SelectOrMoveMessage,
     StateMessage,
@@ -70,6 +72,8 @@ class ClientState:
     invalid_target: Optional[Position] = None
     matched_at: Optional[float] = None
     game_over_started_at: Optional[float] = None
+    opponent_disconnected_at: Optional[float] = None
+    opponent_disconnect_grace_seconds: Optional[int] = None
 
 
 @dataclass
@@ -99,6 +103,12 @@ def _starting_text(color: Optional[str], remaining_s: float) -> str:
     return f"{you_are}starting in {int(remaining_s) + 1}..."
 
 
+def _disconnect_text(remaining_s: float) -> str:
+    if remaining_s <= 0:
+        return "Opponent disconnected - resigning..."
+    return f"Opponent disconnected - auto-resign in {int(remaining_s) + 1}..."
+
+
 def _send(box: ClientBox, message: Any) -> None:
     if box.loop is None or box.ws is None:
         return
@@ -126,6 +136,14 @@ def _handle_message(raw: str, box: ClientBox) -> None:
         box.state = ClientState(phase="no_opponent")
     elif isinstance(message, MatchFoundMessage):
         box.state = ClientState(phase="matched", color=message.color, matched_at=time.perf_counter())
+    elif isinstance(message, OpponentDisconnectedMessage):
+        box.state = replace(
+            box.state,
+            opponent_disconnected_at=time.perf_counter(),
+            opponent_disconnect_grace_seconds=message.grace_seconds,
+        )
+    elif isinstance(message, OpponentReconnectedMessage):
+        box.state = replace(box.state, opponent_disconnected_at=None, opponent_disconnect_grace_seconds=None)
     elif isinstance(message, StateMessage):
         box.state = ClientState(
             phase="matched",
@@ -136,6 +154,8 @@ def _handle_message(raw: str, box: ClientBox) -> None:
             invalid_target=message.your_invalid_target,
             matched_at=box.state.matched_at,
             game_over_started_at=_game_over_started_at(box.state.game_over_started_at, message.board.game_over),
+            opponent_disconnected_at=box.state.opponent_disconnected_at,
+            opponent_disconnect_grace_seconds=box.state.opponent_disconnect_grace_seconds,
         )
 
 
@@ -175,6 +195,8 @@ def run_client(server_uri: str, username: str, password: str, cell_size: int, pi
             return
         if state.matched_at is not None and time.perf_counter() - state.matched_at < STARTING_DURATION_S:
             return  # still in the starting countdown - no board is shown yet, ignore clicks
+        if state.opponent_disconnected_at is not None:
+            return  # opponent is disconnected - the countdown screen is shown instead of the board
         if event == cv2.EVENT_LBUTTONDOWN:
             view_state = state.view_state
             if view_state.game_over:
@@ -200,6 +222,10 @@ def run_client(server_uri: str, username: str, password: str, cell_size: int, pi
                 STARTING_DURATION_S - (time.perf_counter() - state.matched_at)
                 if state.matched_at is not None else None
             )
+            disconnect_remaining_s = (
+                state.opponent_disconnect_grace_seconds - (time.perf_counter() - state.opponent_disconnected_at)
+                if state.opponent_disconnected_at is not None else None
+            )
 
             if state.phase == "login_failed":
                 canvas = _text_screen(screen_width, screen_height, f"Login failed: {state.login_failure_reason}")
@@ -207,6 +233,8 @@ def run_client(server_uri: str, username: str, password: str, cell_size: int, pi
                 canvas = _text_screen(screen_width, screen_height, NO_OPPONENT_TEXT)
             elif starting_remaining_s is not None and starting_remaining_s > 0:
                 canvas = _text_screen(screen_width, screen_height, _starting_text(state.color, starting_remaining_s))
+            elif disconnect_remaining_s is not None and disconnect_remaining_s > 0:
+                canvas = _text_screen(screen_width, screen_height, _disconnect_text(disconnect_remaining_s))
             elif state.phase in ("connecting", "disconnected") or state.view_state is None:
                 canvas = _text_screen(screen_width, screen_height, WAITING_TEXT if state.phase == "waiting" else LOGGING_IN_TEXT)
             else:

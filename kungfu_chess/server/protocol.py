@@ -18,5 +18,8 @@ RESTART = "restart"
 
 # In-game phase (server -> client)
 STATE = "state"
+OPPONENT_DISCONNECTED = "opponent_disconnected"
+OPPONENT_RECONNECTED = "opponent_reconnected"
 
 MATCHMAKING_TIMEOUT_SECONDS = 60
+DISCONNECT_GRACE_SECONDS = 20

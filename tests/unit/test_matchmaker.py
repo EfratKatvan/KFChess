@@ -117,3 +117,54 @@ async def _disconnect_while_waiting(db_path):
     bob = FakeConnection("bob")
     await matchmaker.on_connect(bob, "bob")
     assert _last_type(bob) == protocol.WAITING_FOR_OPPONENT  # not silently paired with the departed alice
+
+
+def test_reconnecting_with_the_same_username_rejoins_the_same_room_instead_of_requeuing(db_path):
+    asyncio.run(_reconnect_rejoins_room(db_path))
+
+
+async def _reconnect_rejoins_room(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice")
+    await matchmaker.on_connect(bob, "bob")  # alice=white, bob=black
+
+    await matchmaker.on_disconnect(alice)
+    assert _last_type(bob) == protocol.OPPONENT_DISCONNECTED
+
+    alice_new = FakeConnection("alice-reconnected")
+    await matchmaker.on_connect(alice_new, "alice")
+
+    assert alice_new.sent == []  # no waiting_for_opponent/match_found - silently reattached, not requeued
+    assert _last_type(bob) == protocol.OPPONENT_RECONNECTED
+
+    await matchmaker.on_disconnect(alice_new)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_reconnecting_after_the_grace_period_falls_back_to_normal_matchmaking(db_path, monkeypatch):
+    monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.05)
+    asyncio.run(_reconnect_after_grace_expired(db_path))
+
+
+async def _reconnect_after_grace_expired(db_path):
+    accounts.authenticate(db_path, "alice", "pw")
+    accounts.authenticate(db_path, "bob", "pw")
+
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice")
+    await matchmaker.on_connect(bob, "bob")
+
+    await matchmaker.on_disconnect(alice)
+    await asyncio.sleep(0.15)  # past the (shortened) grace period - room has already auto-resigned
+
+    alice_new = FakeConnection("alice-too-late")
+    await matchmaker.on_connect(alice_new, "alice")
+
+    assert _last_type(alice_new) == protocol.WAITING_FOR_OPPONENT  # treated as a fresh matchmaking candidate
+
+    await matchmaker.on_disconnect(alice_new)
+    await matchmaker.on_disconnect(bob)

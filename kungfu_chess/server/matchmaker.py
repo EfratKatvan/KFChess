@@ -19,15 +19,29 @@ class Matchmaker:
     Black) into their own independent GameRoom, freeing the matchmaker
     to pair whoever connects next. A lone waiting player who isn't
     matched within protocol.MATCHMAKING_TIMEOUT_SECONDS gets a "no
-    opponent found" message instead of waiting forever."""
+    opponent found" message instead of waiting forever.
+
+    Also routes reconnections: if a username that just disconnected
+    from a live GameRoom logs back in within the room's grace period,
+    it's reattached to that same room/color instead of re-entering
+    matchmaking - see GameRoom.handle_disconnect/try_reconnect."""
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
         self._db_path = db_path
         self._waiting: Optional[Tuple[ServerConnection, str]] = None
         self._waiting_timeout_task: Optional[asyncio.Task] = None
         self._rooms: Dict[ServerConnection, GameRoom] = {}
+        self._disconnected_players: Dict[str, Tuple[GameRoom, str]] = {}
 
     async def on_connect(self, ws: ServerConnection, username: str) -> None:
+        pending = self._disconnected_players.pop(username, None)
+        if pending is not None:
+            room, color = pending
+            if await room.try_reconnect(color, ws):
+                self._rooms[ws] = room
+                return
+            # grace period already expired (race) - fall through to normal matchmaking below
+
         if self._waiting is None:
             self._waiting = (ws, username)
             await ws.send(serialize_message(WaitingForOpponentMessage()))
@@ -65,12 +79,28 @@ class Matchmaker:
             self._waiting = None
             return
 
-        room = self._rooms.get(ws)
+        room = self._rooms.pop(ws, None)
         if room is None:
             return
-        room.stop()
-        for other_ws in [connection for connection, r in self._rooms.items() if r is room]:
-            del self._rooms[other_ws]
+        color = room.color_of(ws)
+        if color is None:
+            return
+
+        username = room.username_of(color)
+        self._disconnected_players[username] = (room, color)
+        await room.handle_disconnect(color)
+        asyncio.create_task(self._forget_if_still_pending(username, room))
+
+    async def _forget_if_still_pending(self, username: str, room: GameRoom) -> None:
+        """Cleans up the reconnect-routing entry once the grace period
+        (plus a small buffer) has passed - if the player never came
+        back, GameRoom has already auto-resigned by then, so this entry
+        would otherwise just linger forever pointing at a finished
+        game."""
+        await asyncio.sleep(protocol.DISCONNECT_GRACE_SECONDS + 1)
+        pending = self._disconnected_players.get(username)
+        if pending is not None and pending[0] is room:
+            del self._disconnected_players[username]
 
     async def _timeout_waiting(self, ws: ServerConnection) -> None:
         await asyncio.sleep(protocol.MATCHMAKING_TIMEOUT_SECONDS)

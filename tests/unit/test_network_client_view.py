@@ -1,10 +1,18 @@
 from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.model.piece import WHITE
 from kungfu_chess.model.position import Position
-from kungfu_chess.server.messages import LoginFailedMessage, LoginOkMessage, MatchFoundMessage, StateMessage
+from kungfu_chess.server.messages import (
+    LoginFailedMessage,
+    LoginOkMessage,
+    MatchFoundMessage,
+    OpponentDisconnectedMessage,
+    OpponentReconnectedMessage,
+    StateMessage,
+)
 from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.view.network_client_view import (
     ClientBox,
+    _disconnect_text,
     _game_over_started_at,
     _handle_message,
     _starting_text,
@@ -87,3 +95,59 @@ def test_handle_message_state_sets_game_over_started_at_once_the_game_ends():
     _handle_message(serialize_message(state_message), box)
 
     assert box.state.game_over_started_at is not None
+
+
+def test_disconnect_text_counts_down_before_resigning():
+    assert _disconnect_text(remaining_s=5.5) == "Opponent disconnected - auto-resign in 6..."
+
+
+def test_disconnect_text_shows_resigning_once_time_is_up():
+    assert _disconnect_text(remaining_s=0.0) == "Opponent disconnected - resigning..."
+    assert _disconnect_text(remaining_s=-1.0) == "Opponent disconnected - resigning..."
+
+
+def test_handle_message_opponent_disconnected_sets_the_countdown_fields_without_losing_board_state():
+    box = ClientBox()
+    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    _handle_message(
+        serialize_message(StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)),
+        box,
+    )
+
+    _handle_message(serialize_message(OpponentDisconnectedMessage(grace_seconds=20)), box)
+
+    assert box.state.opponent_disconnected_at is not None
+    assert box.state.opponent_disconnect_grace_seconds == 20
+    assert box.state.view_state == board  # the frozen board isn't lost, just carried forward
+    assert box.state.color == WHITE
+
+
+def test_handle_message_opponent_reconnected_clears_the_countdown_fields():
+    box = ClientBox()
+    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(OpponentDisconnectedMessage(grace_seconds=20)), box)
+
+    _handle_message(serialize_message(OpponentReconnectedMessage()), box)
+
+    assert box.state.opponent_disconnected_at is None
+    assert box.state.opponent_disconnect_grace_seconds is None
+
+
+def test_handle_message_state_carries_forward_the_disconnect_countdown_across_ticks():
+    """The tick loop keeps broadcasting state while paused - each of
+    those StateMessages must not silently clear an in-progress
+    countdown started by an earlier OpponentDisconnectedMessage."""
+    box = ClientBox()
+    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(OpponentDisconnectedMessage(grace_seconds=20)), box)
+    disconnected_at_before = box.state.opponent_disconnected_at
+
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    _handle_message(
+        serialize_message(StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)),
+        box,
+    )
+
+    assert box.state.opponent_disconnected_at == disconnected_at_before
+    assert box.state.opponent_disconnect_grace_seconds == 20

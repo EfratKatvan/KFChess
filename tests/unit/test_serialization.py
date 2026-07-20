@@ -8,6 +8,8 @@ from kungfu_chess.server.messages import (
     LoginOkMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
+    OpponentDisconnectedMessage,
+    OpponentReconnectedMessage,
     RestartMessage,
     SelectOrMoveMessage,
     StateMessage,
@@ -119,6 +121,15 @@ def test_jump_message_round_trips_row_and_col():
 
 def test_restart_message_round_trips():
     assert message_from_wire(message_to_wire(RestartMessage())) == RestartMessage()
+
+
+def test_opponent_disconnected_message_round_trips_the_grace_seconds():
+    original = OpponentDisconnectedMessage(grace_seconds=20)
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_opponent_reconnected_message_round_trips():
+    assert message_from_wire(message_to_wire(OpponentReconnectedMessage())) == OpponentReconnectedMessage()
 
 
 def test_state_message_round_trips_board_selection_and_highlights():

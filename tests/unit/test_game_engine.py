@@ -36,6 +36,14 @@ def test_snapshot_reflects_the_board_dimensions_and_game_over():
     assert view_state.game_over is False
 
 
+def test_resign_ends_the_game_without_touching_the_board():
+    board, _, engine, _ = make_stack([["wR", "bK"]])
+    engine.resign()
+    assert engine.is_game_over() is True
+    assert board.piece_at(Position(0, 0)) is not None
+    assert board.piece_at(Position(0, 1)) is not None
+
+
 def test_snapshot_reflects_game_over_after_king_capture():
     _, controller, engine, _ = make_stack([["wR", "bK"]])
     controller.handle_click(50, 50)

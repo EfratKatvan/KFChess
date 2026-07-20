@@ -75,3 +75,20 @@ class JumpMessage:
 @dataclass(frozen=True)
 class RestartMessage:
     type: str = protocol.RESTART
+
+
+@dataclass(frozen=True)
+class OpponentDisconnectedMessage:
+    """Sent once to the still-connected player - grace_seconds is how
+    long the opponent has to reconnect (same username, see
+    server/matchmaker.py) before auto-resigning. The client counts down
+    locally from receipt, the same idiom as the match-start countdown -
+    no need for the server to send a tick every second."""
+
+    grace_seconds: int
+    type: str = protocol.OPPONENT_DISCONNECTED
+
+
+@dataclass(frozen=True)
+class OpponentReconnectedMessage:
+    type: str = protocol.OPPONENT_RECONNECTED

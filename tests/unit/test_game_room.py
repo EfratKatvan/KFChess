@@ -11,6 +11,16 @@ from kungfu_chess.server.messages import SelectOrMoveMessage
 from tests.unit.test_matchmaker import FakeConnection, _last_type
 
 
+def _make_room(db_path, white_ws=None, black_ws=None):
+    accounts.authenticate(db_path, "white_player", "pw")
+    accounts.authenticate(db_path, "black_player", "pw")
+    return GameRoom(
+        white_ws or FakeConnection("white"), "white_player",
+        black_ws or FakeConnection("black"), "black_player",
+        db_path=db_path,
+    )
+
+
 @pytest.fixture
 def db_path(tmp_path):
     path = str(tmp_path / "test_users.db")
@@ -105,5 +115,122 @@ async def _rating_update_once_scenario(db_path):
     rating_after_second_call = accounts.get_rating(db_path, "white_player")
 
     assert rating_after_first_call == rating_after_second_call
+
+    room.stop()
+
+
+# ==========================================
+# Disconnect / reconnect / auto-resign
+# ==========================================
+
+def test_handle_disconnect_pauses_the_room_and_notifies_the_survivor(db_path):
+    asyncio.run(_disconnect_scenario(db_path))
+
+
+async def _disconnect_scenario(db_path):
+    black_ws = FakeConnection("black")
+    room = _make_room(db_path, black_ws=black_ws)
+    await room.start()
+
+    await room.handle_disconnect(WHITE)
+
+    assert room._paused is True
+    assert _last_type(black_ws) == protocol.OPPONENT_DISCONNECTED
+    assert black_ws.sent[-1]["grace_seconds"] == protocol.DISCONNECT_GRACE_SECONDS
+
+    room.stop()
+
+
+def test_paused_room_does_not_advance_the_engine_clock(db_path):
+    asyncio.run(_paused_clock_scenario(db_path))
+
+
+async def _paused_clock_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+    await room.handle_disconnect(WHITE)
+
+    elapsed_before = room._engine._total_elapsed_ms
+    room._last_tick -= 1.0  # pretend a full second has passed since the last tick
+    await room._tick_once()
+    elapsed_after = room._engine._total_elapsed_ms
+
+    assert elapsed_after == elapsed_before  # engine.wait() was skipped entirely while paused
+
+    room.stop()
+
+
+def test_try_reconnect_resumes_the_clock_and_notifies_the_survivor(db_path):
+    asyncio.run(_reconnect_scenario(db_path))
+
+
+async def _reconnect_scenario(db_path):
+    black_ws = FakeConnection("black")
+    room = _make_room(db_path, black_ws=black_ws)
+    await room.start()
+    await room.handle_disconnect(WHITE)
+
+    new_white_ws = FakeConnection("white-new")
+    reconnected = await room.try_reconnect(WHITE, new_white_ws)
+
+    assert reconnected is True
+    assert room._paused is False
+    assert room.color_of(new_white_ws) == WHITE
+    assert _last_type(black_ws) == protocol.OPPONENT_RECONNECTED
+
+    room.stop()
+
+
+def test_try_reconnect_rejects_the_wrong_color(db_path):
+    asyncio.run(_reconnect_wrong_color_scenario(db_path))
+
+
+async def _reconnect_wrong_color_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+    await room.handle_disconnect(WHITE)
+
+    reconnected = await room.try_reconnect(BLACK, FakeConnection("black-new"))
+
+    assert reconnected is False
+
+    room.stop()
+
+
+def test_auto_resign_ends_the_game_and_credits_the_survivor(db_path, monkeypatch):
+    monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.05)
+    asyncio.run(_auto_resign_scenario(db_path))
+
+
+async def _auto_resign_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+
+    await room.handle_disconnect(WHITE)  # black is the survivor
+    await asyncio.sleep(0.15)
+
+    assert room._engine.is_game_over() is True
+    assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING + accounts.ELO_K_FACTOR // 2
+    assert accounts.get_rating(db_path, "white_player") == accounts.STARTING_RATING - accounts.ELO_K_FACTOR // 2
+
+    room.stop()
+
+
+def test_reconnecting_before_the_grace_period_cancels_the_auto_resign(db_path, monkeypatch):
+    monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.2)
+    asyncio.run(_reconnect_cancels_resign_scenario(db_path))
+
+
+async def _reconnect_cancels_resign_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+
+    await room.handle_disconnect(WHITE)
+    await room.try_reconnect(WHITE, FakeConnection("white-new"))
+    await asyncio.sleep(0.3)  # past what the original grace period would have been
+
+    assert room._engine.is_game_over() is False
+    assert accounts.get_rating(db_path, "white_player") == accounts.STARTING_RATING
+    assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING
 
     room.stop()
