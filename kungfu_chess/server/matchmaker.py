@@ -8,7 +8,7 @@ from websockets.asyncio.server import ServerConnection
 from kungfu_chess.server import protocol
 from kungfu_chess.server.accounts import DEFAULT_DB_PATH
 from kungfu_chess.server.game_room import GameRoom
-from kungfu_chess.server.messages import NoOpponentFoundMessage, WaitingForOpponentMessage
+from kungfu_chess.server.messages import LoginFailedMessage, NoOpponentFoundMessage, WaitingForOpponentMessage
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
 
@@ -24,7 +24,12 @@ class Matchmaker:
     Also routes reconnections: if a username that just disconnected
     from a live GameRoom logs back in within the room's grace period,
     it's reattached to that same room/color instead of re-entering
-    matchmaking - see GameRoom.handle_disconnect/try_reconnect."""
+    matchmaking - see GameRoom.handle_disconnect/try_reconnect.
+
+    A username can only ever have one *live* connection at a time - a
+    second simultaneous login (before the first disconnects) is
+    rejected outright, rather than silently entering matchmaking and
+    potentially getting paired against itself."""
 
     def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
         self._db_path = db_path
@@ -32,21 +37,33 @@ class Matchmaker:
         self._waiting_timeout_task: Optional[asyncio.Task] = None
         self._rooms: Dict[ServerConnection, GameRoom] = {}
         self._disconnected_players: Dict[str, Tuple[GameRoom, str]] = {}
+        self._active_connections: Dict[str, ServerConnection] = {}  # username -> its one live connection
 
-    async def on_connect(self, ws: ServerConnection, username: str) -> None:
+    async def on_connect(self, ws: ServerConnection, username: str) -> bool:
+        """Returns False (and sends LoginFailedMessage itself) if this
+        username already has a live connection elsewhere - the caller
+        should close the socket without entering matchmaking/message
+        handling for it."""
+        if username in self._active_connections:
+            await ws.send(serialize_message(
+                LoginFailedMessage(reason="this account is already connected from another window")
+            ))
+            return False
+        self._active_connections[username] = ws
+
         pending = self._disconnected_players.pop(username, None)
         if pending is not None:
             room, color = pending
             if await room.try_reconnect(color, ws):
                 self._rooms[ws] = room
-                return
+                return True
             # grace period already expired (race) - fall through to normal matchmaking below
 
         if self._waiting is None:
             self._waiting = (ws, username)
             await ws.send(serialize_message(WaitingForOpponentMessage()))
             self._waiting_timeout_task = asyncio.create_task(self._timeout_waiting(ws))
-            return
+            return True
 
         opponent_ws, opponent_username = self._waiting
         self._cancel_waiting_timeout()
@@ -60,6 +77,7 @@ class Matchmaker:
         self._rooms[opponent_ws] = room
         self._rooms[ws] = room
         await room.start()
+        return True
 
     async def on_message(self, ws: ServerConnection, raw: str) -> None:
         room = self._rooms.get(ws)
@@ -74,6 +92,10 @@ class Matchmaker:
             await room.handle_message(color, message)
 
     async def on_disconnect(self, ws: ServerConnection) -> None:
+        username = next((u for u, connection in self._active_connections.items() if connection is ws), None)
+        if username is not None:
+            del self._active_connections[username]
+
         if self._waiting is not None and self._waiting[0] is ws:
             self._cancel_waiting_timeout()
             self._waiting = None
@@ -86,10 +108,10 @@ class Matchmaker:
         if color is None:
             return
 
-        username = room.username_of(color)
-        self._disconnected_players[username] = (room, color)
+        room_username = room.username_of(color)
+        self._disconnected_players[room_username] = (room, color)
         await room.handle_disconnect(color)
-        asyncio.create_task(self._forget_if_still_pending(username, room))
+        asyncio.create_task(self._forget_if_still_pending(room_username, room))
 
     async def _forget_if_still_pending(self, username: str, room: GameRoom) -> None:
         """Cleans up the reconnect-routing entry once the grace period

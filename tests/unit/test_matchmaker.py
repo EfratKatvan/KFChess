@@ -146,6 +146,73 @@ async def _reconnect_rejoins_room(db_path):
     await matchmaker.on_disconnect(bob)
 
 
+def test_second_login_with_the_same_username_while_the_first_is_still_waiting_is_rejected(db_path):
+    asyncio.run(_duplicate_login_while_waiting(db_path))
+
+
+async def _duplicate_login_while_waiting(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    alice_again = FakeConnection("alice-again")
+
+    accepted_first = await matchmaker.on_connect(alice, "alice")
+    accepted_second = await matchmaker.on_connect(alice_again, "alice")
+
+    assert accepted_first is True
+    assert accepted_second is False
+    assert _last_type(alice_again) == protocol.LOGIN_FAILED
+    assert _last_type(alice) == protocol.WAITING_FOR_OPPONENT  # the original session is untouched
+
+    await matchmaker.on_disconnect(alice)
+
+
+def test_second_login_with_the_same_username_while_the_first_is_in_a_match_is_rejected(db_path):
+    asyncio.run(_duplicate_login_while_matched(db_path))
+
+
+async def _duplicate_login_while_matched(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice")
+    await matchmaker.on_connect(bob, "bob")  # alice + bob now matched
+
+    alice_again = FakeConnection("alice-again")
+    accepted = await matchmaker.on_connect(alice_again, "alice")
+
+    assert accepted is False
+    assert _last_type(alice_again) == protocol.LOGIN_FAILED
+    assert _last_type(alice) == protocol.MATCH_FOUND  # the real session's match is unaffected
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_reconnecting_with_the_same_username_is_allowed_after_the_original_disconnects(db_path):
+    """The duplicate-login rejection must not block a genuine
+    reconnect - only a *simultaneous* second session is rejected."""
+    asyncio.run(_reconnect_not_blocked_by_duplicate_check(db_path))
+
+
+async def _reconnect_not_blocked_by_duplicate_check(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice")
+    await matchmaker.on_connect(bob, "bob")
+
+    await matchmaker.on_disconnect(alice)  # alice's connection is now gone
+
+    alice_new = FakeConnection("alice-reconnected")
+    accepted = await matchmaker.on_connect(alice_new, "alice")
+
+    assert accepted is True
+    assert _last_type(alice_new) == protocol.MATCH_FOUND
+
+    await matchmaker.on_disconnect(alice_new)
+    await matchmaker.on_disconnect(bob)
+
+
 def test_reconnecting_after_the_grace_period_falls_back_to_normal_matchmaking(db_path, monkeypatch):
     monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.05)
     asyncio.run(_reconnect_after_grace_expired(db_path))

@@ -53,7 +53,10 @@ async def _handle_connection(matchmaker: Matchmaker, db_path: str, ws: ServerCon
     if username is None:
         return  # never enters matchmaking - bad login or the connection dropped before completing it
 
-    await matchmaker.on_connect(ws, username)
+    accepted = await matchmaker.on_connect(ws, username)
+    if not accepted:
+        return  # already connected from another window - matchmaker sent LoginFailedMessage itself
+
     try:
         async for raw in ws:
             await matchmaker.on_message(ws, raw)
