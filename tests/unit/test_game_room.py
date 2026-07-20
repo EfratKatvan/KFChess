@@ -43,13 +43,17 @@ def test_match_found_sent_to_both_connections_on_start(db_path):
 
 
 async def _start_scenario(db_path):
-    white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
-    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
+    room = _make_room(db_path)
 
     await room.start()
 
+    white_ws, black_ws = room._connections[WHITE], room._connections[BLACK]
     assert _last_type(white_ws) == protocol.MATCH_FOUND
     assert white_ws.sent[-1]["color"] == WHITE
+    assert white_ws.sent[-1]["white_username"] == "white_player"
+    assert white_ws.sent[-1]["white_rating"] == accounts.STARTING_RATING
+    assert white_ws.sent[-1]["black_username"] == "black_player"
+    assert white_ws.sent[-1]["black_rating"] == accounts.STARTING_RATING
     assert _last_type(black_ws) == protocol.MATCH_FOUND
     assert black_ws.sent[-1]["color"] == BLACK
 
@@ -177,6 +181,8 @@ async def _reconnect_scenario(db_path):
     assert room._paused is False
     assert room.color_of(new_white_ws) == WHITE
     assert _last_type(black_ws) == protocol.OPPONENT_RECONNECTED
+    assert _last_type(new_white_ws) == protocol.MATCH_FOUND  # re-learns its own color/username/rating
+    assert new_white_ws.sent[-1]["color"] == WHITE
 
     room.stop()
 

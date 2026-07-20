@@ -138,7 +138,14 @@ def message_to_wire(message: Any) -> Dict[str, Any]:
     if isinstance(message, OpponentDisconnectedMessage):
         return {"type": message.type, "grace_seconds": message.grace_seconds}
     if isinstance(message, MatchFoundMessage):
-        return {"type": message.type, "color": message.color}
+        return {
+            "type": message.type,
+            "color": message.color,
+            "white_username": message.white_username,
+            "white_rating": message.white_rating,
+            "black_username": message.black_username,
+            "black_rating": message.black_rating,
+        }
     if isinstance(message, StateMessage):
         return {
             "type": message.type,
@@ -169,7 +176,13 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
     if message_type == protocol.OPPONENT_RECONNECTED:
         return OpponentReconnectedMessage()
     if message_type == protocol.MATCH_FOUND:
-        return MatchFoundMessage(color=data["color"])
+        return MatchFoundMessage(
+            color=data["color"],
+            white_username=data["white_username"],
+            white_rating=data["white_rating"],
+            black_username=data["black_username"],
+            black_rating=data["black_rating"],
+        )
     if message_type == protocol.STATE:
         return StateMessage(
             board=board_view_state_from_wire(data["board"]),

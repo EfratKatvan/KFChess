@@ -45,7 +45,16 @@ class NoOpponentFoundMessage:
 
 @dataclass(frozen=True)
 class MatchFoundMessage:
+    """Carries both players' identity, not just "your" color - the side
+    panels display a username+rating per color (see renderer.py's
+    PlayerInfo), and need White's info and Black's info regardless of
+    which client is asking."""
+
     color: str
+    white_username: str
+    white_rating: int
+    black_username: str
+    black_rating: int
     type: str = protocol.MATCH_FOUND
 
 

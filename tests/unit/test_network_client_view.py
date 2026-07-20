@@ -1,5 +1,5 @@
 from kungfu_chess.engine.board_view_state import BoardViewState
-from kungfu_chess.model.piece import WHITE
+from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
     LoginFailedMessage,
@@ -17,6 +17,12 @@ from kungfu_chess.view.network_client_view import (
     _handle_message,
     _starting_text,
 )
+
+
+def _match_found(color):
+    return MatchFoundMessage(
+        color=color, white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
+    )
 
 
 def test_starting_text_counts_down_before_go():
@@ -64,16 +70,38 @@ def test_handle_message_login_failed_sets_the_terminal_phase_and_reason():
 
 def test_handle_message_match_found_sets_phase_color_and_matched_at():
     box = ClientBox()
-    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(_match_found(WHITE)), box)
 
     assert box.state.phase == "matched"
     assert box.state.color == WHITE
     assert box.state.matched_at is not None
 
 
+def test_handle_message_match_found_stores_both_players_identity():
+    box = ClientBox()
+    _handle_message(serialize_message(_match_found(WHITE)), box)
+
+    assert box.state.white_player.username == "alice"
+    assert box.state.white_player.rating == 1200
+    assert box.state.black_player.username == "bob"
+    assert box.state.black_player.rating == 1216
+
+
+def test_handle_message_state_carries_forward_player_identity():
+    box = ClientBox()
+    _handle_message(serialize_message(_match_found(WHITE)), box)
+
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state_message = StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)
+    _handle_message(serialize_message(state_message), box)
+
+    assert box.state.white_player.username == "alice"
+    assert box.state.black_player.username == "bob"
+
+
 def test_handle_message_state_carries_forward_color_and_matched_at():
     box = ClientBox()
-    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(_match_found(WHITE)), box)
     matched_at_before = box.state.matched_at
 
     board = BoardViewState(width=8, height=8, game_over=False, pieces=())
@@ -88,7 +116,7 @@ def test_handle_message_state_carries_forward_color_and_matched_at():
 
 def test_handle_message_state_sets_game_over_started_at_once_the_game_ends():
     box = ClientBox()
-    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(_match_found(WHITE)), box)
 
     ended_board = BoardViewState(width=8, height=8, game_over=True, pieces=())
     state_message = StateMessage(board=ended_board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)
@@ -108,7 +136,7 @@ def test_disconnect_text_shows_resigning_once_time_is_up():
 
 def test_handle_message_opponent_disconnected_sets_the_countdown_fields_without_losing_board_state():
     box = ClientBox()
-    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(_match_found(WHITE)), box)
     board = BoardViewState(width=8, height=8, game_over=False, pieces=())
     _handle_message(
         serialize_message(StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)),
@@ -125,7 +153,7 @@ def test_handle_message_opponent_disconnected_sets_the_countdown_fields_without_
 
 def test_handle_message_opponent_reconnected_clears_the_countdown_fields():
     box = ClientBox()
-    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(_match_found(WHITE)), box)
     _handle_message(serialize_message(OpponentDisconnectedMessage(grace_seconds=20)), box)
 
     _handle_message(serialize_message(OpponentReconnectedMessage()), box)
@@ -139,7 +167,7 @@ def test_handle_message_state_carries_forward_the_disconnect_countdown_across_ti
     those StateMessages must not silently clear an in-progress
     countdown started by an earlier OpponentDisconnectedMessage."""
     box = ClientBox()
-    _handle_message(serialize_message(MatchFoundMessage(color=WHITE)), box)
+    _handle_message(serialize_message(_match_found(WHITE)), box)
     _handle_message(serialize_message(OpponentDisconnectedMessage(grace_seconds=20)), box)
     disconnected_at_before = box.state.opponent_disconnected_at
 

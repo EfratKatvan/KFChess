@@ -80,8 +80,15 @@ class GameRoom:
 
     async def start(self) -> None:
         for color, ws in self._connections.items():
-            await self._safe_send(ws, MatchFoundMessage(color=color))
+            await self._safe_send(ws, self._match_found_message(color))
         self._tick_task = asyncio.create_task(self._run())
+
+    def _match_found_message(self, color: str) -> MatchFoundMessage:
+        return MatchFoundMessage(
+            color=color,
+            white_username=self._usernames[WHITE], white_rating=accounts.get_rating(self._db_path, self._usernames[WHITE]),
+            black_username=self._usernames[BLACK], black_rating=accounts.get_rating(self._db_path, self._usernames[BLACK]),
+        )
 
     def stop(self) -> None:
         if self._tick_task is not None:
@@ -129,6 +136,7 @@ class GameRoom:
         self._paused = False
         self._last_tick = time.perf_counter()  # don't count the paused duration as elapsed game time
         await self._safe_send(self._connections[_other_color(color)], OpponentReconnectedMessage())
+        await self._safe_send(new_ws, self._match_found_message(color))  # so the reconnecting client re-learns its own color/username/rating
         return True
 
     async def handle_message(self, color: str, message: Any) -> None:

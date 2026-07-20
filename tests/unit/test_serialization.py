@@ -105,8 +105,11 @@ def test_no_opponent_found_message_round_trips():
     assert message_from_wire(message_to_wire(NoOpponentFoundMessage())) == NoOpponentFoundMessage()
 
 
-def test_match_found_message_round_trips_the_assigned_color():
-    assert message_from_wire(message_to_wire(MatchFoundMessage(color=WHITE))) == MatchFoundMessage(color=WHITE)
+def test_match_found_message_round_trips_color_and_both_players_identity():
+    original = MatchFoundMessage(
+        color=WHITE, white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
+    )
+    assert message_from_wire(message_to_wire(original)) == original
 
 
 def test_select_or_move_message_round_trips_row_and_col():
@@ -147,7 +150,9 @@ def test_serialize_and_deserialize_message_round_trip_through_an_actual_json_str
     """The end-to-end path every real message actually takes over the
     wire - serialize_message produces a str (what ws.send() takes),
     deserialize_message consumes one (what async for raw in ws yields)."""
-    original = MatchFoundMessage(color=BLACK)
+    original = MatchFoundMessage(
+        color=BLACK, white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
+    )
     raw = serialize_message(original)
     assert isinstance(raw, str)
     assert deserialize_message(raw) == original

@@ -136,7 +136,10 @@ async def _reconnect_rejoins_room(db_path):
     alice_new = FakeConnection("alice-reconnected")
     await matchmaker.on_connect(alice_new, "alice")
 
-    assert alice_new.sent == []  # no waiting_for_opponent/match_found - silently reattached, not requeued
+    # reattached to the same room, not requeued - gets match_found again (so it re-learns its own color),
+    # never waiting_for_opponent (that would mean it went through normal matchmaking instead)
+    assert _last_type(alice_new) == protocol.MATCH_FOUND
+    assert alice_new.sent[-1]["color"] == WHITE
     assert _last_type(bob) == protocol.OPPONENT_RECONNECTED
 
     await matchmaker.on_disconnect(alice_new)

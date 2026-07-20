@@ -33,7 +33,7 @@ from kungfu_chess.server.serialization import deserialize_message, serialize_mes
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.view import image_view
 from kungfu_chess.view.img import Img
-from kungfu_chess.view.renderer import Renderer, game_over_button_rect, side_panel_width_for
+from kungfu_chess.view.renderer import PlayerInfo, Renderer, game_over_button_rect, side_panel_width_for
 
 """The networked counterpart of image_view.run() - a thin renderer and
 input-forwarder instead of something that owns a GameEngine locally.
@@ -66,6 +66,8 @@ class ClientState:
     color: Optional[str] = None
     rating: Optional[int] = None
     login_failure_reason: Optional[str] = None
+    white_player: Optional[PlayerInfo] = None
+    black_player: Optional[PlayerInfo] = None
     view_state: Optional[BoardViewState] = None
     selected_pos: Optional[Position] = None
     legal_destinations: Set[Position] = field(default_factory=set)
@@ -135,7 +137,11 @@ def _handle_message(raw: str, box: ClientBox) -> None:
     elif isinstance(message, NoOpponentFoundMessage):
         box.state = ClientState(phase="no_opponent")
     elif isinstance(message, MatchFoundMessage):
-        box.state = ClientState(phase="matched", color=message.color, matched_at=time.perf_counter())
+        box.state = ClientState(
+            phase="matched", color=message.color, matched_at=time.perf_counter(),
+            white_player=PlayerInfo(username=message.white_username, rating=message.white_rating),
+            black_player=PlayerInfo(username=message.black_username, rating=message.black_rating),
+        )
     elif isinstance(message, OpponentDisconnectedMessage):
         box.state = replace(
             box.state,
@@ -156,6 +162,8 @@ def _handle_message(raw: str, box: ClientBox) -> None:
             game_over_started_at=_game_over_started_at(box.state.game_over_started_at, message.board.game_over),
             opponent_disconnected_at=box.state.opponent_disconnected_at,
             opponent_disconnect_grace_seconds=box.state.opponent_disconnect_grace_seconds,
+            white_player=box.state.white_player,
+            black_player=box.state.black_player,
         )
 
 
@@ -248,6 +256,9 @@ def run_client(server_uri: str, username: str, password: str, cell_size: int, pi
                     legal_destinations=state.legal_destinations,
                     invalid_target=state.invalid_target,
                     game_over_progress=game_over_progress,
+                    black_player=state.black_player,
+                    white_player=state.white_player,
+                    your_color=state.color,
                 )
 
             key = canvas.show(image_view.WINDOW_NAME, wait_ms=image_view.TARGET_FRAME_MS)
