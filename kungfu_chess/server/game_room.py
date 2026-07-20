@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import time
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from websockets.asyncio.server import ServerConnection
 
+from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.controller import Controller
 from kungfu_chess.io.board_parser import build_board
@@ -14,12 +14,8 @@ from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.rules.rule_engine import RuleEngine
-from kungfu_chess.server import protocol
-from kungfu_chess.server.serialization import (
-    board_view_state_to_wire,
-    legal_destinations_to_wire,
-    position_to_wire,
-)
+from kungfu_chess.server.messages import JumpMessage, MatchFoundMessage, RestartMessage, SelectOrMoveMessage, StateMessage
+from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
 
@@ -55,7 +51,7 @@ class GameRoom:
 
     async def start(self) -> None:
         for color, ws in self._connections.items():
-            await self._safe_send(ws, {"type": protocol.MATCH_FOUND, "color": color})
+            await self._safe_send(ws, MatchFoundMessage(color=color))
         self._tick_task = asyncio.create_task(self._run())
 
     def stop(self) -> None:
@@ -68,14 +64,13 @@ class GameRoom:
                 return color
         return None
 
-    async def handle_message(self, color: str, message: dict) -> None:
+    async def handle_message(self, color: str, message: Any) -> None:
         controller = self._controllers[color]
-        message_type = message.get("type")
-        if message_type == protocol.SELECT_OR_MOVE:
-            controller.handle_cell(Position(message["row"], message["col"]))
-        elif message_type == protocol.JUMP:
-            controller.handle_jump_cell(Position(message["row"], message["col"]))
-        elif message_type == protocol.RESTART:
+        if isinstance(message, SelectOrMoveMessage):
+            controller.handle_cell(Position(message.row, message.col))
+        elif isinstance(message, JumpMessage):
+            controller.handle_jump_cell(Position(message.row, message.col))
+        elif isinstance(message, RestartMessage):
             if self._engine.is_game_over():
                 self._build_fresh_game()
 
@@ -90,26 +85,24 @@ class GameRoom:
 
     async def _broadcast(self) -> None:
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
-        board_wire = board_view_state_to_wire(view_state)
         await asyncio.gather(*(
-            self._safe_send(ws, self._personalized_message(color, board_wire))
+            self._safe_send(ws, self._personalized_message(color, view_state))
             for color, ws in self._connections.items()
         ))
 
-    def _personalized_message(self, color: str, board_wire: dict) -> dict:
+    def _personalized_message(self, color: str, view_state: BoardViewState) -> StateMessage:
         controller = self._controllers[color]
         selected = controller.selected_pos
         legal_destinations = self._engine.legal_destinations(selected) if selected is not None else set()
-        return {
-            "type": protocol.STATE,
-            "board": board_wire,
-            "your_selected_pos": position_to_wire(selected),
-            "your_legal_destinations": legal_destinations_to_wire(legal_destinations),
-            "your_invalid_target": position_to_wire(controller.invalid_target),
-        }
+        return StateMessage(
+            board=view_state,
+            your_selected_pos=selected,
+            your_legal_destinations=legal_destinations,
+            your_invalid_target=controller.invalid_target,
+        )
 
-    async def _safe_send(self, ws: ServerConnection, message: dict) -> None:
+    async def _safe_send(self, ws: ServerConnection, message: Any) -> None:
         try:
-            await ws.send(json.dumps(message))
+            await ws.send(serialize_message(message))
         except Exception:
             pass  # a closed/broken socket is handled by the server's own connection loop, not here

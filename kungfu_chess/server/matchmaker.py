@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Dict, Optional
 
 from websockets.asyncio.server import ServerConnection
 
 from kungfu_chess.server import protocol
 from kungfu_chess.server.game_room import GameRoom
+from kungfu_chess.server.messages import NoOpponentFoundMessage, WaitingForOpponentMessage
+from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
 
 class Matchmaker:
@@ -27,7 +28,7 @@ class Matchmaker:
     async def on_connect(self, ws: ServerConnection) -> None:
         if self._waiting is None:
             self._waiting = ws
-            await ws.send(json.dumps({"type": protocol.WAITING_FOR_OPPONENT}))
+            await ws.send(serialize_message(WaitingForOpponentMessage()))
             self._waiting_timeout_task = asyncio.create_task(self._timeout_waiting(ws))
             return
 
@@ -45,9 +46,9 @@ class Matchmaker:
         if room is None:
             return
         try:
-            message = json.loads(raw)
-        except (json.JSONDecodeError, ValueError):
-            return
+            message = deserialize_message(raw)
+        except (ValueError, KeyError, TypeError):
+            return  # malformed/unrecognized message from a client - ignore, don't crash the room
         color = room.color_of(ws)
         if color is not None:
             await room.handle_message(color, message)
@@ -71,7 +72,7 @@ class Matchmaker:
             return  # already matched or already disconnected
         self._waiting = None
         self._waiting_timeout_task = None
-        await ws.send(json.dumps({"type": protocol.NO_OPPONENT_FOUND}))
+        await ws.send(serialize_message(NoOpponentFoundMessage()))
 
     def _cancel_waiting_timeout(self) -> None:
         if self._waiting_timeout_task is not None:

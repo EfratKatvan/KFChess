@@ -1,23 +1,29 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import threading
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Optional, Set
 
 import cv2
 import numpy as np
 from websockets.asyncio.client import connect
 
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET
+from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.io.board_parser import build_board
-from kungfu_chess.server import protocol
-from kungfu_chess.server.serialization import (
-    board_view_state_from_wire,
-    legal_destinations_from_wire,
-    position_from_wire,
+from kungfu_chess.model.position import Position
+from kungfu_chess.server.messages import (
+    JumpMessage,
+    MatchFoundMessage,
+    NoOpponentFoundMessage,
+    RestartMessage,
+    SelectOrMoveMessage,
+    StateMessage,
+    WaitingForOpponentMessage,
 )
+from kungfu_chess.server.serialization import deserialize_message, serialize_message
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.view import image_view
 from kungfu_chess.view.img import Img
@@ -37,6 +43,34 @@ _TEXT_COLOR_BGRA = (255, 255, 255, 255)
 _BACKGROUND_COLOR_BGRA = (30, 30, 30, 255)
 
 
+@dataclass
+class ClientState:
+    """Everything the render loop needs to know about the match, as of
+    the last message received - replaced wholesale (never mutated field
+    by field) so a read from the main thread can't see a torn mix of an
+    old view_state with a newer selected_pos."""
+
+    phase: str = "connecting"  # connecting -> waiting -> matched, or no_opponent/disconnected
+    color: Optional[str] = None
+    view_state: Optional[BoardViewState] = None
+    selected_pos: Optional[Position] = None
+    legal_destinations: Set[Position] = field(default_factory=set)
+    invalid_target: Optional[Position] = None
+
+
+@dataclass
+class ClientBox:
+    """The mutable, cross-thread handoff point: the network thread
+    writes ws/loop once (on connect) and state on every message; the
+    main render thread only ever reads. Safe without locks because each
+    attribute write/read is a single reference assignment, atomic under
+    the GIL - the same idiom image_view.py uses for current["session"]."""
+
+    state: ClientState = field(default_factory=ClientState)
+    ws: Optional[Any] = None
+    loop: Optional[asyncio.AbstractEventLoop] = None
+
+
 def _text_screen(width: int, height: int, text: str) -> Img:
     canvas = Img()
     canvas.img = np.full((height, width, 4), _BACKGROUND_COLOR_BGRA, dtype=np.uint8)
@@ -44,50 +78,50 @@ def _text_screen(width: int, height: int, text: str) -> Img:
     return canvas
 
 
-def _send(box: Dict[str, Any], message: dict) -> None:
-    loop = box.get("loop")
-    ws = box.get("ws")
-    if loop is None or ws is None:
+def _send(box: ClientBox, message: Any) -> None:
+    if box.loop is None or box.ws is None:
         return
-    asyncio.run_coroutine_threadsafe(ws.send(json.dumps(message)), loop)
+    asyncio.run_coroutine_threadsafe(box.ws.send(serialize_message(message)), box.loop)
 
 
-def _handle_message(raw: str, box: Dict[str, Any]) -> None:
-    message = json.loads(raw)
-    message_type = message.get("type")
-    if message_type == protocol.WAITING_FOR_OPPONENT:
-        box["phase"] = "waiting"
-    elif message_type == protocol.NO_OPPONENT_FOUND:
-        box["phase"] = "no_opponent"
-    elif message_type == protocol.MATCH_FOUND:
-        box["phase"] = "matched"
-        box["color"] = message["color"]
-    elif message_type == protocol.STATE:
-        box["view_state"] = board_view_state_from_wire(message["board"])
-        box["selected_pos"] = position_from_wire(message["your_selected_pos"])
-        box["legal_destinations"] = legal_destinations_from_wire(message["your_legal_destinations"])
-        box["invalid_target"] = position_from_wire(message["your_invalid_target"])
+def _handle_message(raw: str, box: ClientBox) -> None:
+    message = deserialize_message(raw)
+    if isinstance(message, WaitingForOpponentMessage):
+        box.state = ClientState(phase="waiting")
+    elif isinstance(message, NoOpponentFoundMessage):
+        box.state = ClientState(phase="no_opponent")
+    elif isinstance(message, MatchFoundMessage):
+        box.state = ClientState(phase="matched", color=message.color)
+    elif isinstance(message, StateMessage):
+        box.state = ClientState(
+            phase="matched",
+            color=box.state.color,
+            view_state=message.board,
+            selected_pos=message.your_selected_pos,
+            legal_destinations=message.your_legal_destinations,
+            invalid_target=message.your_invalid_target,
+        )
 
 
-def _network_thread_main(server_uri: str, box: Dict[str, Any]) -> None:
+def _network_thread_main(server_uri: str, box: ClientBox) -> None:
     async def client_main() -> None:
         async with connect(server_uri) as ws:
-            box["ws"] = ws
-            box["loop"] = asyncio.get_running_loop()
+            box.ws = ws
+            box.loop = asyncio.get_running_loop()
             async for raw in ws:
                 _handle_message(raw, box)
 
     try:
         asyncio.run(client_main())
     except Exception:
-        box["phase"] = "disconnected"
+        box.state = ClientState(phase="disconnected")
 
 
 def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_SET) -> None:
     image_view._disable_windows_dpi_scaling()
     cv2.namedWindow(image_view.WINDOW_NAME)
 
-    box: Dict[str, Any] = {"phase": "connecting"}
+    box = ClientBox()
     threading.Thread(target=_network_thread_main, args=(server_uri, box), daemon=True).start()
 
     # A throwaway local board, used only so BoardMapper can bounds-check clicks - no game logic reads it.
@@ -99,39 +133,39 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
     screen_height = board_height * cell_size
 
     def on_mouse(event: int, x: int, y: int, flags: int, param: object) -> None:
-        if box.get("phase") != "matched":
+        if box.state.phase != "matched":
             return
         if event == cv2.EVENT_LBUTTONDOWN:
-            view_state = box.get("view_state")
+            view_state = box.state.view_state
             if view_state is not None and view_state.game_over:
                 button_rect = game_over_button_rect(view_state.width, view_state.height, cell_size)
                 if image_view._point_in_rect(x, y, button_rect):
-                    _send(box, {"type": protocol.RESTART})
+                    _send(box, RestartMessage())
                 return
             cell = mapper.to_cell(x, y)
             if cell is not None:
-                _send(box, {"type": protocol.SELECT_OR_MOVE, "row": cell.row, "col": cell.col})
+                _send(box, SelectOrMoveMessage(row=cell.row, col=cell.col))
         elif event == cv2.EVENT_RBUTTONDOWN:
             cell = mapper.to_cell(x, y)
             if cell is not None:
-                _send(box, {"type": protocol.JUMP, "row": cell.row, "col": cell.col})
+                _send(box, JumpMessage(row=cell.row, col=cell.col))
 
     cv2.setMouseCallback(image_view.WINDOW_NAME, on_mouse)
     frame_renderer = Renderer()
 
     try:
         while True:
-            phase = box.get("phase", "connecting")
-            if phase == "no_opponent":
+            state = box.state
+            if state.phase == "no_opponent":
                 canvas = _text_screen(screen_width, screen_height, NO_OPPONENT_TEXT)
-            elif phase in ("connecting", "disconnected") or box.get("view_state") is None:
-                canvas = _text_screen(screen_width, screen_height, WAITING_TEXT if phase == "waiting" else CONNECTING_TEXT)
+            elif state.phase in ("connecting", "disconnected") or state.view_state is None:
+                canvas = _text_screen(screen_width, screen_height, WAITING_TEXT if state.phase == "waiting" else CONNECTING_TEXT)
             else:
                 canvas = frame_renderer.draw(
-                    box["view_state"], cell_size, piece_set,
-                    selected_position=box.get("selected_pos"),
-                    legal_destinations=box.get("legal_destinations"),
-                    invalid_target=box.get("invalid_target"),
+                    state.view_state, cell_size, piece_set,
+                    selected_position=state.selected_pos,
+                    legal_destinations=state.legal_destinations,
+                    invalid_target=state.invalid_target,
                 )
 
             key = canvas.show(image_view.WINDOW_NAME, wait_ms=image_view.TARGET_FRAME_MS)

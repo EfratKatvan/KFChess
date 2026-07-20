@@ -1,14 +1,29 @@
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, PieceView
 from kungfu_chess.model.position import Position
+from kungfu_chess.server import protocol
+from kungfu_chess.server.messages import (
+    JumpMessage,
+    MatchFoundMessage,
+    NoOpponentFoundMessage,
+    RestartMessage,
+    SelectOrMoveMessage,
+    StateMessage,
+    WaitingForOpponentMessage,
+)
 
-"""Converts the DTOs in engine/board_view_state.py to/from plain JSON-
-serializable dicts/lists, so a client (which never imports engine/model
-directly) can reconstruct the exact same typed dataclasses Renderer.draw()
-already expects - no parallel wire representation to keep in sync."""
+"""Converts the DTOs in engine/board_view_state.py, and the message
+envelopes in server/messages.py, to/from plain JSON-serializable dicts -
+so a client (which never imports engine/model directly) can reconstruct
+the exact same typed dataclasses Renderer.draw() already expects. No
+parallel wire representation to keep in sync, and no json/dict literals
+scattered through matchmaker.py/game_room.py/network_client_view.py -
+they only ever build/read the typed message dataclasses; this module is
+the only place that knows what the JSON actually looks like."""
 
 
 def position_to_wire(position: Optional[Position]) -> Optional[List[int]]:
@@ -104,3 +119,56 @@ def legal_destinations_to_wire(cells: Iterable[Position]) -> List[List[int]]:
 
 def legal_destinations_from_wire(value: List[List[int]]) -> Set[Position]:
     return {position_from_wire(cell) for cell in value}
+
+
+def message_to_wire(message: Any) -> Dict[str, Any]:
+    if isinstance(message, (WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage)):
+        return {"type": message.type}
+    if isinstance(message, MatchFoundMessage):
+        return {"type": message.type, "color": message.color}
+    if isinstance(message, StateMessage):
+        return {
+            "type": message.type,
+            "board": board_view_state_to_wire(message.board),
+            "your_selected_pos": position_to_wire(message.your_selected_pos),
+            "your_legal_destinations": legal_destinations_to_wire(message.your_legal_destinations),
+            "your_invalid_target": position_to_wire(message.your_invalid_target),
+        }
+    if isinstance(message, (SelectOrMoveMessage, JumpMessage)):
+        return {"type": message.type, "row": message.row, "col": message.col}
+    raise TypeError(f"don't know how to serialize {message!r}")
+
+
+def message_from_wire(data: Dict[str, Any]) -> Any:
+    message_type = data["type"]
+    if message_type == protocol.WAITING_FOR_OPPONENT:
+        return WaitingForOpponentMessage()
+    if message_type == protocol.NO_OPPONENT_FOUND:
+        return NoOpponentFoundMessage()
+    if message_type == protocol.MATCH_FOUND:
+        return MatchFoundMessage(color=data["color"])
+    if message_type == protocol.STATE:
+        return StateMessage(
+            board=board_view_state_from_wire(data["board"]),
+            your_selected_pos=position_from_wire(data["your_selected_pos"]),
+            your_legal_destinations=legal_destinations_from_wire(data["your_legal_destinations"]),
+            your_invalid_target=position_from_wire(data["your_invalid_target"]),
+        )
+    if message_type == protocol.SELECT_OR_MOVE:
+        return SelectOrMoveMessage(row=data["row"], col=data["col"])
+    if message_type == protocol.JUMP:
+        return JumpMessage(row=data["row"], col=data["col"])
+    if message_type == protocol.RESTART:
+        return RestartMessage()
+    raise ValueError(f"unknown message type: {message_type!r}")
+
+
+def serialize_message(message: Any) -> str:
+    """The only place json.dumps is called for the wire protocol -
+    matchmaker.py/game_room.py/network_client_view.py build/read typed
+    message dataclasses only, never raw dicts or JSON strings."""
+    return json.dumps(message_to_wire(message))
+
+
+def deserialize_message(raw: str) -> Any:
+    return message_from_wire(json.loads(raw))

@@ -3,6 +3,7 @@ import asyncio
 from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.server import protocol
 from kungfu_chess.server.game_room import GameRoom
+from kungfu_chess.server.messages import SelectOrMoveMessage
 from tests.unit.test_matchmaker import FakeConnection, _last_type
 
 
@@ -34,10 +35,10 @@ async def _gating_scenario():
     await room.start()
 
     # A black pawn starts at row 1 in the standard starting position - white shouldn't be able to select it.
-    await room.handle_message(WHITE, {"type": protocol.SELECT_OR_MOVE, "row": 1, "col": 0})
+    await room.handle_message(WHITE, SelectOrMoveMessage(row=1, col=0))
     assert room._controllers[WHITE].selected_pos is None
 
-    await room.handle_message(BLACK, {"type": protocol.SELECT_OR_MOVE, "row": 1, "col": 0})
+    await room.handle_message(BLACK, SelectOrMoveMessage(row=1, col=0))
     assert room._controllers[BLACK].selected_pos is not None
 
     room.stop()
