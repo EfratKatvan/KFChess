@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Optional, Tuple
 
 from websockets.asyncio.server import ServerConnection, serve
 
+from kungfu_chess.logging_config import configure_logging
 from kungfu_chess.server import accounts
 from kungfu_chess.server.matchmaker import Matchmaker
 from kungfu_chess.server.messages import LoginFailedMessage, LoginMessage, LoginOkMessage
@@ -12,6 +14,9 @@ from kungfu_chess.server.serialization import deserialize_message, serialize_mes
 
 HOST = "localhost"
 PORT = 8765
+LOG_FILE = "server.log"
+
+logger = logging.getLogger(__name__)
 
 
 async def _try_send(ws: ServerConnection, message: Any) -> None:
@@ -70,11 +75,12 @@ async def run(host: str = HOST, port: int = PORT, db_path: str = accounts.DEFAUL
     accounts.init_db(db_path)
     matchmaker = Matchmaker(db_path=db_path)
     async with serve(lambda ws: _handle_connection(matchmaker, db_path, ws), host, port):
-        print(f"Kung Fu Chess server listening on ws://{host}:{port}")
+        logger.info("Kung Fu Chess server listening on ws://%s:%s", host, port)
         await asyncio.Future()  # runs until the process is killed
 
 
 def main() -> None:
+    configure_logging(LOG_FILE)
     asyncio.run(run())
 
 

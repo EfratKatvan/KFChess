@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 from dataclasses import dataclass
 from typing import Optional, Tuple
@@ -8,6 +9,8 @@ from typing import Optional, Tuple
 DEFAULT_DB_PATH = "kfchess_users.db"
 STARTING_RATING = 1200
 ELO_K_FACTOR = 32
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -52,11 +55,14 @@ def authenticate(db_path: str, username: str, password: str) -> AuthResult:
                 "INSERT INTO users (username, password_hash, rating) VALUES (?, ?, ?)",
                 (username, password_hash, STARTING_RATING),
             )
+            logger.info("login ok: %s (new account)", username)
             return AuthResult(success=True, rating=STARTING_RATING)
 
         stored_hash, rating = row
         if stored_hash != password_hash:
+            logger.info("login failed: %s (wrong password)", username)
             return AuthResult(success=False, reason="wrong password")
+        logger.info("login ok: %s", username)
         return AuthResult(success=True, rating=rating)
 
 

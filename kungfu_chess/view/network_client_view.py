@@ -5,7 +5,14 @@ import threading
 import cv2
 
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET
-from kungfu_chess.client.input_controller import decide_message
+from kungfu_chess.client.client_state import ClientState
+from kungfu_chess.client.input_controller import (
+    CREATE_ROOM_BUTTON_CLICKED,
+    JOIN_ROOM_BUTTON_CLICKED,
+    TEXT_ENTRY_CANCEL_CLICKED,
+    apply_key_press,
+    decide_message,
+)
 from kungfu_chess.client.network_transport import ClientBox, network_thread_main, send
 from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.starting_position import STARTING_POSITION
@@ -15,12 +22,13 @@ from kungfu_chess.view.renderer import Renderer, side_panel_width_for
 from kungfu_chess.input.board_mapper import BoardMapper
 
 """The networked counterpart of image_view.run() - opens the window,
-owns the render loop and the mouse callback, and wires the other
-client layers together: client/network_transport.py (connection +
-background thread), client/input_controller.py (click -> message),
-client/client_state.py (what we know), view/network_presentation.py
-(state -> pixels). No game logic lives here - it moved server-side
-(see kungfu_chess/server/) - this module is just the glue."""
+owns the render loop and the mouse/keyboard handling, and wires the
+other client layers together: client/network_transport.py (connection
++ background thread), client/input_controller.py (click/keystroke ->
+message or local state change), client/client_state.py (what we
+know), view/network_presentation.py (state -> pixels). No game logic
+lives here - it moved server-side (see kungfu_chess/server/) - this
+module is just the glue."""
 
 
 def run_client(server_uri: str, username: str, password: str, cell_size: int, piece_set: str = DEFAULT_PIECE_SET) -> None:
@@ -45,7 +53,13 @@ def run_client(server_uri: str, username: str, password: str, cell_size: int, pi
             mapper=mapper, cell_size=cell_size,
             screen_width=screen_width, screen_height=screen_height,
         )
-        if message is not None:
+        if message == CREATE_ROOM_BUTTON_CLICKED:
+            box.state = ClientState(phase="room_create_entry", rating=box.state.rating)
+        elif message == JOIN_ROOM_BUTTON_CLICKED:
+            box.state = ClientState(phase="room_join_entry", rating=box.state.rating)
+        elif message == TEXT_ENTRY_CANCEL_CLICKED:
+            box.state = ClientState(phase="lobby", rating=box.state.rating)
+        elif message is not None:
             send(box, message)
 
     cv2.setMouseCallback(image_view.WINDOW_NAME, on_mouse)
@@ -55,8 +69,21 @@ def run_client(server_uri: str, username: str, password: str, cell_size: int, pi
         while True:
             canvas = render_frame(box.state, cell_size, piece_set, frame_renderer)
             key = canvas.show(image_view.WINDOW_NAME, wait_ms=image_view.TARGET_FRAME_MS)
+
+            # apply_key_press only ever does anything while in a text-
+            # entry phase - captured before the call so the quit-check
+            # below can tell "Escape cancelled text entry" apart from
+            # "Escape should close the window", without both firing on
+            # the same keystroke.
+            was_text_entry = box.state.phase in ("room_create_entry", "room_join_entry")
+            new_state, message = apply_key_press(key, box.state)
+            box.state = new_state
+            if message is not None:
+                send(box, message)
+            escape_consumed_by_text_entry = was_text_entry and key == image_view.ESC_KEY
+
             window_closed = cv2.getWindowProperty(image_view.WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1
-            if key == image_view.ESC_KEY or window_closed:
+            if (key == image_view.ESC_KEY and not escape_consumed_by_text_entry) or window_closed:
                 break
     finally:
         cv2.destroyAllWindows()

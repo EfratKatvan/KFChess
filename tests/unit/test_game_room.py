@@ -304,3 +304,147 @@ async def _reconnect_cancels_resign_scenario(db_path):
     assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING
 
     room.stop()
+
+
+# ==========================================
+# Spectators
+# ==========================================
+
+def test_add_spectator_sends_an_immediate_state_snapshot(db_path):
+    asyncio.run(_add_spectator_scenario(db_path))
+
+
+async def _add_spectator_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+    spectator_ws = FakeConnection("spectator")
+
+    await room.add_spectator(spectator_ws)
+
+    assert _last_type(spectator_ws) == protocol.STATE  # doesn't wait for the next tick
+
+    room.stop()
+
+
+def test_spectator_state_message_has_no_personal_selection(db_path):
+    asyncio.run(_spectator_state_shape_scenario(db_path))
+
+
+async def _spectator_state_shape_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+    spectator_ws = FakeConnection("spectator")
+
+    await room.add_spectator(spectator_ws)
+
+    sent = spectator_ws.sent[-1]
+    assert sent["your_selected_pos"] is None
+    assert sent["your_legal_destinations"] == []
+    assert sent["your_invalid_target"] is None
+
+    room.stop()
+
+
+def test_spectator_receives_broadcasts_on_the_normal_tick_interval(db_path):
+    asyncio.run(_spectator_broadcast_scenario(db_path))
+
+
+async def _spectator_broadcast_scenario(db_path):
+    from kungfu_chess.server.game_room import BROADCAST_INTERVAL_SECONDS
+
+    room = _make_room(db_path)
+    await room.start()
+    spectator_ws = FakeConnection("spectator")
+    await room.add_spectator(spectator_ws)
+    sent_count_after_join = len(spectator_ws.sent)
+
+    room._last_broadcast -= BROADCAST_INTERVAL_SECONDS
+    await room._tick_once()
+
+    assert len(spectator_ws.sent) == sent_count_after_join + 1
+    assert _last_type(spectator_ws) == protocol.STATE
+
+    room.stop()
+
+
+def test_remove_spectator_stops_further_broadcasts_to_it(db_path):
+    asyncio.run(_remove_spectator_scenario(db_path))
+
+
+async def _remove_spectator_scenario(db_path):
+    from kungfu_chess.server.game_room import BROADCAST_INTERVAL_SECONDS
+
+    room = _make_room(db_path)
+    await room.start()
+    spectator_ws = FakeConnection("spectator")
+    await room.add_spectator(spectator_ws)
+
+    room.remove_spectator(spectator_ws)
+    sent_count_after_removal = len(spectator_ws.sent)
+    room._last_broadcast -= BROADCAST_INTERVAL_SECONDS
+    await room._tick_once()
+
+    assert len(spectator_ws.sent) == sent_count_after_removal  # no further sends once removed
+
+    room.stop()
+
+
+def test_spectator_survives_a_restart(db_path):
+    """A RestartMessage rebuilds the game via _build_fresh_game - a
+    spectator watching a room shouldn't have to rejoin after one."""
+    asyncio.run(_spectator_survives_restart_scenario(db_path))
+
+
+async def _spectator_survives_restart_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+    spectator_ws = FakeConnection("spectator")
+    await room.add_spectator(spectator_ws)
+
+    room._build_fresh_game()
+
+    assert spectator_ws in room._spectators
+
+
+def test_match_found_message_carries_the_room_id_when_set(db_path):
+    asyncio.run(_match_found_room_id_scenario(db_path))
+
+
+async def _match_found_room_id_scenario(db_path):
+    accounts.authenticate(db_path, "white_player", "pw")
+    accounts.authenticate(db_path, "black_player", "pw")
+    room = GameRoom(
+        FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
+        db_path=db_path, room_id="ABC123",
+    )
+
+    assert room._match_found_message(WHITE).room_id == "ABC123"
+
+
+def test_match_found_message_room_id_is_none_for_a_play_matched_game(db_path):
+    room = _make_room(db_path)
+
+    assert room._match_found_message(WHITE).room_id is None
+
+
+def test_on_game_over_callback_fires_exactly_once(db_path):
+    asyncio.run(_on_game_over_callback_scenario(db_path))
+
+
+async def _on_game_over_callback_scenario(db_path):
+    accounts.authenticate(db_path, "white_player", "pw")
+    accounts.authenticate(db_path, "black_player", "pw")
+    calls = []
+    room = GameRoom(
+        FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
+        db_path=db_path, room_id="ABC123", on_game_over=lambda: calls.append(1),
+    )
+    await room.start()
+
+    view_state = _view_state_with_survivor(WHITE)
+    room._apply_rating_update(view_state)
+    room._apply_rating_update(view_state)  # a second call must not fire the callback again
+
+    assert calls == [1]
+
+    room.stop()

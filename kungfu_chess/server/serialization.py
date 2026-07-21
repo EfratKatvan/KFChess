@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, PieceView
 from kungfu_chess.model.position import Position
 from kungfu_chess.server import protocol
 from kungfu_chess.server.messages import (
+    CancelRoomMessage,
+    CreateRoomFailedMessage,
+    CreateRoomMessage,
+    JoinRoomFailedMessage,
+    JoinRoomMessage,
     JumpMessage,
     LoginFailedMessage,
     LoginMessage,
@@ -16,8 +22,11 @@ from kungfu_chess.server.messages import (
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
     RestartMessage,
+    RoomCancelledMessage,
+    RoomCreatedMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
+    SpectatingMessage,
     StateMessage,
     WaitingForOpponentMessage,
 )
@@ -128,7 +137,10 @@ def legal_destinations_from_wire(value: List[List[int]]) -> Set[Position]:
 
 
 def message_to_wire(message: Any) -> Dict[str, Any]:
-    if isinstance(message, (WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage, SeekGameMessage)):
+    if isinstance(message, (
+        WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage,
+        SeekGameMessage, CancelRoomMessage, RoomCancelledMessage,
+    )):
         return {"type": message.type}
     if isinstance(message, LoginMessage):
         return {"type": message.type, "username": message.username, "password": message.password}
@@ -142,6 +154,20 @@ def message_to_wire(message: Any) -> Dict[str, Any]:
         return {
             "type": message.type,
             "color": message.color,
+            "white_username": message.white_username,
+            "white_rating": message.white_rating,
+            "black_username": message.black_username,
+            "black_rating": message.black_rating,
+            "room_id": message.room_id,
+        }
+    if isinstance(message, (JoinRoomMessage, CreateRoomMessage, RoomCreatedMessage)):
+        return {"type": message.type, "room_id": message.room_id}
+    if isinstance(message, (JoinRoomFailedMessage, CreateRoomFailedMessage)):
+        return {"type": message.type, "reason": message.reason}
+    if isinstance(message, SpectatingMessage):
+        return {
+            "type": message.type,
+            "room_id": message.room_id,
             "white_username": message.white_username,
             "white_rating": message.white_rating,
             "black_username": message.black_username,
@@ -185,6 +211,29 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
             white_rating=data["white_rating"],
             black_username=data["black_username"],
             black_rating=data["black_rating"],
+            room_id=data.get("room_id"),
+        )
+    if message_type == protocol.CREATE_ROOM:
+        return CreateRoomMessage(room_id=data["room_id"])
+    if message_type == protocol.JOIN_ROOM:
+        return JoinRoomMessage(room_id=data["room_id"])
+    if message_type == protocol.CANCEL_ROOM:
+        return CancelRoomMessage()
+    if message_type == protocol.ROOM_CREATED:
+        return RoomCreatedMessage(room_id=data["room_id"])
+    if message_type == protocol.JOIN_ROOM_FAILED:
+        return JoinRoomFailedMessage(reason=data["reason"])
+    if message_type == protocol.CREATE_ROOM_FAILED:
+        return CreateRoomFailedMessage(reason=data["reason"])
+    if message_type == protocol.ROOM_CANCELLED:
+        return RoomCancelledMessage()
+    if message_type == protocol.SPECTATING:
+        return SpectatingMessage(
+            room_id=data["room_id"],
+            white_username=data["white_username"],
+            white_rating=data["white_rating"],
+            black_username=data["black_username"],
+            black_rating=data["black_rating"],
         )
     if message_type == protocol.STATE:
         return StateMessage(
@@ -202,12 +251,34 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
     raise ValueError(f"unknown message type: {message_type!r}")
 
 
+logger = logging.getLogger(__name__)
+
+# The up-to-15/sec board-state broadcast (see game_room.py's
+# BROADCAST_INTERVAL_SECONDS) - noisy enough to flood a normal log at
+# the same level as everything else, so it's logged at DEBUG (file
+# only, by default) while every other message type logs at INFO.
+_HIGH_FREQUENCY_TYPES = {protocol.STATE}
+
+
+def _log_wire(wire: Dict[str, Any], direction: str) -> None:
+    level = logging.DEBUG if wire.get("type") in _HIGH_FREQUENCY_TYPES else logging.INFO
+    logger.log(level, "%s %s", direction, wire)
+
+
 def serialize_message(message: Any) -> str:
     """The only place json.dumps is called for the wire protocol -
     matchmaker.py/game_room.py/network_client_view.py build/read typed
-    message dataclasses only, never raw dicts or JSON strings."""
-    return json.dumps(message_to_wire(message))
+    message dataclasses only, never raw dicts or JSON strings. Also the
+    one choke-point every outgoing message on both client and server
+    passes through, so it's the natural place to log all wire
+    activity (see _log_wire) rather than scattering log calls through
+    every message-sending call site."""
+    wire = message_to_wire(message)
+    _log_wire(wire, direction="->")
+    return json.dumps(wire)
 
 
 def deserialize_message(raw: str) -> Any:
-    return message_from_wire(json.loads(raw))
+    wire = json.loads(raw)
+    _log_wire(wire, direction="<-")
+    return message_from_wire(wire)

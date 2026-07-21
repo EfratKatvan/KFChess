@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Set
 
 from websockets.asyncio.server import ServerConnection
 
@@ -31,6 +32,8 @@ from kungfu_chess.events.observers import MoveLogObserver, ScoreObserver
 TICK_SECONDS = 0.016  # physics granularity - engine.wait() runs at this rate regardless of broadcast rate
 BROADCAST_INTERVAL_SECONDS = 1 / 15  # how often a full state snapshot actually goes out over the network
 
+logger = logging.getLogger(__name__)
+
 
 class GameRoom:
     """Owns one authoritative game (board/rules/arbiter/engine) shared by
@@ -47,10 +50,18 @@ class GameRoom:
         white_ws: ServerConnection, white_username: str,
         black_ws: ServerConnection, black_username: str,
         db_path: str = accounts.DEFAULT_DB_PATH,
+        room_id: Optional[str] = None,
+        on_game_over: Optional[Callable[[], None]] = None,
     ) -> None:
         self._connections: Dict[str, ServerConnection] = {WHITE: white_ws, BLACK: black_ws}
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
         self._db_path = db_path
+        self._room_id = room_id
+        self._on_game_over = on_game_over
+        # Spectators live outside _connections (they have no color) - a
+        # RestartMessage rebuilds the game via _build_fresh_game but must
+        # not drop anyone watching it, so this is initialized here, not there.
+        self._spectators: Set[ServerConnection] = set()
         self._tick_task: Optional[asyncio.Task] = None
         self._resign_task: Optional[asyncio.Task] = None
         self._build_fresh_game()
@@ -90,7 +101,19 @@ class GameRoom:
             color=color,
             white_username=self._usernames[WHITE], white_rating=accounts.get_rating(self._db_path, self._usernames[WHITE]),
             black_username=self._usernames[BLACK], black_rating=accounts.get_rating(self._db_path, self._usernames[BLACK]),
+            room_id=self._room_id,
         )
+
+    async def add_spectator(self, ws: ServerConnection) -> None:
+        """Sends one immediate snapshot rather than waiting for the next
+        ~66ms broadcast tick, so a spectator joining mid-game doesn't
+        stare at a blank screen for up to one broadcast interval."""
+        self._spectators.add(ws)
+        view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
+        await self._safe_send(ws, self._spectator_state_message(view_state))
+
+    def remove_spectator(self, ws: ServerConnection) -> None:
+        self._spectators.discard(ws)
 
     def stop(self) -> None:
         if self._tick_task is not None:
@@ -175,6 +198,8 @@ class GameRoom:
         await asyncio.sleep(protocol.DISCONNECT_GRACE_SECONDS)
         if self._disconnected_color is None:
             return  # already reconnected
+        disconnected_username = self._usernames[_other_color(surviving_color)]
+        logger.info("auto-resigning %s (disconnect grace period expired)", disconnected_username)
         self._disconnected_color = None
         self._paused = False
         self._engine.resign()
@@ -186,10 +211,16 @@ class GameRoom:
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
         if view_state.game_over:
             self._apply_rating_update(view_state)
-        await asyncio.gather(*(
-            self._safe_send(ws, self._personalized_message(color, view_state))
-            for color, ws in self._connections.items()
-        ))
+        await asyncio.gather(
+            *(
+                self._safe_send(ws, self._personalized_message(color, view_state))
+                for color, ws in self._connections.items()
+            ),
+            *(
+                self._safe_send(ws, self._spectator_state_message(view_state))
+                for ws in self._spectators
+            ),
+        )
 
     def _apply_rating_update(self, view_state: BoardViewState, winner_color: Optional[str] = None) -> None:
         """Runs exactly once per finished game (self-guarding, not just
@@ -204,9 +235,19 @@ class GameRoom:
             white_has_king = any(p.kind == KING and p.color == WHITE for p in view_state.pieces)
             winner_color = WHITE if white_has_king else BLACK
         loser_color = _other_color(winner_color)
-        accounts.update_ratings_after_game(
-            self._db_path, self._usernames[winner_color], self._usernames[loser_color]
+        winner_username, loser_username = self._usernames[winner_color], self._usernames[loser_color]
+        old_winner_rating = accounts.get_rating(self._db_path, winner_username)
+        old_loser_rating = accounts.get_rating(self._db_path, loser_username)
+        new_winner_rating, new_loser_rating = accounts.update_ratings_after_game(
+            self._db_path, winner_username, loser_username
         )
+        logger.info(
+            "rating update: %s %d->%d, %s %d->%d",
+            winner_username, old_winner_rating, new_winner_rating,
+            loser_username, old_loser_rating, new_loser_rating,
+        )
+        if self._on_game_over is not None:
+            self._on_game_over()
 
     def _personalized_message(self, color: str, view_state: BoardViewState) -> StateMessage:
         controller = self._controllers[color]
@@ -217,6 +258,17 @@ class GameRoom:
             your_selected_pos=selected,
             your_legal_destinations=legal_destinations,
             your_invalid_target=controller.invalid_target,
+        )
+
+    def _spectator_state_message(self, view_state: BoardViewState) -> StateMessage:
+        """Same board everyone gets, but no Controller to read a
+        personal selection from - a spectator sees the position with no
+        highlight of its own."""
+        return StateMessage(
+            board=view_state,
+            your_selected_pos=None,
+            your_legal_destinations=set(),
+            your_invalid_target=None,
         )
 
     async def _safe_send(self, ws: ServerConnection, message: Any) -> None:

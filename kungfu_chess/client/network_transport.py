@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -14,6 +15,8 @@ from kungfu_chess.server.serialization import deserialize_message, serialize_mes
 and the background thread it runs on - knows nothing about game rules,
 clicks, or drawing, only how to get bytes to/from the server and hand
 decoded messages to client_state.apply_message."""
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -40,11 +43,13 @@ def network_thread_main(server_uri: str, username: str, password: str, box: Clie
         async with connect(server_uri) as ws:
             box.ws = ws
             box.loop = asyncio.get_running_loop()
+            logger.info("connected to %s as %s", server_uri, username)
             await ws.send(serialize_message(LoginMessage(username=username, password=password)))
             async for raw in ws:
                 box.state = apply_message(deserialize_message(raw), box.state)
 
     try:
         asyncio.run(client_main())
-    except Exception:
+    except Exception as error:
+        logger.warning("disconnected from server: %s", error)
         box.state = ClientState(phase="disconnected")

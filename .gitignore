@@ -4,3 +4,4 @@ __pycache__/
 .coverage
 htmlcov/
 *.db
+*.log

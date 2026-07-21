@@ -6,7 +6,7 @@ import pytest
 from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.server import accounts, protocol
 from kungfu_chess.server.matchmaker import Matchmaker
-from kungfu_chess.server.messages import SeekGameMessage
+from kungfu_chess.server.messages import CancelRoomMessage, CreateRoomMessage, JoinRoomMessage, SeekGameMessage
 from kungfu_chess.server.serialization import serialize_message
 
 
@@ -29,6 +29,18 @@ def _last_type(connection: FakeConnection):
 
 async def _seek(matchmaker: Matchmaker, ws: FakeConnection) -> None:
     await matchmaker.on_message(ws, serialize_message(SeekGameMessage()))
+
+
+async def _create_room(matchmaker: Matchmaker, ws: FakeConnection, room_id: str = "test-room") -> None:
+    await matchmaker.on_message(ws, serialize_message(CreateRoomMessage(room_id=room_id)))
+
+
+async def _join_room(matchmaker: Matchmaker, ws: FakeConnection, room_id: str) -> None:
+    await matchmaker.on_message(ws, serialize_message(JoinRoomMessage(room_id=room_id)))
+
+
+async def _cancel_room(matchmaker: Matchmaker, ws: FakeConnection) -> None:
+    await matchmaker.on_message(ws, serialize_message(CancelRoomMessage()))
 
 
 @pytest.fixture
@@ -326,3 +338,222 @@ async def _reconnect_after_grace_expired(db_path):
 
     await matchmaker.on_disconnect(alice_new)
     await matchmaker.on_disconnect(bob)
+
+
+# ==========================================
+# Rooms: Create/Join/Cancel, spectators
+# ==========================================
+
+def test_create_room_sends_room_created_with_an_id(db_path):
+    asyncio.run(_create_room_scenario(db_path))
+
+
+async def _create_room_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    await matchmaker.on_connect(alice, "alice", 1200)
+
+    await _create_room(matchmaker, alice)
+
+    assert _last_type(alice) == protocol.ROOM_CREATED
+    assert alice.sent[-1]["room_id"]
+
+    await matchmaker.on_disconnect(alice)
+
+
+def test_joining_a_pending_room_starts_a_game_with_creator_as_white(db_path):
+    asyncio.run(_join_as_opponent_scenario(db_path))
+
+
+async def _join_as_opponent_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _create_room(matchmaker, alice)
+    room_id = alice.sent[-1]["room_id"]
+
+    await _join_room(matchmaker, bob, room_id)
+
+    assert _last_type(alice) == protocol.MATCH_FOUND
+    assert alice.sent[-1]["color"] == WHITE
+    assert alice.sent[-1]["room_id"] == room_id
+    assert _last_type(bob) == protocol.MATCH_FOUND
+    assert bob.sent[-1]["color"] == BLACK
+    assert bob.sent[-1]["room_id"] == room_id
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_joining_a_started_room_sends_spectating_instead_of_match_found(db_path):
+    asyncio.run(_join_as_spectator_scenario(db_path))
+
+
+async def _join_as_spectator_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    carol = FakeConnection("carol")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await matchmaker.on_connect(carol, "carol", 1200)
+    await _create_room(matchmaker, alice)
+    room_id = alice.sent[-1]["room_id"]
+    await _join_room(matchmaker, bob, room_id)
+
+    await _join_room(matchmaker, carol, room_id)
+
+    assert _last_type(carol) == protocol.SPECTATING
+    assert carol.sent[-1]["room_id"] == room_id
+    assert carol.sent[-1]["white_username"] == "alice"
+    assert carol.sent[-1]["black_username"] == "bob"
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+    await matchmaker.on_disconnect(carol)
+
+
+def test_joining_an_unknown_room_id_sends_join_room_failed(db_path):
+    asyncio.run(_join_unknown_room_scenario(db_path))
+
+
+async def _join_unknown_room_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(bob, "bob", 1200)
+
+    await _join_room(matchmaker, bob, "NOSUCH")
+
+    assert _last_type(bob) == protocol.JOIN_ROOM_FAILED
+    assert bob.sent[-1]["reason"] == "room_not_found"
+
+    await matchmaker.on_disconnect(bob)
+
+
+def test_cancel_room_returns_the_creator_to_the_lobby(db_path):
+    asyncio.run(_cancel_room_scenario(db_path))
+
+
+async def _cancel_room_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await _create_room(matchmaker, alice)
+    room_id = alice.sent[-1]["room_id"]
+
+    await _cancel_room(matchmaker, alice)
+
+    assert _last_type(alice) == protocol.ROOM_CANCELLED
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _join_room(matchmaker, bob, room_id)
+    assert _last_type(bob) == protocol.JOIN_ROOM_FAILED  # the cancelled room is really gone
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_spectator_disconnect_does_not_pause_the_room(db_path):
+    asyncio.run(_spectator_disconnect_scenario(db_path))
+
+
+async def _spectator_disconnect_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    carol = FakeConnection("carol")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await matchmaker.on_connect(carol, "carol", 1200)
+    await _create_room(matchmaker, alice)
+    room_id = alice.sent[-1]["room_id"]
+    await _join_room(matchmaker, bob, room_id)
+    await _join_room(matchmaker, carol, room_id)
+
+    await matchmaker.on_disconnect(carol)
+
+    # Neither real player was ever told the opponent disconnected -
+    # a spectator leaving is a plain no-op, not a game-pausing event.
+    assert all(entry["type"] != protocol.OPPONENT_DISCONNECTED for entry in alice.sent)
+    assert all(entry["type"] != protocol.OPPONENT_DISCONNECTED for entry in bob.sent)
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_room_creator_disconnecting_before_anyone_joins_frees_the_room_id(db_path):
+    asyncio.run(_pending_creator_disconnect_scenario(db_path))
+
+
+async def _pending_creator_disconnect_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await _create_room(matchmaker, alice)
+    room_id = alice.sent[-1]["room_id"]
+
+    await matchmaker.on_disconnect(alice)
+
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _join_room(matchmaker, bob, room_id)
+    assert _last_type(bob) == protocol.JOIN_ROOM_FAILED  # the id was freed, not left dangling
+
+    await matchmaker.on_disconnect(bob)
+
+
+def test_create_room_uses_the_players_typed_name(db_path):
+    asyncio.run(_create_room_typed_name_scenario(db_path))
+
+
+async def _create_room_typed_name_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    await matchmaker.on_connect(alice, "alice", 1200)
+
+    await _create_room(matchmaker, alice, room_id="efrat-room")
+
+    assert alice.sent[-1]["room_id"] == "efrat-room"
+
+    await matchmaker.on_disconnect(alice)
+
+
+def test_create_room_with_an_already_taken_name_sends_create_room_failed(db_path):
+    asyncio.run(_create_room_name_taken_scenario(db_path))
+
+
+async def _create_room_name_taken_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _create_room(matchmaker, alice, room_id="efrat-room")
+
+    await _create_room(matchmaker, bob, room_id="efrat-room")
+
+    assert _last_type(bob) == protocol.CREATE_ROOM_FAILED
+    assert bob.sent[-1]["reason"] == "room_name_taken"
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_create_room_while_already_in_a_room_sends_create_room_failed(db_path):
+    asyncio.run(_create_room_while_already_in_one_scenario(db_path))
+
+
+async def _create_room_while_already_in_one_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await _create_room(matchmaker, alice, room_id="room-one")
+
+    await _create_room(matchmaker, alice, room_id="room-two")
+
+    assert _last_type(alice) == protocol.CREATE_ROOM_FAILED
+    assert alice.sent[-1]["reason"] == "already_in_a_room"
+
+    await matchmaker.on_disconnect(alice)

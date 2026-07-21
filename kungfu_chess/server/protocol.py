@@ -22,6 +22,19 @@ STATE = "state"
 OPPONENT_DISCONNECTED = "opponent_disconnected"
 OPPONENT_RECONNECTED = "opponent_reconnected"
 
+# Room phase (client -> server) - the "Room" button's Create/Join/Cancel dialog
+CREATE_ROOM = "create_room"
+JOIN_ROOM = "join_room"
+CANCEL_ROOM = "cancel_room"
+
+# Room phase (server -> client)
+ROOM_CREATED = "room_created"
+JOIN_ROOM_FAILED = "join_room_failed"
+CREATE_ROOM_FAILED = "create_room_failed"
+ROOM_CANCELLED = "room_cancelled"
+SPECTATING = "spectating"
+
 MATCHMAKING_TIMEOUT_SECONDS = 60
 MATCHMAKING_ELO_RANGE = 100  # a seeker is only matched against another seeker within this many rating points
 DISCONNECT_GRACE_SECONDS = 20
+MAX_ROOM_ID_LENGTH = 24  # a validation cap on the player-typed room name, not a fixed format

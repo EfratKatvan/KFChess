@@ -2,6 +2,11 @@ from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, P
 from kungfu_chess.model.piece import WHITE, BLACK, PAWN, ROOK
 from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
+    CancelRoomMessage,
+    CreateRoomFailedMessage,
+    CreateRoomMessage,
+    JoinRoomFailedMessage,
+    JoinRoomMessage,
     JumpMessage,
     LoginFailedMessage,
     LoginMessage,
@@ -11,8 +16,11 @@ from kungfu_chess.server.messages import (
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
     RestartMessage,
+    RoomCancelledMessage,
+    RoomCreatedMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
+    SpectatingMessage,
     StateMessage,
     WaitingForOpponentMessage,
 )
@@ -113,6 +121,61 @@ def test_no_opponent_found_message_round_trips():
 def test_match_found_message_round_trips_color_and_both_players_identity():
     original = MatchFoundMessage(
         color=WHITE, white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
+    )
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_match_found_message_round_trips_with_room_id_none():
+    original = MatchFoundMessage(
+        color=WHITE, white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
+    )
+    assert message_from_wire(message_to_wire(original)).room_id is None
+
+
+def test_match_found_message_round_trips_with_a_room_id():
+    original = MatchFoundMessage(
+        color=WHITE, white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
+        room_id="ABC123",
+    )
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_create_room_message_round_trips_the_room_id():
+    original = CreateRoomMessage(room_id="efrat-room")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_create_room_failed_message_round_trips_the_reason():
+    original = CreateRoomFailedMessage(reason="room_name_taken")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_join_room_message_round_trips_the_room_id():
+    original = JoinRoomMessage(room_id="ABC123")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_cancel_room_message_round_trips():
+    assert message_from_wire(message_to_wire(CancelRoomMessage())) == CancelRoomMessage()
+
+
+def test_room_created_message_round_trips_the_room_id():
+    original = RoomCreatedMessage(room_id="ABC123")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_join_room_failed_message_round_trips_the_reason():
+    original = JoinRoomFailedMessage(reason="room_not_found")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_room_cancelled_message_round_trips():
+    assert message_from_wire(message_to_wire(RoomCancelledMessage())) == RoomCancelledMessage()
+
+
+def test_spectating_message_round_trips_room_id_and_both_players_identity():
+    original = SpectatingMessage(
+        room_id="ABC123", white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
     )
     assert message_from_wire(message_to_wire(original)) == original
 

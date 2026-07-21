@@ -2,20 +2,26 @@ from kungfu_chess.client.client_state import ClientState, _game_over_started_at,
 from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.model.piece import WHITE
 from kungfu_chess.server.messages import (
+    CreateRoomFailedMessage,
+    JoinRoomFailedMessage,
     LoginFailedMessage,
     LoginOkMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    RoomCancelledMessage,
+    RoomCreatedMessage,
+    SpectatingMessage,
     StateMessage,
     WaitingForOpponentMessage,
 )
 
 
-def _match_found(color):
+def _match_found(color, room_id=None):
     return MatchFoundMessage(
         color=color, white_username="alice", white_rating=1200, black_username="bob", black_rating=1216,
+        room_id=room_id,
     )
 
 
@@ -157,3 +163,106 @@ def test_apply_message_state_carries_forward_the_disconnect_countdown_across_tic
 
     assert state.opponent_disconnected_at == disconnected_at_before
     assert state.opponent_disconnect_grace_seconds == 20
+
+
+def test_apply_message_match_found_carries_the_room_id():
+    state = apply_message(_match_found(WHITE, room_id="ABC123"), ClientState())
+
+    assert state.room_id == "ABC123"
+
+
+def test_apply_message_match_found_room_id_defaults_to_none_for_a_play_matched_game():
+    state = apply_message(_match_found(WHITE), ClientState())
+
+    assert state.room_id is None
+
+
+def test_apply_message_room_created_sets_phase_and_room_id():
+    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+
+    state = apply_message(RoomCreatedMessage(room_id="ABC123"), state)
+
+    assert state.phase == "room_waiting"
+    assert state.room_id == "ABC123"
+    assert state.rating == 1234
+
+
+def test_apply_message_join_room_failed_shows_the_reason():
+    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+
+    state = apply_message(JoinRoomFailedMessage(reason="room_not_found"), state)
+
+    assert state.phase == "room_action_failed"
+    assert state.room_action_failure_reason == "room_not_found"
+    assert state.room_action_failure_kind == "join"
+    assert state.rating == 1234
+
+
+def test_apply_message_create_room_failed_shows_the_reason_and_kind():
+    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+
+    state = apply_message(CreateRoomFailedMessage(reason="room_name_taken"), state)
+
+    assert state.phase == "room_action_failed"
+    assert state.room_action_failure_reason == "room_name_taken"
+    assert state.room_action_failure_kind == "create"
+    assert state.rating == 1234
+
+
+def test_apply_message_room_cancelled_returns_to_the_lobby():
+    state = apply_message(RoomCreatedMessage(room_id="ABC123"), ClientState(rating=1234))
+
+    state = apply_message(RoomCancelledMessage(), state)
+
+    assert state.phase == "lobby"
+
+
+def test_apply_message_spectating_sets_phase_color_none_and_both_players():
+    state = apply_message(
+        SpectatingMessage(room_id="ABC123", white_username="alice", white_rating=1200, black_username="bob", black_rating=1216),
+        ClientState(),
+    )
+
+    assert state.phase == "spectating"
+    assert state.color is None
+    assert state.room_id == "ABC123"
+    assert state.white_player.username == "alice"
+    assert state.black_player.username == "bob"
+
+
+def test_apply_message_spectating_does_not_start_a_starting_countdown():
+    """A spectator isn't about to move anything - it should see the
+    live board immediately, not the "starting in N..." countdown a
+    real player gets on match_found."""
+    state = apply_message(
+        SpectatingMessage(room_id="ABC123", white_username="alice", white_rating=1200, black_username="bob", black_rating=1216),
+        ClientState(),
+    )
+
+    assert state.matched_at is None
+
+
+def test_apply_message_state_carries_forward_the_room_id_across_ticks():
+    state = apply_message(_match_found(WHITE, room_id="ABC123"), ClientState())
+
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state = apply_message(
+        StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None), state
+    )
+
+    assert state.room_id == "ABC123"
+
+
+def test_apply_message_state_preserves_the_spectating_phase_across_ticks():
+    state = apply_message(
+        SpectatingMessage(room_id="ABC123", white_username="alice", white_rating=1200, black_username="bob", black_rating=1216),
+        ClientState(),
+    )
+
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state = apply_message(
+        StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None), state
+    )
+
+    assert state.phase == "spectating"
+    assert state.color is None
