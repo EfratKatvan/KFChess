@@ -6,6 +6,13 @@ from kungfu_chess.engine.board_view_state import MoveLogEntry
 from kungfu_chess.model.game_state import GameObserver, MoveLoggedEvent, PieceCapturedEvent
 from kungfu_chess.model.piece import WHITE, BLACK
 
+"""Concrete GameObserver listeners - lives in its own neutral package,
+not under server/ or view/, since both a server GameRoom and (in the
+old local single-player path) a view can register these against the
+same GameEngine/RealTimeArbiter. The GameObserver contract itself is
+layer-agnostic too (see model/game_state.py) - this module only adds
+the two concrete accumulators built on top of it."""
+
 
 class MoveLogObserver(GameObserver):
     """Accumulates MoveLoggedEvents into per-color, display-ready
@@ -21,8 +28,8 @@ class MoveLogObserver(GameObserver):
         self._entries.setdefault(event.color, []).append(entry)
 
     def as_dict(self) -> Dict[str, Tuple[MoveLogEntry, ...]]:
-        """Read by the render loop each frame (see image_view.py) and
-        handed to GameEngine.snapshot() - a plain dict/tuple copy, not a
+        """Read by the render loop each frame and handed to
+        GameEngine.snapshot() - a plain dict/tuple copy, not a
         reference into this observer's own mutable list."""
         return {color: tuple(entries) for color, entries in self._entries.items()}
 

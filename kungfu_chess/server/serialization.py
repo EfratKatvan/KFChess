@@ -16,6 +16,7 @@ from kungfu_chess.server.messages import (
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
     RestartMessage,
+    SeekGameMessage,
     SelectOrMoveMessage,
     StateMessage,
     WaitingForOpponentMessage,
@@ -127,7 +128,7 @@ def legal_destinations_from_wire(value: List[List[int]]) -> Set[Position]:
 
 
 def message_to_wire(message: Any) -> Dict[str, Any]:
-    if isinstance(message, (WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage)):
+    if isinstance(message, (WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage, SeekGameMessage)):
         return {"type": message.type}
     if isinstance(message, LoginMessage):
         return {"type": message.type, "username": message.username, "password": message.password}
@@ -167,6 +168,8 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
         return LoginOkMessage(rating=data["rating"])
     if message_type == protocol.LOGIN_FAILED:
         return LoginFailedMessage(reason=data["reason"])
+    if message_type == protocol.SEEK_GAME:
+        return SeekGameMessage()
     if message_type == protocol.WAITING_FOR_OPPONENT:
         return WaitingForOpponentMessage()
     if message_type == protocol.NO_OPPONENT_FOUND:

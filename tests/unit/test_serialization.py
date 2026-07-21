@@ -11,6 +11,7 @@ from kungfu_chess.server.messages import (
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
     RestartMessage,
+    SeekGameMessage,
     SelectOrMoveMessage,
     StateMessage,
     WaitingForOpponentMessage,
@@ -95,6 +96,10 @@ def test_login_ok_message_round_trips_the_rating():
 def test_login_failed_message_round_trips_the_reason():
     original = LoginFailedMessage(reason="wrong password")
     assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_seek_game_message_round_trips():
+    assert message_from_wire(message_to_wire(SeekGameMessage())) == SeekGameMessage()
 
 
 def test_waiting_for_opponent_message_round_trips():

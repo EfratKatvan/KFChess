@@ -1,7 +1,7 @@
 from kungfu_chess.model.game_state import MoveLoggedEvent, PieceCapturedEvent
 from kungfu_chess.model.piece import WHITE, BLACK, PAWN, KNIGHT, QUEEN, ROOK
 from kungfu_chess.model.position import Position
-from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
+from kungfu_chess.events.observers import MoveLogObserver, ScoreObserver
 
 
 def test_move_log_observer_starts_empty():

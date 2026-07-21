@@ -40,7 +40,7 @@ class PieceCapturedEvent:
     normal landing on an occupied cell, or a jumper swallowing an
     attacker mid-air. color is who gets the points; kind/points describe
     the piece that was destroyed. The arbiter doesn't keep a running
-    score itself once this fires - see view/observers.py's
+    score itself once this fires - see events/observers.py's
     ScoreObserver, the mirror of MoveLogObserver but for captures."""
 
     color: str

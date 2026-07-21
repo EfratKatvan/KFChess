@@ -37,9 +37,9 @@ def test_authenticate_registers_a_new_username_and_returns_it(db_path):
 async def _new_user_scenario(db_path):
     ws = QueuedConnection("client", [serialize_message(LoginMessage(username="efrat", password="pw"))])
 
-    username = await _authenticate(ws, db_path)
+    result = await _authenticate(ws, db_path)
 
-    assert username == "efrat"
+    assert result == ("efrat", accounts.STARTING_RATING)
     assert _last_type(ws) == protocol.LOGIN_OK
     assert ws.sent[-1]["rating"] == accounts.STARTING_RATING
 
@@ -52,9 +52,9 @@ async def _returning_user_scenario(db_path):
     accounts.authenticate(db_path, "efrat", "hunter2")
     ws = QueuedConnection("client", [serialize_message(LoginMessage(username="efrat", password="hunter2"))])
 
-    username = await _authenticate(ws, db_path)
+    result = await _authenticate(ws, db_path)
 
-    assert username == "efrat"
+    assert result[0] == "efrat"
     assert _last_type(ws) == protocol.LOGIN_OK
 
 
@@ -66,9 +66,9 @@ async def _wrong_password_scenario(db_path):
     accounts.authenticate(db_path, "efrat", "hunter2")
     ws = QueuedConnection("client", [serialize_message(LoginMessage(username="efrat", password="wrong"))])
 
-    username = await _authenticate(ws, db_path)
+    result = await _authenticate(ws, db_path)
 
-    assert username is None
+    assert result is None
     assert _last_type(ws) == protocol.LOGIN_FAILED
 
 
@@ -79,9 +79,9 @@ def test_authenticate_rejects_a_first_message_that_is_not_a_login(db_path):
 async def _non_login_first_scenario(db_path):
     ws = QueuedConnection("client", [serialize_message(RestartMessage())])
 
-    username = await _authenticate(ws, db_path)
+    result = await _authenticate(ws, db_path)
 
-    assert username is None
+    assert result is None
     assert ws.sent == []  # no response sent - the connection is just dropped
 
 
@@ -92,6 +92,6 @@ def test_authenticate_handles_garbage_first_message_without_raising(db_path):
 async def _garbage_first_message_scenario(db_path):
     ws = QueuedConnection("client", ["not json at all"])
 
-    username = await _authenticate(ws, db_path)
+    result = await _authenticate(ws, db_path)
 
-    assert username is None
+    assert result is None

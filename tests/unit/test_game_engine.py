@@ -117,7 +117,7 @@ def test_request_move_does_not_notify_observers_when_the_move_is_rejected():
 
 def test_snapshot_passes_through_the_move_log_the_caller_supplies():
     """GameEngine doesn't hold move history itself anymore - snapshot()
-    just forwards whatever the caller (see view/observers.py's
+    just forwards whatever the caller (see events/observers.py's
     MoveLogObserver) already accumulated from the events it fired."""
     _, _, engine, _ = make_stack([["wR", ".", "."]])
 
@@ -127,7 +127,7 @@ def test_snapshot_passes_through_the_move_log_the_caller_supplies():
 
 def test_snapshot_passes_through_the_scores_the_caller_supplies():
     """Same pass-through as move_log, but for scores (see
-    view/observers.py's ScoreObserver) - RealTimeArbiter no longer holds
+    events/observers.py's ScoreObserver) - RealTimeArbiter no longer holds
     a running score itself either."""
     _, _, engine, _ = make_stack([["wR", ".", "."]])
 

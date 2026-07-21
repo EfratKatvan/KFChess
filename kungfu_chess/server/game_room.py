@@ -26,7 +26,7 @@ from kungfu_chess.server.messages import (
 )
 from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.starting_position import STARTING_POSITION
-from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
+from kungfu_chess.events.observers import MoveLogObserver, ScoreObserver
 
 TICK_SECONDS = 0.016  # physics granularity - engine.wait() runs at this rate regardless of broadcast rate
 BROADCAST_INTERVAL_SECONDS = 1 / 15  # how often a full state snapshot actually goes out over the network

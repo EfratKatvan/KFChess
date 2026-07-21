@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Optional
+from typing import Any, Optional, Tuple
 
 from websockets.asyncio.server import ServerConnection, serve
 
@@ -21,12 +21,13 @@ async def _try_send(ws: ServerConnection, message: Any) -> None:
         pass
 
 
-async def _authenticate(ws: ServerConnection, db_path: str) -> Optional[str]:
+async def _authenticate(ws: ServerConnection, db_path: str) -> Optional[Tuple[str, int]]:
     """Waits for the connection's first message, which must be a login
     request (see network_client_view.py's shell username/password
     prompt, sent right after connecting) - returns the authenticated
-    username, or None if the connection should be dropped (bad
-    credentials, or anything else went wrong before login completed)."""
+    (username, rating), or None if the connection should be dropped
+    (bad credentials, or anything else went wrong before login
+    completed)."""
     try:
         raw = await ws.recv()
     except Exception:
@@ -45,15 +46,16 @@ async def _authenticate(ws: ServerConnection, db_path: str) -> Optional[str]:
         return None
 
     await _try_send(ws, LoginOkMessage(rating=result.rating))
-    return message.username
+    return message.username, result.rating
 
 
 async def _handle_connection(matchmaker: Matchmaker, db_path: str, ws: ServerConnection) -> None:
-    username = await _authenticate(ws, db_path)
-    if username is None:
-        return  # never enters matchmaking - bad login or the connection dropped before completing it
+    auth = await _authenticate(ws, db_path)
+    if auth is None:
+        return  # never enters the lobby - bad login or the connection dropped before completing it
+    username, rating = auth
 
-    accepted = await matchmaker.on_connect(ws, username)
+    accepted = await matchmaker.on_connect(ws, username, rating)
     if not accepted:
         return  # already connected from another window - matchmaker sent LoginFailedMessage itself
 

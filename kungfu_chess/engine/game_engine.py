@@ -162,7 +162,7 @@ class GameEngine:
         scores: Optional[Dict[str, int]] = None,
     ) -> BoardViewState:
         """move_log/scores both come from the caller (see
-        view/observers.py's MoveLogObserver/ScoreObserver) - this class
+        events/observers.py's MoveLogObserver/ScoreObserver) - this class
         fires MoveLoggedEvent on request_move and RealTimeArbiter fires
         PieceCapturedEvent on a resolved capture, but neither stores that
         history itself, so there's nothing of the kind to put here."""

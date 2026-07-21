@@ -397,33 +397,16 @@ def test_draw_side_panel_renders_a_move_log_entry():
     assert not (canvas_no_moves.img == canvas_with_move.img).all()
 
 
-def test_draw_shows_a_players_username_and_rating_on_their_side_panel():
-    from kungfu_chess.view.renderer import PlayerInfo
+def test_draw_shows_the_same_canvas_regardless_of_which_side_you_are():
+    """Player identity/ownership is not drawn by Renderer at all - see
+    network_client_view.py's top banner for identity. Renderer only
+    ever draws what's actually on the board."""
+    view_state = BoardViewState(width=1, height=1, game_over=False, pieces=(make_piece_view(WHITE, ROOK, 0, 0),))
 
-    view_state = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    first = Renderer().draw(view_state, cell_size=100)
+    second = Renderer().draw(view_state, cell_size=100)
 
-    without_player = Renderer().draw(view_state, cell_size=100)
-    with_player = Renderer().draw(view_state, cell_size=100, white_player=PlayerInfo(username="efrat", rating=1216))
-
-    assert not (without_player.img == with_player.img).all()
-
-
-def test_draw_marks_only_your_own_color_as_you():
-    from kungfu_chess.model.piece import WHITE, BLACK
-    from kungfu_chess.view.renderer import PlayerInfo
-
-    view_state = BoardViewState(width=8, height=8, game_over=False, pieces=())
-    white = PlayerInfo(username="efrat", rating=1216)
-    black = PlayerInfo(username="eti", rating=1184)
-
-    as_white = Renderer().draw(view_state, cell_size=100, white_player=white, black_player=black, your_color=WHITE)
-    as_black = Renderer().draw(view_state, cell_size=100, white_player=white, black_player=black, your_color=BLACK)
-    as_spectator = Renderer().draw(view_state, cell_size=100, white_player=white, black_player=black, your_color=None)
-
-    # the "You" marker moves to a different panel depending on your_color, so all three canvases differ
-    assert not (as_white.img == as_black.img).all()
-    assert not (as_white.img == as_spectator.img).all()
-    assert not (as_black.img == as_spectator.img).all()
+    assert (first.img == second.img).all()
 
 
 def test_move_notation_formats_pawn_moves_without_a_piece_letter():

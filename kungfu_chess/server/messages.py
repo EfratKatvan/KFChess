@@ -34,6 +34,14 @@ class LoginFailedMessage:
 
 
 @dataclass(frozen=True)
+class SeekGameMessage:
+    """Sent when the player clicks "Play" in the lobby - the trigger
+    that actually enters matchmaking (login by itself no longer does)."""
+
+    type: str = protocol.SEEK_GAME
+
+
+@dataclass(frozen=True)
 class WaitingForOpponentMessage:
     type: str = protocol.WAITING_FOR_OPPONENT
 

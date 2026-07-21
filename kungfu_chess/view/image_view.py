@@ -11,7 +11,7 @@ from kungfu_chess.assets_config import DEFAULT_PIECE_SET
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.input.controller import Controller
-from kungfu_chess.view.observers import MoveLogObserver, ScoreObserver
+from kungfu_chess.events.observers import MoveLogObserver, ScoreObserver
 from kungfu_chess.view.renderer import Renderer, SIDE_PANEL_WIDTH, game_over_button_rect, side_panel_width_for
 
 

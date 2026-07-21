@@ -7,6 +7,7 @@ LOGIN_OK = "login_ok"
 LOGIN_FAILED = "login_failed"
 
 # Matchmaking phase (before a player is paired into a GameRoom)
+SEEK_GAME = "seek_game"
 WAITING_FOR_OPPONENT = "waiting_for_opponent"
 NO_OPPONENT_FOUND = "no_opponent_found"
 MATCH_FOUND = "match_found"
@@ -22,4 +23,5 @@ OPPONENT_DISCONNECTED = "opponent_disconnected"
 OPPONENT_RECONNECTED = "opponent_reconnected"
 
 MATCHMAKING_TIMEOUT_SECONDS = 60
+MATCHMAKING_ELO_RANGE = 100  # a seeker is only matched against another seeker within this many rating points
 DISCONNECT_GRACE_SECONDS = 20

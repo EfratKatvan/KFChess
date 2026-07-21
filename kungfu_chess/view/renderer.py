@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Iterable, Optional, Tuple
 
 import numpy as np
@@ -50,8 +49,6 @@ from kungfu_chess.view.renderer_style import (
     SIDE_PANEL_HEADER_THICKNESS,
     SIDE_PANEL_MOVE_COLUMN_FRACTION,
     SIDE_PANEL_PADDING,
-    SIDE_PANEL_PLAYER_INFO_FONT_SIZE,
-    SIDE_PANEL_PLAYER_INFO_Y,
     SIDE_PANEL_ROW_FONT_SIZE,
     SIDE_PANEL_ROW_HEIGHT,
     SIDE_PANEL_ROW_THICKNESS,
@@ -207,17 +204,6 @@ def _move_notation(entry: MoveLogEntry, board_height: int) -> str:
     return f"{letter}{source}{separator}{dest}"
 
 
-@dataclass(frozen=True)
-class PlayerInfo:
-    """Who's playing a given color, and their rating at match-start -
-    display-only, carried by the client from MatchFoundMessage (see
-    server/messages.py) rather than coming from BoardViewState, since
-    it's identity, not game state."""
-
-    username: str
-    rating: int
-
-
 def _draw_side_panel(
     canvas: Img,
     x: int,
@@ -227,8 +213,6 @@ def _draw_side_panel(
     entries: Tuple[MoveLogEntry, ...],
     board_height: int,
     cell_size: int,
-    player: Optional[PlayerInfo] = None,
-    is_you: bool = False,
 ) -> None:
     panel_width = side_panel_width_for(cell_size)
     _blend_solid_rect(canvas, x, 0, panel_width, panel_height, SIDE_PANEL_BACKGROUND_COLOR_BGRA)
@@ -238,12 +222,6 @@ def _draw_side_panel(
         canvas, team_label, center_x, SIDE_PANEL_TEAM_LABEL_Y,
         SIDE_PANEL_HEADER_FONT_SIZE, SIDE_PANEL_TEXT_COLOR_BGRA, SIDE_PANEL_HEADER_THICKNESS,
     )
-    if player is not None:
-        info_text = f"{player.username} ({player.rating})" + (" - You" if is_you else "")
-        _draw_centered_text(
-            canvas, info_text, center_x, SIDE_PANEL_PLAYER_INFO_Y,
-            SIDE_PANEL_PLAYER_INFO_FONT_SIZE, SIDE_PANEL_ACCENT_COLOR_BGRA, SIDE_PANEL_ROW_THICKNESS,
-        )
     _draw_centered_text(
         canvas, f"Score: {score}", center_x, SIDE_PANEL_SCORE_Y,
         SIDE_PANEL_HEADER_FONT_SIZE, SIDE_PANEL_ACCENT_COLOR_BGRA, SIDE_PANEL_HEADER_THICKNESS,
@@ -280,9 +258,6 @@ class Renderer:
         legal_destinations: Optional[Iterable[Position]] = None,
         invalid_target: Optional[Position] = None,
         game_over_progress: float = 1.0,
-        black_player: Optional[PlayerInfo] = None,
-        white_player: Optional[PlayerInfo] = None,
-        your_color: Optional[str] = None,
     ) -> Img:
         side_panel_width = side_panel_width_for(cell_size)
         board_pixel_width = view_state.width * cell_size
@@ -335,12 +310,10 @@ class Renderer:
         _draw_side_panel(
             canvas, 0, board_pixel_height, "Black",
             view_state.scores.get(BLACK, 0), view_state.move_log.get(BLACK, ()), view_state.height, cell_size,
-            player=black_player, is_you=(your_color == BLACK),
         )
         _draw_side_panel(
             canvas, side_panel_width + board_pixel_width, board_pixel_height, "White",
             view_state.scores.get(WHITE, 0), view_state.move_log.get(WHITE, ()), view_state.height, cell_size,
-            player=white_player, is_you=(your_color == WHITE),
         )
         _blend_solid_rect(canvas, side_panel_width - SIDE_PANEL_DIVIDER_THICKNESS, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)
         _blend_solid_rect(canvas, side_panel_width + board_pixel_width, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)

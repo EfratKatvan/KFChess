@@ -66,7 +66,7 @@ def test_arriving_piece_captures_enemy_piece():
 def test_capturing_a_piece_fires_a_piece_captured_event_with_its_point_value():
     """RealTimeArbiter doesn't keep a running score itself anymore - it
     fires PieceCapturedEvent the instant a capture resolves, and moves
-    on (see view/observers.py's ScoreObserver, which is what actually
+    on (see events/observers.py's ScoreObserver, which is what actually
     accumulates this for the real game - the same split already used
     for move logging)."""
     from kungfu_chess.model.game_state import GameObserver
