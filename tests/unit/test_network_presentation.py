@@ -16,6 +16,7 @@ from kungfu_chess.view.network_presentation import (
     screen_size,
     starting_text,
     text_entry_screen,
+    waiting_screen,
 )
 from kungfu_chess.view.renderer import Renderer
 
@@ -77,6 +78,23 @@ def test_room_pending_cancel_button_rect_fits_within_the_screen():
 
     assert 0 <= x and x + w <= SCREEN_WIDTH
     assert 0 <= y and y + h <= SCREEN_HEIGHT
+
+
+def test_waiting_screen_has_the_expected_canvas_size():
+    canvas = waiting_screen(SCREEN_WIDTH, SCREEN_HEIGHT, rating=1200)
+
+    height_px, width_px = canvas.img.shape[:2]
+    assert (width_px, height_px) == (SCREEN_WIDTH, SCREEN_HEIGHT)
+
+
+def test_render_frame_waiting_phase_matches_waiting_screen():
+    state = ClientState(phase="waiting", rating=1200)
+
+    from_render_frame = render_frame(state, CELL_SIZE, "pieces3", Renderer())
+    width, height = screen_size(CELL_SIZE)
+    directly = waiting_screen(width, height, rating=1200)
+
+    assert np.array_equal(from_render_frame.img, directly.img)
 
 
 def test_text_entry_screen_has_the_expected_canvas_size():
@@ -147,6 +165,47 @@ def test_top_banner_shows_the_room_id_when_present():
     _draw_top_banner(with_room_id, SCREEN_WIDTH, _WHITE_PLAYER, _BLACK_PLAYER, viewer_color=WHITE, room_id="ABC123")
 
     assert not np.array_equal(without_room_id.img, with_room_id.img)
+
+
+def test_top_banner_draws_the_resign_button_only_when_asked():
+    without_resign = _banner_canvas()
+    _draw_top_banner(without_resign, SCREEN_WIDTH, _WHITE_PLAYER, _BLACK_PLAYER, viewer_color=WHITE, show_resign_button=False)
+
+    with_resign = _banner_canvas()
+    _draw_top_banner(with_resign, SCREEN_WIDTH, _WHITE_PLAYER, _BLACK_PLAYER, viewer_color=WHITE, show_resign_button=True)
+
+    assert not np.array_equal(without_resign.img, with_resign.img)
+
+
+def test_top_banner_never_draws_resign_for_a_spectator_even_if_asked():
+    """show_resign_button is only ever passed True for a real player
+    (see render_frame's state.color is not None check) - this pins
+    down that the banner itself also never draws it without a color,
+    not just that the caller happens not to ask."""
+    spectator_without = _banner_canvas()
+    _draw_top_banner(spectator_without, SCREEN_WIDTH, _WHITE_PLAYER, _BLACK_PLAYER, viewer_color=None, show_resign_button=False)
+
+    spectator_with = _banner_canvas()
+    _draw_top_banner(spectator_with, SCREEN_WIDTH, _WHITE_PLAYER, _BLACK_PLAYER, viewer_color=None, show_resign_button=True)
+
+    assert np.array_equal(spectator_without.img, spectator_with.img)
+
+
+def test_render_frame_hides_the_resign_button_once_the_game_is_over():
+    from kungfu_chess.engine.board_view_state import BoardViewState
+
+    live_board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    over_board = BoardViewState(width=8, height=8, game_over=True, pieces=())
+    common = dict(
+        phase="matched", color=WHITE, matched_at=0.0,
+        white_player=_WHITE_PLAYER, black_player=_BLACK_PLAYER,
+    )
+
+    live_canvas = render_frame(ClientState(view_state=live_board, **common), CELL_SIZE, "pieces3", Renderer())
+    over_canvas = render_frame(ClientState(view_state=over_board, **common), CELL_SIZE, "pieces3", Renderer())
+
+    banner_slice = (slice(0, TOP_BANNER_HEIGHT), slice(0, 120))
+    assert not np.array_equal(live_canvas.img[banner_slice], over_canvas.img[banner_slice])
 
 
 def test_top_banner_labels_both_sides_by_color_for_a_spectator():

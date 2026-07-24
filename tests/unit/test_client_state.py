@@ -1,6 +1,16 @@
-from kungfu_chess.client.client_state import ClientState, _game_over_started_at, apply_message
-from kungfu_chess.engine.board_view_state import BoardViewState
+from kungfu_chess.client.client_state import (
+    CAPTURE_EVENT,
+    GAME_OVER_EVENT,
+    GAME_START_EVENT,
+    MOVE_EVENT,
+    ClientState,
+    _game_over_started_at,
+    apply_message,
+    events_since,
+)
+from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry
 from kungfu_chess.model.piece import WHITE
+from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
     CreateRoomFailedMessage,
     JoinRoomFailedMessage,
@@ -10,8 +20,10 @@ from kungfu_chess.server.messages import (
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    LeftRoomMessage,
     RoomCancelledMessage,
     RoomCreatedMessage,
+    SeekCancelledMessage,
     SpectatingMessage,
     StateMessage,
     WaitingForOpponentMessage,
@@ -86,6 +98,22 @@ def test_apply_message_match_found_stores_both_players_identity():
     assert state.white_player.rating == 1200
     assert state.black_player.username == "bob"
     assert state.black_player.rating == 1216
+
+
+def test_apply_message_state_is_ignored_outside_matched_or_spectating():
+    """A StateMessage arriving while on the room_create_entry screen (a
+    stray broadcast from a GameRoom this client already left behind,
+    e.g. via LeaveRoomMessage - see Matchmaker._leave_room) must not
+    silently wipe out local-only fields like text_entry_value that
+    aren't part of the message at all."""
+    state = ClientState(phase="room_create_entry", text_entry_value="efrat-ro")
+
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state_message = StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)
+    result = apply_message(state_message, state)
+
+    assert result is state
+    assert result.text_entry_value == "efrat-ro"
 
 
 def test_apply_message_state_carries_forward_player_identity():
@@ -217,6 +245,30 @@ def test_apply_message_room_cancelled_returns_to_the_lobby():
     assert state.phase == "lobby"
 
 
+def test_apply_message_seek_cancelled_returns_to_the_lobby():
+    state = apply_message(WaitingForOpponentMessage(), ClientState(rating=1234))
+
+    state = apply_message(SeekCancelledMessage(), state)
+
+    assert state.phase == "lobby"
+    assert state.rating == 1234
+
+
+def test_apply_message_left_room_returns_to_the_lobby():
+    state = apply_message(_match_found(WHITE), ClientState(rating=1234))
+
+    state = apply_message(LeftRoomMessage(), state)
+
+    assert state.phase == "lobby"
+    assert state.rating == 1234
+
+
+def test_apply_message_match_found_carries_forward_the_rating():
+    state = apply_message(_match_found(WHITE), ClientState(rating=1234))
+
+    assert state.rating == 1234
+
+
 def test_apply_message_spectating_sets_phase_color_none_and_both_players():
     state = apply_message(
         SpectatingMessage(room_id="ABC123", white_username="alice", white_rating=1200, black_username="bob", black_rating=1216),
@@ -266,3 +318,82 @@ def test_apply_message_state_preserves_the_spectating_phase_across_ticks():
 
     assert state.phase == "spectating"
     assert state.color is None
+
+
+# ==========================================
+# events_since (sound-effect triggers)
+# ==========================================
+
+def _quiet_move(elapsed_ms=0):
+    return MoveLogEntry(elapsed_ms=elapsed_ms, from_pos=Position(6, 4), to_pos=Position(4, 4), kind="pawn", is_capture=False)
+
+
+def _capture_move(elapsed_ms=0):
+    return MoveLogEntry(elapsed_ms=elapsed_ms, from_pos=Position(4, 4), to_pos=Position(3, 3), kind="pawn", is_capture=True)
+
+
+def test_events_since_detects_game_start_on_match_found():
+    old_state = ClientState()
+    new_state = apply_message(_match_found(WHITE), old_state)
+
+    assert GAME_START_EVENT in events_since(old_state, new_state)
+
+
+def test_events_since_does_not_refire_game_start_across_later_ticks():
+    old_state = apply_message(_match_found(WHITE), ClientState())
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    new_state = apply_message(
+        StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None), old_state
+    )
+
+    assert GAME_START_EVENT not in events_since(old_state, new_state)
+
+
+def test_events_since_detects_a_new_quiet_move():
+    board_before = BoardViewState(width=8, height=8, game_over=False, pieces=(), move_log={WHITE: ()})
+    board_after = BoardViewState(width=8, height=8, game_over=False, pieces=(), move_log={WHITE: (_quiet_move(),)})
+    old_state = ClientState(view_state=board_before)
+    new_state = ClientState(view_state=board_after)
+
+    events = events_since(old_state, new_state)
+    assert MOVE_EVENT in events
+    assert CAPTURE_EVENT not in events
+
+
+def test_events_since_detects_a_new_capture():
+    board_before = BoardViewState(width=8, height=8, game_over=False, pieces=(), move_log={WHITE: ()})
+    board_after = BoardViewState(width=8, height=8, game_over=False, pieces=(), move_log={WHITE: (_capture_move(),)})
+    old_state = ClientState(view_state=board_before)
+    new_state = ClientState(view_state=board_after)
+
+    assert CAPTURE_EVENT in events_since(old_state, new_state)
+
+
+def test_events_since_detects_game_over_transition():
+    board_before = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    board_after = BoardViewState(width=8, height=8, game_over=True, pieces=())
+    old_state = ClientState(view_state=board_before)
+    new_state = ClientState(view_state=board_after)
+
+    assert GAME_OVER_EVENT in events_since(old_state, new_state)
+
+
+def test_events_since_skips_move_detection_on_the_first_snapshot():
+    """Right after match-found or a reconnect, old_state.view_state is
+    None - the first StateMessage that follows must be treated as a
+    baseline, not replayed as a burst of move/capture events for
+    however much move-log history the game already had."""
+    board_with_history = BoardViewState(
+        width=8, height=8, game_over=False, pieces=(), move_log={WHITE: (_quiet_move(), _capture_move())},
+    )
+    old_state = ClientState(view_state=None)
+    new_state = ClientState(view_state=board_with_history)
+
+    assert events_since(old_state, new_state) == frozenset()
+
+
+def test_events_since_returns_empty_when_nothing_changed():
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=(), move_log={WHITE: (_quiet_move(),)})
+    state = ClientState(view_state=board)
+
+    assert events_since(state, state) == frozenset()

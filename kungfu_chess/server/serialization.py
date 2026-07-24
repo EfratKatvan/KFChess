@@ -9,11 +9,14 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.server import protocol
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
+    CancelSeekMessage,
     CreateRoomFailedMessage,
     CreateRoomMessage,
     JoinRoomFailedMessage,
     JoinRoomMessage,
     JumpMessage,
+    LeaveRoomMessage,
+    LeftRoomMessage,
     LoginFailedMessage,
     LoginMessage,
     LoginOkMessage,
@@ -21,9 +24,12 @@ from kungfu_chess.server.messages import (
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    RegisterMessage,
+    ResignMessage,
     RestartMessage,
     RoomCancelledMessage,
     RoomCreatedMessage,
+    SeekCancelledMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
     SpectatingMessage,
@@ -139,10 +145,11 @@ def legal_destinations_from_wire(value: List[List[int]]) -> Set[Position]:
 def message_to_wire(message: Any) -> Dict[str, Any]:
     if isinstance(message, (
         WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage,
-        SeekGameMessage, CancelRoomMessage, RoomCancelledMessage,
+        SeekGameMessage, CancelRoomMessage, RoomCancelledMessage, CancelSeekMessage, SeekCancelledMessage,
+        LeaveRoomMessage, LeftRoomMessage, ResignMessage,
     )):
         return {"type": message.type}
-    if isinstance(message, LoginMessage):
+    if isinstance(message, (LoginMessage, RegisterMessage)):
         return {"type": message.type, "username": message.username, "password": message.password}
     if isinstance(message, LoginOkMessage):
         return {"type": message.type, "rating": message.rating}
@@ -190,6 +197,8 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
     message_type = data["type"]
     if message_type == protocol.LOGIN:
         return LoginMessage(username=data["username"], password=data["password"])
+    if message_type == protocol.REGISTER:
+        return RegisterMessage(username=data["username"], password=data["password"])
     if message_type == protocol.LOGIN_OK:
         return LoginOkMessage(rating=data["rating"])
     if message_type == protocol.LOGIN_FAILED:
@@ -198,12 +207,20 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
         return SeekGameMessage()
     if message_type == protocol.WAITING_FOR_OPPONENT:
         return WaitingForOpponentMessage()
+    if message_type == protocol.CANCEL_SEEK:
+        return CancelSeekMessage()
+    if message_type == protocol.SEEK_CANCELLED:
+        return SeekCancelledMessage()
     if message_type == protocol.NO_OPPONENT_FOUND:
         return NoOpponentFoundMessage()
     if message_type == protocol.OPPONENT_DISCONNECTED:
         return OpponentDisconnectedMessage(grace_seconds=data["grace_seconds"])
     if message_type == protocol.OPPONENT_RECONNECTED:
         return OpponentReconnectedMessage()
+    if message_type == protocol.LEAVE_ROOM:
+        return LeaveRoomMessage()
+    if message_type == protocol.LEFT_ROOM:
+        return LeftRoomMessage()
     if message_type == protocol.MATCH_FOUND:
         return MatchFoundMessage(
             color=data["color"],
@@ -248,6 +265,8 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
         return JumpMessage(row=data["row"], col=data["col"])
     if message_type == protocol.RESTART:
         return RestartMessage()
+    if message_type == protocol.RESIGN:
+        return ResignMessage()
     raise ValueError(f"unknown message type: {message_type!r}")
 
 

@@ -120,7 +120,13 @@ class Img:
     def show(self, window_name: str = "Image", wait_ms: int = 1) -> int:
         """Shows the image in a cv2 window. wait_ms=1 (default) is
         non-blocking - fits a real-time render loop. Returns the key
-        code that was pressed (cv2.waitKey).
+        code that was pressed (cv2.waitKey), masked to its low byte -
+        on Windows, cv2.waitKey can return extra high-order bits set
+        depending on keyboard/locale state, which would otherwise make
+        an ordinary printable key fail a plain `key == ord(...)` or
+        `32 <= key <= 126` check (see client/input_controller.py's
+        apply_key_press) even though the actual key code is correct
+        once masked - a well-known OpenCV-on-Windows gotcha.
 
         If self.img has an alpha channel, it's converted to BGR before
         display - the blending (piece background transparency) was
@@ -132,4 +138,4 @@ class Img:
             raise ValueError("Image not loaded.")
         display_img = cv2.cvtColor(self.img, cv2.COLOR_BGRA2BGR) if self.img.shape[2] == 4 else self.img
         cv2.imshow(window_name, display_img)
-        return cv2.waitKey(wait_ms)
+        return cv2.waitKey(wait_ms) & 0xFF

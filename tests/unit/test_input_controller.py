@@ -15,9 +15,12 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.server import protocol
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
+    CancelSeekMessage,
     CreateRoomMessage,
     JoinRoomMessage,
     JumpMessage,
+    LeaveRoomMessage,
+    ResignMessage,
     RestartMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
@@ -28,10 +31,11 @@ from kungfu_chess.view.network_presentation import (
     create_room_button_rect,
     join_room_button_rect,
     play_button_rect,
+    resign_button_rect,
     room_pending_cancel_button_rect,
     text_entry_cancel_button_rect,
 )
-from kungfu_chess.view.renderer import game_over_button_rect
+from kungfu_chess.view.renderer import game_over_back_to_lobby_button_rect, game_over_button_rect
 
 CELL_SIZE = 100
 SCREEN_WIDTH, SCREEN_HEIGHT = 800, 800
@@ -78,6 +82,15 @@ def test_click_before_matched_sends_nothing():
     assert _decide(state, is_left_click=True, x=150, y=150) is None
 
 
+def test_waiting_click_on_back_button_sends_cancel_seek():
+    x, y, w, h = room_pending_cancel_button_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+    state = ClientState(phase="waiting")
+
+    message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2)
+
+    assert isinstance(message, CancelSeekMessage)
+
+
 def test_click_during_the_starting_countdown_is_ignored():
     board = BoardViewState(width=8, height=8, game_over=False, pieces=())
     state = ClientState(phase="matched", view_state=board, matched_at=time.perf_counter())
@@ -93,6 +106,27 @@ def test_click_while_opponent_is_disconnected_is_ignored():
     )
 
     assert _decide(state, is_left_click=True, x=150, y=150 + TOP_BANNER_HEIGHT) is None
+
+
+def test_click_on_the_resign_button_sends_resign():
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state = ClientState(phase="matched", view_state=board, matched_at=0.0)
+    x, y, w, h = resign_button_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2)
+
+    assert isinstance(message, ResignMessage)
+
+
+def test_resign_button_does_nothing_after_game_over():
+    board = BoardViewState(width=8, height=8, game_over=True, pieces=())
+    state = ClientState(phase="matched", view_state=board, matched_at=0.0)
+    x, y, w, h = resign_button_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    # same spot, but the button isn't shown anymore once the game has ended
+    message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2)
+
+    assert not isinstance(message, ResignMessage)
 
 
 def test_left_click_on_a_cell_sends_select_or_move():
@@ -128,6 +162,27 @@ def test_click_on_the_restart_button_after_game_over_sends_restart():
     message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2 + TOP_BANNER_HEIGHT)
 
     assert isinstance(message, RestartMessage)
+
+
+def test_click_on_the_back_to_lobby_button_after_game_over_sends_leave_room():
+    board = BoardViewState(width=8, height=8, game_over=True, pieces=())
+    state = ClientState(phase="matched", view_state=board, matched_at=0.0)
+    x, y, w, h = game_over_back_to_lobby_button_rect(8, 8, CELL_SIZE)
+
+    message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2 + TOP_BANNER_HEIGHT)
+
+    assert isinstance(message, LeaveRoomMessage)
+
+
+def test_back_to_lobby_button_does_nothing_before_game_over():
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state = ClientState(phase="matched", view_state=board, matched_at=0.0)
+    x, y, w, h = game_over_back_to_lobby_button_rect(8, 8, CELL_SIZE)
+
+    # the same click, while the board is still live, falls into ordinary cell selection instead
+    message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2 + TOP_BANNER_HEIGHT)
+
+    assert not isinstance(message, LeaveRoomMessage)
 
 
 def test_click_elsewhere_after_game_over_sends_nothing():

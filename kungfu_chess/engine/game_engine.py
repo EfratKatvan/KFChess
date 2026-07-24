@@ -1,8 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 from kungfu_chess.engine.board_view_state import BoardViewState, MoveLogEntry, build_board_view_state
+from kungfu_chess.events.bus import Bus
 from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.model.game_state import GameObserver, GameState, MoveLoggedEvent
 from kungfu_chess.model.position import Position
@@ -36,7 +37,7 @@ class GameEngine:
         self._rules = rule_engine
         self._arbiter = arbiter
         self._total_elapsed_ms = 0
-        self._observers: List[GameObserver] = []
+        self._bus = Bus()
 
     def add_observer(self, observer: GameObserver) -> None:
         """Registers something that wants to react to game events
@@ -44,8 +45,10 @@ class GameEngine:
         class - or RealTimeArbiter - holding that data itself. A single
         call reaches both event sources, so callers don't need to know
         move events and capture events actually come from two different
-        objects - see model.game_state.GameObserver."""
-        self._observers.append(observer)
+        objects - see model.game_state.GameObserver. Subscribes the
+        observer's own methods to each class's own Bus rather than this
+        class collecting captures on RealTimeArbiter's behalf."""
+        self._bus.subscribe(MoveLoggedEvent, observer.on_move_logged)
         self._arbiter.add_observer(observer)
 
     def is_game_over(self) -> bool:
@@ -130,8 +133,7 @@ class GameEngine:
         event = MoveLoggedEvent(
             piece.color, from_pos, actual_to, piece.kind, is_capture, self._total_elapsed_ms
         )
-        for observer in self._observers:
-            observer.on_move_logged(event)
+        self._bus.publish(event)
         return MoveResult(is_accepted=True, reason=REASON_OK)
 
     def try_jump(self, position: Position) -> bool:

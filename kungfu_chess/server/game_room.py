@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, Optional, Set, Type
 
 from websockets.asyncio.server import ServerConnection
 
@@ -21,6 +21,7 @@ from kungfu_chess.server.messages import (
     MatchFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    ResignMessage,
     RestartMessage,
     SelectOrMoveMessage,
     StateMessage,
@@ -64,6 +65,7 @@ class GameRoom:
         self._spectators: Set[ServerConnection] = set()
         self._tick_task: Optional[asyncio.Task] = None
         self._resign_task: Optional[asyncio.Task] = None
+        self._left = False  # room-lifetime, not per-game - see leave(); never reset by _build_fresh_game
         self._build_fresh_game()
 
     def _build_fresh_game(self) -> None:
@@ -91,6 +93,9 @@ class GameRoom:
     def username_of(self, color: str) -> str:
         return self._usernames[color]
 
+    def is_game_over(self) -> bool:
+        return self._engine.is_game_over()
+
     async def start(self) -> None:
         for color, ws in self._connections.items():
             await self._safe_send(ws, self._match_found_message(color))
@@ -114,6 +119,34 @@ class GameRoom:
 
     def remove_spectator(self, ws: ServerConnection) -> None:
         self._spectators.discard(ws)
+
+    def leave(self, ws: ServerConnection) -> Set[ServerConnection]:
+        """Called once a connection explicitly leaves this room after
+        it's already finished (see Matchmaker._leave_room and
+        on_disconnect, both of which only call this once
+        is_game_over() is true). A spectator leaving affects no one
+        else. A real player leaving takes the whole room down: their
+        opponent has no one left to face a rematch with either, so
+        this stops the tick loop for good (nothing should ever
+        broadcast to either connection again), frees the room's own
+        name in the registry (see on_game_over - NOT fired at
+        game-over itself, since both players might still want New
+        Game in the same room; only once someone actually leaves does
+        the room name genuinely become free again), and returns the
+        opponent's connection for the caller to also kick back to the
+        lobby."""
+        color = self.color_of(ws)
+        if color is None:
+            self._spectators.discard(ws)
+            return set()
+        if self._left:
+            return set()  # already handled - e.g. a disconnect racing the LeaveRoomMessage that already tore this down
+        self._left = True
+        opponent_ws = self._connections[_other_color(color)]
+        self.stop()
+        if self._on_game_over is not None:
+            self._on_game_over()
+        return {opponent_ws}
 
     def stop(self) -> None:
         if self._tick_task is not None:
@@ -164,15 +197,50 @@ class GameRoom:
         await self._safe_send(new_ws, self._match_found_message(color))  # so the reconnecting client re-learns its own color/username/rating
         return True
 
+    def _handle_select_or_move(self, controller: Controller, message: SelectOrMoveMessage) -> None:
+        controller.handle_cell(Position(message.row, message.col))
+
+    def _handle_jump(self, controller: Controller, message: JumpMessage) -> None:
+        controller.handle_jump_cell(Position(message.row, message.col))
+
+    def _handle_restart(self, controller: Controller, message: RestartMessage) -> None:
+        if self._engine.is_game_over():
+            self._build_fresh_game()
+
+    def _handle_resign(self, controller: Controller, message: ResignMessage) -> None:
+        """Voluntary forfeit, on demand - the player-triggered
+        counterpart to _auto_resign_after_grace's disconnect-timeout
+        one. Left as a sync handler (no immediate broadcast) like every
+        other handler here - the result shows up on the next regular
+        tick, at most ~66ms later (BROADCAST_INTERVAL_SECONDS), same as
+        an ordinary move."""
+        if self._engine.is_game_over():
+            return  # already ended - nothing left to resign from
+        resigning_color = controller.owner_color
+        winner_color = _other_color(resigning_color)
+        logger.info("%s resigned", self._usernames[resigning_color])
+        self._engine.resign()
+        view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
+        self._apply_rating_update(view_state, winner_color=winner_color)
+
+    # Dispatch table for in-game messages - one handler per message
+    # kind, in place of a growing if/elif isinstance chain. Built from
+    # plain (unbound) functions defined just above, called as
+    # handler(self, controller, message).
+    _MESSAGE_HANDLERS: Dict[Type[Any], Callable[["GameRoom", Controller, Any], None]] = {
+        SelectOrMoveMessage: _handle_select_or_move,
+        JumpMessage: _handle_jump,
+        RestartMessage: _handle_restart,
+        ResignMessage: _handle_resign,
+    }
+
     async def handle_message(self, color: str, message: Any) -> None:
+        # No reply is sent from here - the effect (a piece selected/moved,
+        # or a fresh game) just shows up in everyone's next _broadcast.
         controller = self._controllers[color]
-        if isinstance(message, SelectOrMoveMessage):
-            controller.handle_cell(Position(message.row, message.col))
-        elif isinstance(message, JumpMessage):
-            controller.handle_jump_cell(Position(message.row, message.col))
-        elif isinstance(message, RestartMessage):
-            if self._engine.is_game_over():
-                self._build_fresh_game()
+        handler = self._MESSAGE_HANDLERS.get(type(message))
+        if handler is not None:
+            handler(self, controller, message)
 
     async def _run(self) -> None:
         while True:
@@ -227,7 +295,10 @@ class GameRoom:
         relying on the caller to check first). winner_color is only
         passed explicitly for an auto-resign (both kings are still on
         the board, so there's nothing to infer from view_state) -
-        otherwise it's the color whose king is still standing."""
+        otherwise it's the color whose king is still standing. Doesn't
+        free the room itself (see leave/on_game_over) - a finished game
+        still might get a New Game rematch in the very same room, so
+        only actually leaving means the room is truly done."""
         if self._rating_update_applied:
             return
         self._rating_update_applied = True
@@ -246,8 +317,6 @@ class GameRoom:
             winner_username, old_winner_rating, new_winner_rating,
             loser_username, old_loser_rating, new_loser_rating,
         )
-        if self._on_game_over is not None:
-            self._on_game_over()
 
     def _personalized_message(self, color: str, view_state: BoardViewState) -> StateMessage:
         controller = self._controllers[color]
@@ -274,8 +343,9 @@ class GameRoom:
     async def _safe_send(self, ws: ServerConnection, message: Any) -> None:
         try:
             await ws.send(serialize_message(message))
-        except Exception:
-            pass  # a closed/broken socket is handled by the server's own connection loop, not here
+        except Exception as error:
+            # a closed/broken socket is handled by the server's own connection loop, not here
+            logger.debug("send failed on a closed/broken socket: %s", error)
 
 
 def _other_color(color: str) -> str:

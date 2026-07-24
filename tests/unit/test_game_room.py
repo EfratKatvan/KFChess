@@ -7,13 +7,13 @@ from kungfu_chess.model.piece import KING, WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.server import accounts, protocol
 from kungfu_chess.server.game_room import GameRoom
-from kungfu_chess.server.messages import SelectOrMoveMessage
+from kungfu_chess.server.messages import ResignMessage, SelectOrMoveMessage
 from tests.unit.test_matchmaker import FakeConnection, _last_type
 
 
 def _make_room(db_path, white_ws=None, black_ws=None):
-    accounts.authenticate(db_path, "white_player", "pw")
-    accounts.authenticate(db_path, "black_player", "pw")
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
     return GameRoom(
         white_ws or FakeConnection("white"), "white_player",
         black_ws or FakeConnection("black"), "black_player",
@@ -84,8 +84,8 @@ def test_apply_rating_update_credits_the_survivors_color_as_the_winner(db_path):
 
 
 async def _rating_update_scenario(db_path):
-    accounts.authenticate(db_path, "white_player", "pw")
-    accounts.authenticate(db_path, "black_player", "pw")
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
 
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
     room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
@@ -104,8 +104,8 @@ def test_apply_rating_update_only_ever_applies_once_per_game(db_path):
 
 
 async def _rating_update_once_scenario(db_path):
-    accounts.authenticate(db_path, "white_player", "pw")
-    accounts.authenticate(db_path, "black_player", "pw")
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
 
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
     room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
@@ -176,8 +176,8 @@ def test_tick_once_does_not_broadcast_again_before_the_interval_elapses(db_path)
 async def _no_broadcast_yet_scenario(db_path):
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
     room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
-    accounts.authenticate(db_path, "white_player", "pw")
-    accounts.authenticate(db_path, "black_player", "pw")
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
     await room.start()  # sends match_found - one message each, not a broadcast
 
     sent_count_after_start = len(white_ws.sent)
@@ -282,6 +282,77 @@ async def _auto_resign_scenario(db_path):
     assert room._engine.is_game_over() is True
     assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING + accounts.ELO_K_FACTOR // 2
     assert accounts.get_rating(db_path, "white_player") == accounts.STARTING_RATING - accounts.ELO_K_FACTOR // 2
+
+    room.stop()
+
+
+def test_resign_ends_the_game_and_credits_the_opponent(db_path):
+    asyncio.run(_resign_scenario(db_path))
+
+
+async def _resign_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+
+    await room.handle_message(WHITE, ResignMessage())
+
+    assert room._engine.is_game_over() is True
+    assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING + accounts.ELO_K_FACTOR // 2
+    assert accounts.get_rating(db_path, "white_player") == accounts.STARTING_RATING - accounts.ELO_K_FACTOR // 2
+
+    room.stop()
+
+
+def test_resign_after_game_over_is_a_no_op(db_path):
+    asyncio.run(_resign_after_game_over_scenario(db_path))
+
+
+async def _resign_after_game_over_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+
+    await room.handle_message(WHITE, ResignMessage())  # black wins
+    await room.handle_message(BLACK, ResignMessage())  # too late - the game already ended
+
+    assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING + accounts.ELO_K_FACTOR // 2
+    assert accounts.get_rating(db_path, "white_player") == accounts.STARTING_RATING - accounts.ELO_K_FACTOR // 2
+
+    room.stop()
+
+
+def test_leave_by_a_real_player_stops_the_room_and_returns_the_opponent(db_path):
+    asyncio.run(_leave_scenario(db_path))
+
+
+async def _leave_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+    room._engine.resign()  # the game must already be over - Matchmaker._leave_room only calls this once it is
+
+    also_leaving = room.leave(room._connections[WHITE])
+
+    assert also_leaving == {room._connections[BLACK]}
+    await asyncio.sleep(0)
+    assert room._tick_task.cancelled()
+
+
+def test_leave_by_a_spectator_affects_no_one_else(db_path):
+    asyncio.run(_spectator_leave_scenario(db_path))
+
+
+async def _spectator_leave_scenario(db_path):
+    room = _make_room(db_path)
+    await room.start()
+    room._engine.resign()
+    spectator_ws = FakeConnection("spectator")
+    await room.add_spectator(spectator_ws)
+
+    also_leaving = room.leave(spectator_ws)
+
+    assert also_leaving == set()
+    assert spectator_ws not in room._spectators
+    await asyncio.sleep(0)
+    assert not room._tick_task.cancelled()  # the two real players are still in their game
 
     room.stop()
 
@@ -411,8 +482,8 @@ def test_match_found_message_carries_the_room_id_when_set(db_path):
 
 
 async def _match_found_room_id_scenario(db_path):
-    accounts.authenticate(db_path, "white_player", "pw")
-    accounts.authenticate(db_path, "black_player", "pw")
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
     room = GameRoom(
         FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
         db_path=db_path, room_id="ABC123",
@@ -427,13 +498,16 @@ def test_match_found_message_room_id_is_none_for_a_play_matched_game(db_path):
     assert room._match_found_message(WHITE).room_id is None
 
 
-def test_on_game_over_callback_fires_exactly_once(db_path):
-    asyncio.run(_on_game_over_callback_scenario(db_path))
+def test_on_game_over_callback_does_not_fire_at_game_over_itself(db_path):
+    """Both players might still click New Game in the same room - the
+    room's own name in the registry must stay reserved for them until
+    someone actually leaves, not free up the instant the game ends."""
+    asyncio.run(_no_callback_at_game_over_scenario(db_path))
 
 
-async def _on_game_over_callback_scenario(db_path):
-    accounts.authenticate(db_path, "white_player", "pw")
-    accounts.authenticate(db_path, "black_player", "pw")
+async def _no_callback_at_game_over_scenario(db_path):
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
     calls = []
     room = GameRoom(
         FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
@@ -443,8 +517,28 @@ async def _on_game_over_callback_scenario(db_path):
 
     view_state = _view_state_with_survivor(WHITE)
     room._apply_rating_update(view_state)
-    room._apply_rating_update(view_state)  # a second call must not fire the callback again
 
-    assert calls == [1]
+    assert calls == []
 
     room.stop()
+
+
+def test_on_game_over_callback_fires_exactly_once_when_a_player_leaves(db_path):
+    asyncio.run(_on_game_over_callback_scenario(db_path))
+
+
+async def _on_game_over_callback_scenario(db_path):
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
+    calls = []
+    room = GameRoom(
+        FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
+        db_path=db_path, room_id="ABC123", on_game_over=lambda: calls.append(1),
+    )
+    await room.start()
+    room._engine.resign()
+
+    room.leave(room._connections[WHITE])
+    room.leave(room._connections[WHITE])  # a second call (e.g. a raced disconnect) must not fire the callback again
+
+    assert calls == [1]

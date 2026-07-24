@@ -16,12 +16,14 @@ from kungfu_chess.view.renderer_style import (
     CAPTURE_HIGHLIGHT_COLOR_BGRA,
     COOLDOWN_OVERLAY_COLOR_BGRA,
     DESTINATION_HIGHLIGHT_COLOR_BGRA,
+    GAME_OVER_BACK_TO_LOBBY_BUTTON_TEXT,
     GAME_OVER_BAND_COLOR_BGRA,
     GAME_OVER_BAND_HEIGHT,
     GAME_OVER_BUTTON_BORDER_COLOR_BGRA,
     GAME_OVER_BUTTON_BORDER_THICKNESS,
     GAME_OVER_BUTTON_COLOR_BGRA,
     GAME_OVER_BUTTON_FONT_SIZE,
+    GAME_OVER_BUTTON_GAP_X,
     GAME_OVER_BUTTON_HEIGHT,
     GAME_OVER_BUTTON_OFFSET_Y,
     GAME_OVER_BUTTON_TEXT,
@@ -123,17 +125,30 @@ def game_over_button_rect(board_width: int, board_height: int, cell_size: int) -
     )
 
 
+def game_over_back_to_lobby_button_rect(board_width: int, board_height: int, cell_size: int) -> Tuple[int, int, int, int]:
+    """Sits directly to the right of game_over_button_rect (New Game) -
+    only drawn/clickable in the networked client (see LeaveRoomMessage);
+    image_view.py's offline single-process game has no lobby to return
+    to, so it never uses this one."""
+    x, y, w, h = game_over_button_rect(board_width, board_height, cell_size)
+    return (x + w + GAME_OVER_BUTTON_GAP_X, y, w, h)
+
+
 def _faded(color_bgra, progress: float):
     r, g, b, a = color_bgra
     return (r, g, b, int(a * max(0.0, min(1.0, progress))))
 
 
-def _draw_game_over_overlay(canvas: Img, view_state: BoardViewState, cell_size: int, progress: float = 1.0) -> None:
+def _draw_game_over_overlay(
+    canvas: Img, view_state: BoardViewState, cell_size: int, progress: float = 1.0, show_back_to_lobby_button: bool = False,
+) -> None:
     """progress (0..1) animates the dimming band fading in; the title,
-    button and hint only appear once progress reaches 1 - text can't be
-    alpha-blended the way the band's solid rect can (put_text draws
+    button(s) and hint only appear once progress reaches 1 - text can't
+    be alpha-blended the way the band's solid rect can (put_text draws
     straight onto the canvas), so it pops in at the end of the fade
-    instead of fading itself."""
+    instead of fading itself. show_back_to_lobby_button is False for
+    image_view.py's offline game (default), True for the networked
+    client (see network_presentation.py)."""
     board_pixel_width = view_state.width * cell_size
     board_pixel_height = view_state.height * cell_size
     band_y = (board_pixel_height - GAME_OVER_BAND_HEIGHT) // 2
@@ -156,6 +171,15 @@ def _draw_game_over_overlay(canvas: Img, view_state: BoardViewState, cell_size: 
         canvas, GAME_OVER_BUTTON_TEXT, button_x + button_w // 2, button_y + button_h // 2,
         GAME_OVER_BUTTON_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_BUTTON_TEXT_THICKNESS,
     )
+
+    if show_back_to_lobby_button:
+        lobby_x, lobby_y, lobby_w, lobby_h = game_over_back_to_lobby_button_rect(view_state.width, view_state.height, cell_size)
+        _blend_solid_rect(canvas, lobby_x, lobby_y, lobby_w, lobby_h, GAME_OVER_BUTTON_COLOR_BGRA)
+        canvas.draw_rect(lobby_x, lobby_y, lobby_w, lobby_h, GAME_OVER_BUTTON_BORDER_COLOR_BGRA, GAME_OVER_BUTTON_BORDER_THICKNESS)
+        _draw_centered_text(
+            canvas, GAME_OVER_BACK_TO_LOBBY_BUTTON_TEXT, lobby_x + lobby_w // 2, lobby_y + lobby_h // 2,
+            GAME_OVER_BUTTON_FONT_SIZE, GAME_OVER_TEXT_COLOR_BGRA, GAME_OVER_BUTTON_TEXT_THICKNESS,
+        )
 
     _draw_centered_text(
         canvas, GAME_OVER_HINT_TEXT, center_x, band_y + GAME_OVER_HINT_OFFSET_Y,
@@ -258,6 +282,7 @@ class Renderer:
         legal_destinations: Optional[Iterable[Position]] = None,
         invalid_target: Optional[Position] = None,
         game_over_progress: float = 1.0,
+        show_back_to_lobby_button: bool = False,
     ) -> Img:
         side_panel_width = side_panel_width_for(cell_size)
         board_pixel_width = view_state.width * cell_size
@@ -305,15 +330,15 @@ class Renderer:
             _draw_invalid_target_highlight(canvas, _cell_pixel_pos(invalid_target, cell_size), cell_size)
 
         if view_state.game_over:
-            _draw_game_over_overlay(canvas, view_state, cell_size, game_over_progress)
+            _draw_game_over_overlay(canvas, view_state, cell_size, game_over_progress, show_back_to_lobby_button)
 
         _draw_side_panel(
-            canvas, 0, board_pixel_height, "Black",
-            view_state.scores.get(BLACK, 0), view_state.move_log.get(BLACK, ()), view_state.height, cell_size,
+            canvas, 0, board_pixel_height, "White",
+            view_state.scores.get(WHITE, 0), view_state.move_log.get(WHITE, ()), view_state.height, cell_size,
         )
         _draw_side_panel(
-            canvas, side_panel_width + board_pixel_width, board_pixel_height, "White",
-            view_state.scores.get(WHITE, 0), view_state.move_log.get(WHITE, ()), view_state.height, cell_size,
+            canvas, side_panel_width + board_pixel_width, board_pixel_height, "Black",
+            view_state.scores.get(BLACK, 0), view_state.move_log.get(BLACK, ()), view_state.height, cell_size,
         )
         _blend_solid_rect(canvas, side_panel_width - SIDE_PANEL_DIVIDER_THICKNESS, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)
         _blend_solid_rect(canvas, side_panel_width + board_pixel_width, 0, SIDE_PANEL_DIVIDER_THICKNESS, board_pixel_height, SIDE_PANEL_DIVIDER_COLOR_BGRA)

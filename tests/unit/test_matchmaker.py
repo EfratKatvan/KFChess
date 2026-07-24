@@ -6,7 +6,14 @@ import pytest
 from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.server import accounts, protocol
 from kungfu_chess.server.matchmaker import Matchmaker
-from kungfu_chess.server.messages import CancelRoomMessage, CreateRoomMessage, JoinRoomMessage, SeekGameMessage
+from kungfu_chess.server.messages import (
+    CancelRoomMessage,
+    CancelSeekMessage,
+    CreateRoomMessage,
+    JoinRoomMessage,
+    LeaveRoomMessage,
+    SeekGameMessage,
+)
 from kungfu_chess.server.serialization import serialize_message
 
 
@@ -41,6 +48,14 @@ async def _join_room(matchmaker: Matchmaker, ws: FakeConnection, room_id: str) -
 
 async def _cancel_room(matchmaker: Matchmaker, ws: FakeConnection) -> None:
     await matchmaker.on_message(ws, serialize_message(CancelRoomMessage()))
+
+
+async def _cancel_seek(matchmaker: Matchmaker, ws: FakeConnection) -> None:
+    await matchmaker.on_message(ws, serialize_message(CancelSeekMessage()))
+
+
+async def _leave_room(matchmaker: Matchmaker, ws: FakeConnection) -> None:
+    await matchmaker.on_message(ws, serialize_message(LeaveRoomMessage()))
 
 
 @pytest.fixture
@@ -97,6 +112,89 @@ async def _second_seeker_pairs(db_path):
     assert _last_type(bob) == protocol.MATCH_FOUND
     assert alice.sent[-1]["color"] == WHITE
     assert bob.sent[-1]["color"] == BLACK
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_room_name_stays_reserved_after_game_over_until_someone_leaves(db_path):
+    """The room name must not be up for grabs while its two players
+    might still click New Game and keep playing in it - only actually
+    leaving frees it (see GameRoom.leave, matchmaker.py's own
+    docstring update, and the equivalent test in test_game_room.py)."""
+    asyncio.run(_room_name_reservation_scenario(db_path))
+
+
+async def _room_name_reservation_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice, bob, carol = FakeConnection("alice"), FakeConnection("bob"), FakeConnection("carol")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await matchmaker.on_connect(carol, "carol", 1200)
+    await _create_room(matchmaker, alice, room_id="efrat-room")
+    await _join_room(matchmaker, bob, "efrat-room")  # game starts
+    matchmaker._rooms[alice]._engine.resign()  # the game ends, but neither player has left yet
+
+    await _create_room(matchmaker, carol, room_id="efrat-room")
+    assert _last_type(carol) == protocol.CREATE_ROOM_FAILED
+    assert carol.sent[-1]["reason"] == "room_name_taken"
+
+    await _leave_room(matchmaker, alice)  # alice finally leaves - now it's really free
+    await _create_room(matchmaker, carol, room_id="efrat-room")
+    assert _last_type(carol) == protocol.ROOM_CREATED
+
+    await matchmaker.on_disconnect(carol)
+
+
+def test_leave_room_before_game_over_is_a_no_op(db_path):
+    asyncio.run(_leave_room_before_game_over_scenario(db_path))
+
+
+async def _leave_room_before_game_over_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice, bob = FakeConnection("alice"), FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _seek(matchmaker, alice)
+    await _seek(matchmaker, bob)  # matches them into a live GameRoom
+
+    await _leave_room(matchmaker, alice)
+
+    assert _last_type(alice) == protocol.MATCH_FOUND  # unchanged - LeaveRoomMessage before game_over does nothing
+    assert alice in matchmaker._rooms  # still bound to the room, not freed back to the lobby
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_leave_room_after_game_over_frees_the_connection_for_the_lobby(db_path):
+    asyncio.run(_leave_room_after_game_over_scenario(db_path))
+
+
+async def _leave_room_after_game_over_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice, bob = FakeConnection("alice"), FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _seek(matchmaker, alice)
+    await _seek(matchmaker, bob)
+    room = matchmaker._rooms[alice]
+    room._engine.resign()  # force the match to have ended, same trick test_game_room.py uses
+
+    await _leave_room(matchmaker, alice)
+
+    assert _last_type(alice) == protocol.LEFT_ROOM
+    assert alice not in matchmaker._rooms
+
+    # bob has no one left to rematch with either - kicked to the lobby too
+    assert _last_type(bob) == protocol.LEFT_ROOM
+    assert bob not in matchmaker._rooms
+    await asyncio.sleep(0)  # let the event loop actually process the cancellation below
+    assert room._tick_task.cancelled()
+
+    # freed connections re-enter the lobby's own dispatch, e.g. can seek again
+    await _seek(matchmaker, alice)
+    assert _last_type(alice) == protocol.WAITING_FOR_OPPONENT
 
     await matchmaker.on_disconnect(alice)
     await matchmaker.on_disconnect(bob)
@@ -189,6 +287,40 @@ async def _timeout_scenario(db_path):
     await asyncio.sleep(0.1)
 
     assert _last_type(alice) == protocol.NO_OPPONENT_FOUND
+
+
+def test_cancel_seek_returns_the_waiting_seeker_to_the_lobby(db_path):
+    asyncio.run(_cancel_seek_scenario(db_path))
+
+
+async def _cancel_seek_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await _seek(matchmaker, alice)
+
+    await _cancel_seek(matchmaker, alice)
+
+    assert _last_type(alice) == protocol.SEEK_CANCELLED
+
+    bob = FakeConnection("bob")
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _seek(matchmaker, bob)
+    assert _last_type(bob) == protocol.WAITING_FOR_OPPONENT  # not silently paired with the cancelled alice
+
+
+def test_cancel_seek_with_nothing_pending_is_a_no_op(db_path):
+    asyncio.run(_cancel_seek_no_op_scenario(db_path))
+
+
+async def _cancel_seek_no_op_scenario(db_path):
+    matchmaker = Matchmaker(db_path=db_path)
+    alice = FakeConnection("alice")
+    await matchmaker.on_connect(alice, "alice", 1200)
+
+    await _cancel_seek(matchmaker, alice)  # never clicked Play - nothing to cancel
+
+    assert alice.sent == []
 
 
 def test_disconnecting_a_waiting_seeker_frees_the_matchmaker(db_path):
@@ -315,8 +447,8 @@ def test_reconnecting_after_the_grace_period_falls_back_to_the_lobby(db_path, mo
 
 
 async def _reconnect_after_grace_expired(db_path):
-    accounts.authenticate(db_path, "alice", "pw")
-    accounts.authenticate(db_path, "bob", "pw")
+    accounts.register(db_path, "alice", "pw")
+    accounts.register(db_path, "bob", "pw")
 
     matchmaker = Matchmaker(db_path=db_path)
     alice = FakeConnection("alice")
@@ -480,6 +612,37 @@ async def _spectator_disconnect_scenario(db_path):
     assert all(entry["type"] != protocol.OPPONENT_DISCONNECTED for entry in bob.sent)
 
     await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_disconnecting_after_game_over_kicks_the_opponent_to_the_lobby_too(db_path):
+    asyncio.run(_disconnect_after_game_over_scenario(db_path))
+
+
+async def _disconnect_after_game_over_scenario(db_path):
+    """Closing the window after the game already ended must behave
+    like clicking "Back to Lobby" (see test_leave_room_after_game_over_
+    frees_the_connection_for_the_lobby) - not like a mid-game
+    disconnect, which would otherwise start a pointless reconnect-grace
+    countdown for a game that's already decided."""
+    matchmaker = Matchmaker(db_path=db_path)
+    alice, bob = FakeConnection("alice"), FakeConnection("bob")
+    await matchmaker.on_connect(alice, "alice", 1200)
+    await matchmaker.on_connect(bob, "bob", 1200)
+    await _seek(matchmaker, alice)
+    await _seek(matchmaker, bob)
+    room = matchmaker._rooms[alice]
+    room._engine.resign()
+
+    await matchmaker.on_disconnect(alice)
+
+    assert alice not in matchmaker._rooms
+    assert bob not in matchmaker._rooms
+    assert _last_type(bob) == protocol.LEFT_ROOM
+    assert "alice" not in matchmaker._disconnected_players  # no reconnect-grace bookkeeping for a finished game
+    await asyncio.sleep(0)
+    assert room._tick_task.cancelled()
+
     await matchmaker.on_disconnect(bob)
 
 

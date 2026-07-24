@@ -35,6 +35,7 @@ PLAY_BUTTON_TEXT_THICKNESS = 2
 CREATE_ROOM_BUTTON_TEXT = "CREATE ROOM"
 JOIN_ROOM_BUTTON_TEXT = "JOIN ROOM"
 CANCEL_BUTTON_TEXT = "CANCEL"
+BACK_BUTTON_TEXT = "BACK"
 LOBBY_BUTTON_GAP_Y = 16  # vertical gap between each stacked lobby button
 
 TEXT_ENTRY_BOX_WIDTH = 360
@@ -65,6 +66,21 @@ TOP_BANNER_ACCENT_COLOR_BGRA = (0, 255, 255, 255)
 TOP_BANNER_FONT_SIZE = 0.65
 TOP_BANNER_TEXT_THICKNESS = 2
 TOP_BANNER_PADDING_X = 16
+
+# Resign button - lives in a reserved strip at the banner's left edge
+# (a fixed rect, not measured from any text) so its position never
+# depends on username/rating length, and "You: ..." always starts
+# right after it - see _draw_top_banner's left_text_x.
+RESIGN_BUTTON_TEXT = "Resign"
+RESIGN_BUTTON_WIDTH = 80
+RESIGN_BUTTON_HEIGHT = 28
+RESIGN_BUTTON_Y = (TOP_BANNER_HEIGHT - RESIGN_BUTTON_HEIGHT) // 2
+RESIGN_BUTTON_COLOR_BGRA = (40, 40, 150, 255)  # a muted red, distinct from every other (neutral gray) button - this one forfeits
+RESIGN_BUTTON_BORDER_COLOR_BGRA = (255, 255, 255, 255)
+RESIGN_BUTTON_BORDER_THICKNESS = 1
+RESIGN_BUTTON_FONT_SIZE = 0.5
+RESIGN_BUTTON_TEXT_THICKNESS = 1
+_RESIGN_RESERVED_WIDTH = TOP_BANNER_PADDING_X + RESIGN_BUTTON_WIDTH + 12  # reserved even when not shown, so "You: ..." never jumps position
 
 _BOARD_WIDTH_CELLS = len(STARTING_POSITION[0])
 _BOARD_HEIGHT_CELLS = len(STARTING_POSITION)
@@ -183,6 +199,23 @@ def room_pending_screen(width: int, height: int, room_id: Optional[str], rating:
     return canvas
 
 
+def waiting_screen(width: int, height: int, rating: Optional[int]) -> Img:
+    """Shown after clicking Play, while Matchmaker._start_seeking's
+    ELO-ranged queue looks for an opponent - the "Play" counterpart to
+    room_pending_screen, with a Back button (see CancelSeekMessage) so
+    the player isn't stuck watching this until either a match or the
+    matchmaking timeout. Reuses room_pending_cancel_button_rect's
+    position - both screens are just a message plus one centered
+    secondary-action button below it."""
+    canvas = Img()
+    canvas.img = np.full((height, width, 4), _BACKGROUND_COLOR_BGRA, dtype=np.uint8)
+    canvas.put_text(WAITING_TEXT, 40, height // 2 - 20, 0.7, _TEXT_COLOR_BGRA, 1)
+    if rating is not None:
+        canvas.put_text(f"Rating: {rating}", 40, height // 2 + 20, 0.6, _TEXT_COLOR_BGRA, 1)
+    _draw_button(canvas, *room_pending_cancel_button_rect(width, height), BACK_BUTTON_TEXT)
+    return canvas
+
+
 def text_entry_box_rect(width: int, height: int) -> Tuple[int, int, int, int]:
     return (
         width // 2 - TEXT_ENTRY_BOX_WIDTH // 2,
@@ -225,17 +258,29 @@ def text_entry_screen(width: int, height: int, title: str, value: str) -> Img:
     return canvas
 
 
+def resign_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    """A fixed rect in the top banner's left strip - width/height are
+    unused (kept only so this matches every other *_button_rect
+    function's (screen_width, screen_height) signature that
+    client/input_controller.py's decide_message calls it with)."""
+    return (TOP_BANNER_PADDING_X, RESIGN_BUTTON_Y, RESIGN_BUTTON_WIDTH, RESIGN_BUTTON_HEIGHT)
+
+
 def _draw_top_banner(
     canvas: Img, width: int,
     white_player: PlayerInfo, black_player: PlayerInfo,
     viewer_color: Optional[str], room_id: Optional[str] = None,
+    show_resign_button: bool = False,
 ) -> None:
     """Draws the identity bar at canvas(0, 0) - "You: name (rating)" on
     the left for a player (viewer_color set), or "White: ..."/"Black:
     ..." for a spectator (viewer_color is None, since they play no
-    side) - plus the room id centered, if this game came from one.
-    Caller must have already sized canvas with at least
-    TOP_BANNER_HEIGHT of room at the top."""
+    side) - plus the room id centered, if this game came from one, and
+    a Resign button in the reserved left strip while a real player's
+    game is still live (show_resign_button - never true for a
+    spectator or once game_over, see render_frame). Caller must have
+    already sized canvas with at least TOP_BANNER_HEIGHT of room at
+    the top."""
     canvas.draw_rect(0, 0, width, TOP_BANNER_HEIGHT, TOP_BANNER_COLOR_BGRA, -1)
     text_y = TOP_BANNER_HEIGHT // 2 + 6
 
@@ -243,14 +288,28 @@ def _draw_top_banner(
         left_text = f"White: {white_player.username} ({white_player.rating})"
         right_text = f"Black: {black_player.username} ({black_player.rating})"
         left_color = _TEXT_COLOR_BGRA
+        left_text_x = TOP_BANNER_PADDING_X
     else:
         your_player = white_player if viewer_color == WHITE else black_player
         opponent_player = black_player if viewer_color == WHITE else white_player
         left_text = f"You: {your_player.username} ({your_player.rating})"
         right_text = f"{opponent_player.username} ({opponent_player.rating})"
         left_color = TOP_BANNER_ACCENT_COLOR_BGRA
+        # Reserved even when show_resign_button is False (e.g. after
+        # game_over) so this text doesn't visibly jump left the moment
+        # the button disappears.
+        left_text_x = _RESIGN_RESERVED_WIDTH
+        if show_resign_button:
+            button_x, button_y, button_w, button_h = resign_button_rect(width, TOP_BANNER_HEIGHT)
+            canvas.draw_rect(button_x, button_y, button_w, button_h, RESIGN_BUTTON_COLOR_BGRA, -1)
+            canvas.draw_rect(button_x, button_y, button_w, button_h, RESIGN_BUTTON_BORDER_COLOR_BGRA, RESIGN_BUTTON_BORDER_THICKNESS)
+            resign_text_w, resign_text_h = canvas.text_size(RESIGN_BUTTON_TEXT, RESIGN_BUTTON_FONT_SIZE, RESIGN_BUTTON_TEXT_THICKNESS)
+            canvas.put_text(
+                RESIGN_BUTTON_TEXT, button_x + button_w // 2 - resign_text_w // 2, button_y + button_h // 2 + resign_text_h // 2,
+                RESIGN_BUTTON_FONT_SIZE, _TEXT_COLOR_BGRA, RESIGN_BUTTON_TEXT_THICKNESS,
+            )
 
-    canvas.put_text(left_text, TOP_BANNER_PADDING_X, text_y, TOP_BANNER_FONT_SIZE, left_color, TOP_BANNER_TEXT_THICKNESS)
+    canvas.put_text(left_text, left_text_x, text_y, TOP_BANNER_FONT_SIZE, left_color, TOP_BANNER_TEXT_THICKNESS)
     right_text_w, _ = canvas.text_size(right_text, TOP_BANNER_FONT_SIZE, TOP_BANNER_TEXT_THICKNESS)
     canvas.put_text(
         right_text, width - right_text_w - TOP_BANNER_PADDING_X, text_y,
@@ -313,6 +372,8 @@ def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: R
         return text_screen(width, height, text)
     if state.phase == "room_waiting":
         return room_pending_screen(width, height, state.room_id, state.rating)
+    if state.phase == "waiting":
+        return waiting_screen(width, height, state.rating)
     if state.phase == "disconnected":
         return text_screen(width, height, DISCONNECTED_TEXT)
     if starting_remaining_s is not None and starting_remaining_s > 0:
@@ -320,7 +381,7 @@ def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: R
     if disconnect_remaining_s is not None and disconnect_remaining_s > 0:
         return text_screen(width, height, disconnect_text(disconnect_remaining_s))
     if state.phase not in ("matched", "spectating") or state.view_state is None:
-        return text_screen(width, height, WAITING_TEXT if state.phase == "waiting" else LOGGING_IN_TEXT)
+        return text_screen(width, height, LOGGING_IN_TEXT)
 
     game_over_progress = 1.0
     if state.game_over_started_at is not None:
@@ -332,6 +393,7 @@ def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: R
         legal_destinations=state.legal_destinations,
         invalid_target=state.invalid_target,
         game_over_progress=game_over_progress,
+        show_back_to_lobby_button=True,  # this is the networked client - unlike image_view.py's offline game, there's always a lobby to go back to
     )
 
     board_height_px, board_width_px = board_canvas.img.shape[:2]
@@ -339,5 +401,8 @@ def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: R
     canvas.img = np.full((board_height_px + TOP_BANNER_HEIGHT, board_width_px, 4), _BACKGROUND_COLOR_BGRA, dtype=np.uint8)
     board_canvas.draw_on(canvas, 0, TOP_BANNER_HEIGHT)
     if state.white_player is not None and state.black_player is not None:
-        _draw_top_banner(canvas, board_width_px, state.white_player, state.black_player, state.color, state.room_id)
+        _draw_top_banner(
+            canvas, board_width_px, state.white_player, state.black_player, state.color, state.room_id,
+            show_resign_button=state.color is not None and not state.view_state.game_over,
+        )
     return canvas

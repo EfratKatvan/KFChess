@@ -12,28 +12,41 @@ def db_path(tmp_path):
     return path
 
 
-def test_first_login_registers_the_username_at_the_starting_rating(db_path):
-    result = accounts.authenticate(db_path, "efrat", "hunter2")
+def test_register_creates_the_username_at_the_starting_rating(db_path):
+    result = accounts.register(db_path, "efrat", "hunter2")
     assert result.success is True
     assert result.rating == accounts.STARTING_RATING
 
 
-def test_second_login_with_the_same_password_succeeds(db_path):
-    accounts.authenticate(db_path, "efrat", "hunter2")
-    result = accounts.authenticate(db_path, "efrat", "hunter2")
+def test_register_fails_if_the_username_is_already_taken(db_path):
+    accounts.register(db_path, "efrat", "hunter2")
+    result = accounts.register(db_path, "efrat", "some-other-password")
+    assert result.success is False
+    assert result.reason is not None
+
+
+def test_login_fails_for_an_unknown_username(db_path):
+    result = accounts.login(db_path, "nobody", "hunter2")
+    assert result.success is False
+    assert result.reason is not None
+
+
+def test_login_with_the_right_password_succeeds(db_path):
+    accounts.register(db_path, "efrat", "hunter2")
+    result = accounts.login(db_path, "efrat", "hunter2")
     assert result.success is True
     assert result.rating == accounts.STARTING_RATING
 
 
-def test_second_login_with_a_different_password_fails(db_path):
-    accounts.authenticate(db_path, "efrat", "hunter2")
-    result = accounts.authenticate(db_path, "efrat", "wrong-password")
+def test_login_with_the_wrong_password_fails(db_path):
+    accounts.register(db_path, "efrat", "hunter2")
+    result = accounts.login(db_path, "efrat", "wrong-password")
     assert result.success is False
     assert result.reason is not None
 
 
 def test_password_is_not_stored_in_plain_text(db_path):
-    accounts.authenticate(db_path, "efrat", "hunter2")
+    accounts.register(db_path, "efrat", "hunter2")
     with sqlite3.connect(db_path) as connection:
         stored = connection.execute("SELECT password_hash FROM users WHERE username = ?", ("efrat",)).fetchone()[0]
     assert stored != "hunter2"
@@ -44,7 +57,7 @@ def test_get_rating_returns_none_for_an_unknown_username(db_path):
 
 
 def test_get_rating_returns_the_stored_rating(db_path):
-    accounts.authenticate(db_path, "efrat", "hunter2")
+    accounts.register(db_path, "efrat", "hunter2")
     assert accounts.get_rating(db_path, "efrat") == accounts.STARTING_RATING
 
 
@@ -60,10 +73,10 @@ def test_expected_score_favors_the_higher_rated_player():
 def test_beating_a_much_higher_rated_opponent_gains_more_rating_than_beating_a_similar_one(db_path):
     """The user's own example: 1200 beating 1600 should gain more than
     1200 beating 1250."""
-    accounts.authenticate(db_path, "underdog_a", "pw")
-    accounts.authenticate(db_path, "underdog_b", "pw")
-    accounts.authenticate(db_path, "favorite", "pw")
-    accounts.authenticate(db_path, "near_peer", "pw")
+    accounts.register(db_path, "underdog_a", "pw")
+    accounts.register(db_path, "underdog_b", "pw")
+    accounts.register(db_path, "favorite", "pw")
+    accounts.register(db_path, "near_peer", "pw")
 
     with sqlite3.connect(db_path) as connection:
         connection.execute("UPDATE users SET rating = 1600 WHERE username = 'favorite'")
@@ -78,8 +91,8 @@ def test_beating_a_much_higher_rated_opponent_gains_more_rating_than_beating_a_s
 
 
 def test_update_ratings_after_game_moves_the_loser_down_and_winner_up_for_equal_ratings(db_path):
-    accounts.authenticate(db_path, "alice", "pw")
-    accounts.authenticate(db_path, "bob", "pw")
+    accounts.register(db_path, "alice", "pw")
+    accounts.register(db_path, "bob", "pw")
 
     new_winner, new_loser = accounts.update_ratings_after_game(db_path, winner_username="alice", loser_username="bob")
 

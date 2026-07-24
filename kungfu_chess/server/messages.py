@@ -16,9 +16,27 @@ protocol.py for the raw "type" string constants referenced below."""
 
 @dataclass(frozen=True)
 class LoginMessage:
+    """Only succeeds for an already-registered username (see
+    accounts.login) - a client sends this from the shell's "Login"
+    choice. Same shape as RegisterMessage; the `type` discriminator is
+    what tells the server which rule to apply."""
+
     username: str
     password: str
     type: str = protocol.LOGIN
+
+
+@dataclass(frozen=True)
+class RegisterMessage:
+    """The shell's "Register" choice - only succeeds for a username
+    that doesn't exist yet (see accounts.register). Reuses
+    LoginOkMessage/LoginFailedMessage for the response, same as
+    LoginMessage does; only the request needs its own type, so the
+    server knows not to fall back to an existing account."""
+
+    username: str
+    password: str
+    type: str = protocol.REGISTER
 
 
 @dataclass(frozen=True)
@@ -44,6 +62,23 @@ class SeekGameMessage:
 @dataclass(frozen=True)
 class WaitingForOpponentMessage:
     type: str = protocol.WAITING_FOR_OPPONENT
+
+
+@dataclass(frozen=True)
+class CancelSeekMessage:
+    """Sent when the player clicks Back on the "Waiting for
+    opponent..." screen (see Matchmaker._start_seeking) - the Play
+    button's counterpart to CancelRoomMessage."""
+
+    type: str = protocol.CANCEL_SEEK
+
+
+@dataclass(frozen=True)
+class SeekCancelledMessage:
+    """Acknowledges CancelSeekMessage and returns the client to the
+    lobby - mirrors RoomCancelledMessage."""
+
+    type: str = protocol.SEEK_CANCELLED
 
 
 @dataclass(frozen=True)
@@ -99,6 +134,16 @@ class RestartMessage:
 
 
 @dataclass(frozen=True)
+class ResignMessage:
+    """Sent when the player clicks Resign during a live match - forfeits
+    immediately in the opponent's favor (see GameRoom.handle_message's
+    resign handler), the same ELO/game-over path an auto-resign after a
+    disconnect grace period already takes."""
+
+    type: str = protocol.RESIGN
+
+
+@dataclass(frozen=True)
 class OpponentDisconnectedMessage:
     """Sent once to the still-connected player - grace_seconds is how
     long the opponent has to reconnect (same username, see
@@ -113,6 +158,23 @@ class OpponentDisconnectedMessage:
 @dataclass(frozen=True)
 class OpponentReconnectedMessage:
     type: str = protocol.OPPONENT_RECONNECTED
+
+
+@dataclass(frozen=True)
+class LeaveRoomMessage:
+    """Sent when the player clicks "Back to Lobby" on the game-over
+    overlay - only meaningful once the game has actually ended (see
+    Matchmaker._leave_room); a no-op if it somehow arrives mid-game."""
+
+    type: str = protocol.LEAVE_ROOM
+
+
+@dataclass(frozen=True)
+class LeftRoomMessage:
+    """Acknowledges LeaveRoomMessage and returns the client to the
+    lobby - mirrors RoomCancelledMessage/SeekCancelledMessage."""
+
+    type: str = protocol.LEFT_ROOM
 
 
 @dataclass(frozen=True)

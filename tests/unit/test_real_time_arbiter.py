@@ -164,6 +164,24 @@ def test_pawn_reaching_last_row_is_promoted_to_queen():
     assert board.piece_at(Position(0, 0)) is pawn
 
 
+def test_pawn_capturing_the_king_on_the_last_row_ends_the_game_without_promoting():
+    """The game-over check must run before promotion, not after - a
+    pawn landing on the last row and capturing the king in the same
+    move should end the game as a pawn, not linger as a queen on a
+    board no one will ever see move again."""
+    board = Board(width=2, height=2)
+    pawn = add(board, "wP", WHITE, PAWN, 1, 0)
+    add(board, "bK", BLACK, KING, 0, 0)
+    arbiter = RealTimeArbiter(board)
+    arbiter.start_motion(pawn, Position(0, 0))
+
+    king_captured = arbiter.advance_time(1000)
+
+    assert king_captured is True
+    assert pawn.kind == PAWN
+    assert board.piece_at(Position(0, 0)) is pawn
+
+
 def test_is_destination_reserved_true_while_a_motion_targets_it():
     board = Board(width=3, height=1)
     rook = add(board, "wR", WHITE, ROOK, 0, 0)

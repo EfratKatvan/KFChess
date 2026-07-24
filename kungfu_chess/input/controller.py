@@ -25,6 +25,10 @@ class Controller:
         self.selected_pos: Optional[Position] = None
         self.invalid_target: Optional[Position] = None
 
+    @property
+    def owner_color(self) -> Optional[str]:
+        return self._owner_color
+
     def handle_click(self, x: int, y: int) -> None:
         cell = self._mapper.to_cell(x, y)
         if cell is None:

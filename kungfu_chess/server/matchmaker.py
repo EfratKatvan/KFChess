@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Awaitable, Callable, Dict, Optional, Tuple, Type
 
 from websockets.asyncio.server import ServerConnection
 
@@ -12,14 +12,18 @@ from kungfu_chess.server.accounts import DEFAULT_DB_PATH
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
+    CancelSeekMessage,
     CreateRoomFailedMessage,
     CreateRoomMessage,
     JoinRoomFailedMessage,
     JoinRoomMessage,
+    LeaveRoomMessage,
+    LeftRoomMessage,
     LoginFailedMessage,
     NoOpponentFoundMessage,
     RoomCancelledMessage,
     RoomCreatedMessage,
+    SeekCancelledMessage,
     SeekGameMessage,
     SpectatingMessage,
     WaitingForOpponentMessage,
@@ -75,6 +79,35 @@ class Matchmaker:
         self._room_games: Dict[str, GameRoom] = {}  # room_id -> its started GameRoom
         self._pending_room_creators: Dict[ServerConnection, str] = {}  # ws -> room_id, only while no opponent has joined yet
 
+        # Dispatch table for messages from a connection that isn't in a
+        # GameRoom yet (still in the lobby) - one handler per message
+        # kind, in place of a growing if/elif isinstance chain.
+        self._lobby_handlers: Dict[Type[object], Callable[[ServerConnection, object], Awaitable[None]]] = {
+            SeekGameMessage: self._start_seeking,
+            CancelSeekMessage: self._cancel_seeking,
+            CreateRoomMessage: self._create_room,
+            JoinRoomMessage: self._join_room,
+            CancelRoomMessage: self._cancel_room,
+        }
+
+        # Checked before room-routing in on_message, since a connection
+        # still in self._rooms would otherwise always go straight to
+        # room.handle_message and never reach here - the "Back to
+        # Lobby" button on the game-over overlay is the only message a
+        # room-bound connection can send that isn't gameplay.
+        self._room_exit_handlers: Dict[Type[object], Callable[[ServerConnection, object], Awaitable[None]]] = {
+            LeaveRoomMessage: self._leave_room,
+        }
+
+    async def _safe_send(self, ws: ServerConnection, message: object) -> None:
+        try:
+            await ws.send(serialize_message(message))
+        except Exception as error:
+            # the connection this was meant for may itself be mid-disconnect
+            # (e.g. both players of a finished game leaving around the same
+            # time) - never let that take down the caller's own cleanup.
+            logger.debug("send failed on a closed/broken socket: %s", error)
+
     async def on_connect(self, ws: ServerConnection, username: str, rating: int) -> bool:
         """Returns False (and sends LoginFailedMessage itself) if this
         username already has a live connection elsewhere - the caller
@@ -103,22 +136,45 @@ class Matchmaker:
         room = self._rooms.get(ws)
         try:
             message = deserialize_message(raw)
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError) as error:
+            logger.warning("dropping malformed message from %s: %s", self._username_of(ws), error)
             return  # malformed/unrecognized message from a client - ignore, don't crash the room
         if room is not None:
+            exit_handler = self._room_exit_handlers.get(type(message))
+            if exit_handler is not None:
+                await exit_handler(ws, message)
+                return
             color = room.color_of(ws)
             if color is not None:
                 await room.handle_message(color, message)
-        elif isinstance(message, SeekGameMessage):
-            await self._start_seeking(ws)
-        elif isinstance(message, CreateRoomMessage):
-            await self._create_room(ws, message.room_id)
-        elif isinstance(message, JoinRoomMessage):
-            await self._join_room(ws, message.room_id)
-        elif isinstance(message, CancelRoomMessage):
-            await self._cancel_room(ws)
+            return
+        handler = self._lobby_handlers.get(type(message))
+        if handler is not None:
+            await handler(ws, message)
 
-    async def _start_seeking(self, ws: ServerConnection) -> None:
+    async def _leave_room(self, ws: ServerConnection, message: LeaveRoomMessage) -> None:
+        """The "Back to Lobby" button on the game-over overlay - only
+        takes effect once the game has actually ended; a stray/raced
+        click before that is just ignored, since gameplay messages are
+        still routed to the room as normal. Room registry/rating
+        cleanup already happened at game-over time (see GameRoom's
+        on_game_over callback) - this frees the leaving connection to
+        go through self._lobby_handlers again, and - if it was a real
+        player, not a spectator - does the same for their now-partnerless
+        opponent too (see GameRoom.leave, which also stops the room's
+        tick loop for good, so it can never broadcast a stale board to
+        either connection again after they've moved on)."""
+        room = self._rooms.get(ws)
+        if room is None or not room.is_game_over():
+            return
+        also_leaving = room.leave(ws)
+        del self._rooms[ws]
+        await self._safe_send(ws, LeftRoomMessage())
+        for other_ws in also_leaving:
+            self._rooms.pop(other_ws, None)
+            await self._safe_send(other_ws, LeftRoomMessage())
+
+    async def _start_seeking(self, ws: ServerConnection, message: SeekGameMessage) -> None:
         if ws in self._waiting:
             return  # already seeking - a second Play click while waiting is a no-op
         username = self._username_of(ws)
@@ -145,6 +201,15 @@ class Matchmaker:
         timeout_task = asyncio.create_task(self._timeout_waiting(ws))
         self._waiting[ws] = _Seeker(ws=ws, username=username, rating=rating, timeout_task=timeout_task)
 
+    async def _cancel_seeking(self, ws: ServerConnection, message: CancelSeekMessage) -> None:
+        """The Back button on the "Waiting for opponent..." screen - the
+        Play-button counterpart to _cancel_room."""
+        seeker = self._waiting.pop(ws, None)
+        if seeker is None:
+            return  # already matched or already timed out - nothing left to cancel
+        seeker.timeout_task.cancel()
+        await ws.send(serialize_message(SeekCancelledMessage()))
+
     def _find_opponent_within_elo_range(self, rating: int) -> Optional[_Seeker]:
         for seeker in self._waiting.values():
             if abs(seeker.rating - rating) <= protocol.MATCHMAKING_ELO_RANGE:
@@ -154,12 +219,12 @@ class Matchmaker:
     def _username_of(self, ws: ServerConnection) -> Optional[str]:
         return next((u for u, connection in self._active_connections.items() if connection is ws), None)
 
-    async def _create_room(self, ws: ServerConnection, room_id: str) -> None:
+    async def _create_room(self, ws: ServerConnection, message: CreateRoomMessage) -> None:
         username = self._username_of(ws)
         if username is None:
             return
         try:
-            room = self._room_registry.create(username, room_id)
+            room = self._room_registry.create(username, message.room_id)
         except RoomError as error:
             await ws.send(serialize_message(CreateRoomFailedMessage(reason=str(error))))
             return
@@ -167,12 +232,12 @@ class Matchmaker:
         logger.info("room %s created by %s", room.room_id, username)
         await ws.send(serialize_message(RoomCreatedMessage(room_id=room.room_id)))
 
-    async def _join_room(self, ws: ServerConnection, room_id: str) -> None:
+    async def _join_room(self, ws: ServerConnection, message: JoinRoomMessage) -> None:
         username = self._username_of(ws)
         if username is None:
             return
         try:
-            room = self._room_registry.join(room_id, username)
+            room = self._room_registry.join(message.room_id, username)
         except RoomError as error:
             await ws.send(serialize_message(JoinRoomFailedMessage(reason=str(error))))
             return
@@ -208,14 +273,16 @@ class Matchmaker:
             black_rating=accounts.get_rating(self._db_path, room.opponent_username),
         )))
 
-    async def _cancel_room(self, ws: ServerConnection) -> None:
+    async def _cancel_room(self, ws: ServerConnection, message: CancelRoomMessage) -> None:
         username = self._username_of(ws)
         if username is None:
             return
         try:
             self._room_registry.cancel(username)
-        except RoomError:
-            return  # race: an opponent just joined - MatchFoundMessage is already on its way instead
+        except RoomError as error:
+            # race: an opponent just joined - MatchFoundMessage is already on its way instead
+            logger.info("cancel room race for %s: %s", username, error)
+            return
         self._pending_room_creators.pop(ws, None)
         logger.info("room cancelled by %s", username)
         await ws.send(serialize_message(RoomCancelledMessage()))
@@ -253,6 +320,17 @@ class Matchmaker:
             # reserved for the two real players.
             room.remove_spectator(ws)
             logger.info("%s left as a spectator", username)
+            return
+
+        if room.is_game_over():
+            # The game already ended before this connection dropped -
+            # equivalent to closing the window instead of clicking
+            # "Back to Lobby" (see _leave_room). No reconnect/auto-resign
+            # grace period applies to a game that's already decided;
+            # the opponent has no one left to rematch with either.
+            for other_ws in room.leave(ws):
+                self._rooms.pop(other_ws, None)
+                await self._safe_send(other_ws, LeftRoomMessage())
             return
 
         room_username = room.username_of(color)

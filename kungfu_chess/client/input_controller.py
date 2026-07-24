@@ -9,9 +9,12 @@ from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.server import protocol
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
+    CancelSeekMessage,
     CreateRoomMessage,
     JoinRoomMessage,
     JumpMessage,
+    LeaveRoomMessage,
+    ResignMessage,
     RestartMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
@@ -23,10 +26,11 @@ from kungfu_chess.view.network_presentation import (
     create_room_button_rect,
     join_room_button_rect,
     play_button_rect,
+    resign_button_rect,
     room_pending_cancel_button_rect,
     text_entry_cancel_button_rect,
 )
-from kungfu_chess.view.renderer import game_over_button_rect
+from kungfu_chess.view.renderer import game_over_back_to_lobby_button_rect, game_over_button_rect
 
 """The client's Application layer: turns a raw click or keystroke into
 an outgoing protocol message (or nothing). Knows the game's
@@ -82,6 +86,10 @@ def decide_message(
         if is_left_click and _point_in_rect(x, y, room_pending_cancel_button_rect(screen_width, screen_height)):
             return CancelRoomMessage()
         return None
+    if state.phase == "waiting":
+        if is_left_click and _point_in_rect(x, y, room_pending_cancel_button_rect(screen_width, screen_height)):
+            return CancelSeekMessage()
+        return None
     if state.phase != "matched" or state.view_state is None:
         return None
     if state.matched_at is not None and time.perf_counter() - state.matched_at < STARTING_DURATION_S:
@@ -91,10 +99,18 @@ def decide_message(
 
     if is_left_click:
         view_state = state.view_state
+        # The Resign button lives in the top banner - whole-window
+        # coordinates, unlike the board/game-over-overlay checks below
+        # which subtract TOP_BANNER_HEIGHT first.
+        if not view_state.game_over and _point_in_rect(x, y, resign_button_rect(screen_width, screen_height)):
+            return ResignMessage()
         if view_state.game_over:
             button_rect = game_over_button_rect(view_state.width, view_state.height, cell_size)
             if _point_in_rect(x, y - TOP_BANNER_HEIGHT, button_rect):
                 return RestartMessage()
+            back_to_lobby_rect = game_over_back_to_lobby_button_rect(view_state.width, view_state.height, cell_size)
+            if _point_in_rect(x, y - TOP_BANNER_HEIGHT, back_to_lobby_rect):
+                return LeaveRoomMessage()
             return None
         cell = mapper.to_cell(x, y)
         if cell is not None:
@@ -109,11 +125,11 @@ def decide_message(
 
 
 def apply_key_press(key: int, state: ClientState) -> Tuple[ClientState, Optional[Any]]:
-    """Pure: one raw cv2 key code (as returned by Img.show(), unmasked
-    - the same convention view/image_view.py's own ESC_KEY check
-    already relies on) plus the current state -> (new state, message
-    to send or None). A no-op for every phase except the two text-
-    entry ones, mirroring decide_message's own phase gating."""
+    """Pure: one cv2 key code (as returned by Img.show(), already
+    masked to its low byte there - see its own docstring for why) plus
+    the current state -> (new state, message to send or None). A no-op
+    for every phase except the two text-entry ones, mirroring
+    decide_message's own phase gating."""
     if state.phase not in _TEXT_ENTRY_PHASES:
         return state, None
     if key == image_view.ESC_KEY:

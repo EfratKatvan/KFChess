@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 import time
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from kungfu_chess.input.board_mapper import CELL_SIZE
 from kungfu_chess.input.controller import Controller
 from kungfu_chess.events.observers import MoveLogObserver, ScoreObserver
 from kungfu_chess.view.renderer import Renderer, SIDE_PANEL_WIDTH, game_over_button_rect, side_panel_width_for
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -55,11 +58,12 @@ def _disable_windows_dpi_scaling() -> None:
 
     try:
         ctypes.windll.shcore.SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE)
-    except (AttributeError, OSError):
+    except (AttributeError, OSError) as error:
+        logger.debug("SetProcessDpiAwareness unavailable (%s), falling back to SetProcessDPIAware", error)
         try:
             ctypes.windll.user32.SetProcessDPIAware()
-        except (AttributeError, OSError):
-            pass
+        except (AttributeError, OSError) as fallback_error:
+            logger.debug("SetProcessDPIAware also unavailable (%s) - DPI scaling stays enabled", fallback_error)
 
 
 def _point_in_rect(x: int, y: int, rect: Tuple[int, int, int, int]) -> bool:
@@ -79,7 +83,8 @@ def _screen_resolution_px() -> Tuple[Optional[int], Optional[int]]:
     try:
         user32 = ctypes.windll.user32
         return user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-    except (AttributeError, OSError):
+    except (AttributeError, OSError) as error:
+        logger.debug("could not read screen resolution (%s) - falling back to fixed cell size", error)
         return None, None
 
 

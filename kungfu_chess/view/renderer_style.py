@@ -36,6 +36,13 @@ GAME_OVER_BUTTON_TEXT = "New Game"
 GAME_OVER_BUTTON_FONT_SIZE = 0.7
 GAME_OVER_BUTTON_TEXT_THICKNESS = 2
 
+# --- Game-over "Back to Lobby" button - networked client only (see
+# LeaveRoomMessage), sits to the right of New Game; image_view.py's
+# offline single-process game has no lobby to go back to, so it never
+# passes show_back_to_lobby_button and never draws this one. ---
+GAME_OVER_BUTTON_GAP_X = 16
+GAME_OVER_BACK_TO_LOBBY_BUTTON_TEXT = "Back to Lobby"
+
 # --- Game-over hint line ---
 GAME_OVER_HINT_TEXT = "or press ESC to quit"
 GAME_OVER_HINT_FONT_SIZE = 0.55

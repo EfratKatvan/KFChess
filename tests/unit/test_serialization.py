@@ -3,11 +3,14 @@ from kungfu_chess.model.piece import WHITE, BLACK, PAWN, ROOK
 from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
+    CancelSeekMessage,
     CreateRoomFailedMessage,
     CreateRoomMessage,
     JoinRoomFailedMessage,
     JoinRoomMessage,
     JumpMessage,
+    LeaveRoomMessage,
+    LeftRoomMessage,
     LoginFailedMessage,
     LoginMessage,
     LoginOkMessage,
@@ -15,9 +18,12 @@ from kungfu_chess.server.messages import (
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    RegisterMessage,
+    ResignMessage,
     RestartMessage,
     RoomCancelledMessage,
     RoomCreatedMessage,
+    SeekCancelledMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
     SpectatingMessage,
@@ -96,6 +102,11 @@ def test_login_message_round_trips_username_and_password():
     assert message_from_wire(message_to_wire(original)) == original
 
 
+def test_register_message_round_trips_username_and_password():
+    original = RegisterMessage(username="efrat", password="hunter2")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
 def test_login_ok_message_round_trips_the_rating():
     original = LoginOkMessage(rating=1216)
     assert message_from_wire(message_to_wire(original)) == original
@@ -116,6 +127,14 @@ def test_waiting_for_opponent_message_round_trips():
 
 def test_no_opponent_found_message_round_trips():
     assert message_from_wire(message_to_wire(NoOpponentFoundMessage())) == NoOpponentFoundMessage()
+
+
+def test_cancel_seek_message_round_trips():
+    assert message_from_wire(message_to_wire(CancelSeekMessage())) == CancelSeekMessage()
+
+
+def test_seek_cancelled_message_round_trips():
+    assert message_from_wire(message_to_wire(SeekCancelledMessage())) == SeekCancelledMessage()
 
 
 def test_match_found_message_round_trips_color_and_both_players_identity():
@@ -194,6 +213,10 @@ def test_restart_message_round_trips():
     assert message_from_wire(message_to_wire(RestartMessage())) == RestartMessage()
 
 
+def test_resign_message_round_trips():
+    assert message_from_wire(message_to_wire(ResignMessage())) == ResignMessage()
+
+
 def test_opponent_disconnected_message_round_trips_the_grace_seconds():
     original = OpponentDisconnectedMessage(grace_seconds=20)
     assert message_from_wire(message_to_wire(original)) == original
@@ -201,6 +224,14 @@ def test_opponent_disconnected_message_round_trips_the_grace_seconds():
 
 def test_opponent_reconnected_message_round_trips():
     assert message_from_wire(message_to_wire(OpponentReconnectedMessage())) == OpponentReconnectedMessage()
+
+
+def test_leave_room_message_round_trips():
+    assert message_from_wire(message_to_wire(LeaveRoomMessage())) == LeaveRoomMessage()
+
+
+def test_left_room_message_round_trips():
+    assert message_from_wire(message_to_wire(LeftRoomMessage())) == LeftRoomMessage()
 
 
 def test_state_message_round_trips_board_selection_and_highlights():

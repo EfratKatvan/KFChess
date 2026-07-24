@@ -3,6 +3,7 @@ envelope shape is defined in exactly one place."""
 
 # Login phase (first thing sent/received on a new connection, before matchmaking)
 LOGIN = "login"
+REGISTER = "register"  # same shape as LOGIN, but only succeeds for a brand-new username - see accounts.register
 LOGIN_OK = "login_ok"
 LOGIN_FAILED = "login_failed"
 
@@ -11,16 +12,24 @@ SEEK_GAME = "seek_game"
 WAITING_FOR_OPPONENT = "waiting_for_opponent"
 NO_OPPONENT_FOUND = "no_opponent_found"
 MATCH_FOUND = "match_found"
+CANCEL_SEEK = "cancel_seek"  # the Play button's counterpart to CANCEL_ROOM - Back while waiting for an ELO match
+SEEK_CANCELLED = "seek_cancelled"
 
 # In-game phase (client -> server)
 SELECT_OR_MOVE = "select_or_move"
 JUMP = "jump"
 RESTART = "restart"
+RESIGN = "resign"  # forfeits the current game to the opponent on demand - see GameRoom's resign handling
 
 # In-game phase (server -> client)
 STATE = "state"
 OPPONENT_DISCONNECTED = "opponent_disconnected"
 OPPONENT_RECONNECTED = "opponent_reconnected"
+
+# Post-game-over (client -> server / server -> client) - the "Back to
+# Lobby" button, only valid once the game has actually ended
+LEAVE_ROOM = "leave_room"
+LEFT_ROOM = "left_room"
 
 # Room phase (client -> server) - the "Room" button's Create/Join/Cancel dialog
 CREATE_ROOM = "create_room"

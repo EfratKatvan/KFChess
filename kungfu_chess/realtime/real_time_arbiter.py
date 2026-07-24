@@ -1,6 +1,7 @@
 from __future__ import annotations
 from typing import List, Optional
 
+from kungfu_chess.events.bus import Bus
 from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.model.game_state import GameObserver, PieceCapturedEvent
 from kungfu_chess.model.piece import PieceRepresentation, IDLE, MOVING, CAPTURED
@@ -64,7 +65,7 @@ class RealTimeArbiter:
         self._motions: List[Motion] = []
         self._jumps: List[Jump] = []
         self._cooldowns: List[Cooldown] = []
-        self._observers: List[GameObserver] = []
+        self._bus = Bus()
         self._win_condition = win_condition if win_condition is not None else KingCaptureWinCondition()
         self._promotion_rule = promotion_rule if promotion_rule is not None else LastRankPromotion()
 
@@ -72,7 +73,7 @@ class RealTimeArbiter:
         """Registers something that wants to react to a capture as it
         resolves - see GameEngine.add_observer, the single public entry
         point callers actually use (it forwards here too)."""
-        self._observers.append(observer)
+        self._bus.subscribe(PieceCapturedEvent, observer.on_piece_captured)
 
     @property
     def motions(self) -> List[Motion]:
@@ -243,15 +244,23 @@ class RealTimeArbiter:
         piece.cell = to_pos
         piece.state = IDLE
         self._board.add_piece(piece)
+
+        if self._win_condition.is_game_over(captured):
+            # A king was captured by this same arrival - the game ends
+            # right here, so the piece that did it (e.g. a pawn landing
+            # on the last rank) is left as whatever it already was.
+            # Promoting it first would have shown a queen on the final
+            # game-over board even though nothing further can ever move
+            # it - correct in isolation, just needlessly confusing.
+            return True
+
         self._promotion_rule.promote(piece, self._board.height)
         self._cooldowns.append(Cooldown(to_pos, COOLDOWN_DURATION_MS, kind=MOVE_NEXT_STATE))
-
-        return self._win_condition.is_game_over(captured)
+        return False
 
     def _notify_captured(self, color: str, destroyed_kind: str) -> None:
         event = PieceCapturedEvent(color, destroyed_kind, piece_value(destroyed_kind))
-        for observer in self._observers:
-            observer.on_piece_captured(event)
+        self._bus.publish(event)
 
     def _advance_jumps(self, time_ms: int) -> None:
         new_jumps: List[Jump] = []
