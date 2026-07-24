@@ -18,6 +18,7 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
             """
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
+                salt TEXT NOT NULL,
                 password_hash TEXT NOT NULL,
                 rating INTEGER NOT NULL DEFAULT 1200
             )
@@ -25,20 +26,20 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         )
 
 
-def fetch_user(db_path: str, username: str) -> Optional[Tuple[str, int]]:
-    """(password_hash, rating) for an existing username, or None."""
+def fetch_user(db_path: str, username: str) -> Optional[Tuple[str, str, int]]:
+    """(salt, password_hash, rating) for an existing username, or None."""
     with sqlite3.connect(db_path) as connection:
         row = connection.execute(
-            "SELECT password_hash, rating FROM users WHERE username = ?", (username,)
+            "SELECT salt, password_hash, rating FROM users WHERE username = ?", (username,)
         ).fetchone()
     return row
 
 
-def insert_user(db_path: str, username: str, password_hash: str, rating: int) -> None:
+def insert_user(db_path: str, username: str, salt: str, password_hash: str, rating: int) -> None:
     with sqlite3.connect(db_path) as connection:
         connection.execute(
-            "INSERT INTO users (username, password_hash, rating) VALUES (?, ?, ?)",
-            (username, password_hash, rating),
+            "INSERT INTO users (username, salt, password_hash, rating) VALUES (?, ?, ?, ?)",
+            (username, salt, password_hash, rating),
         )
 
 

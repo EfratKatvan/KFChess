@@ -2,7 +2,9 @@ from kungfu_chess.client.client_state import (
     CAPTURE_EVENT,
     GAME_OVER_EVENT,
     GAME_START_EVENT,
+    INVALID_EVENT,
     MOVE_EVENT,
+    SELECT_EVENT,
     ClientState,
     _game_over_started_at,
     apply_message,
@@ -76,11 +78,16 @@ def test_apply_message_no_opponent_found_carries_forward_the_rating():
     assert state.rating == 1234
 
 
-def test_apply_message_login_failed_sets_the_terminal_phase_and_reason():
-    state = apply_message(LoginFailedMessage(reason="wrong password"), ClientState())
+def test_apply_message_login_failed_returns_to_login_entry_with_the_reason():
+    state = apply_message(
+        LoginFailedMessage(reason="wrong password"),
+        ClientState(login_username_value="efrat", login_password_value="hunter2"),
+    )
 
-    assert state.phase == "login_failed"
+    assert state.phase == "login_entry"
     assert state.login_failure_reason == "wrong password"
+    assert state.login_username_value == "efrat"  # kept - no need to retype it
+    assert state.login_password_value == ""  # cleared - never keep a rejected password around
 
 
 def test_apply_message_match_found_sets_phase_color_and_matched_at():
@@ -397,3 +404,36 @@ def test_events_since_returns_empty_when_nothing_changed():
     state = ClientState(view_state=board)
 
     assert events_since(state, state) == frozenset()
+
+
+def test_events_since_detects_a_new_selection():
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    old_state = ClientState(view_state=board, selected_pos=None)
+    new_state = ClientState(view_state=board, selected_pos=Position(6, 4))
+
+    assert SELECT_EVENT in events_since(old_state, new_state)
+
+
+def test_events_since_does_not_refire_select_while_the_same_cell_stays_selected():
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state = ClientState(view_state=board, selected_pos=Position(6, 4))
+
+    assert SELECT_EVENT not in events_since(state, state)
+
+
+def test_events_since_detects_a_new_invalid_target():
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    old_state = ClientState(view_state=board, invalid_target=None)
+    new_state = ClientState(view_state=board, invalid_target=Position(3, 3))
+
+    assert INVALID_EVENT in events_since(old_state, new_state)
+
+
+def test_events_since_skips_select_and_invalid_detection_on_the_first_snapshot():
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    old_state = ClientState(view_state=None)
+    new_state = ClientState(view_state=board, selected_pos=Position(6, 4), invalid_target=Position(3, 3))
+
+    events = events_since(old_state, new_state)
+    assert SELECT_EVENT not in events
+    assert INVALID_EVENT not in events

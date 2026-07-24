@@ -33,17 +33,13 @@ second terminal for the second player):
 python app.py
 ```
 
-You'll be prompted in the terminal:
-
-```
-Login or Register? [l/r]: r
-Username: alice
-Password:
-```
-
-`r` registers a brand-new username (fails if it's taken); `l` logs
-into an existing one (fails if the username doesn't exist yet, or the
-password is wrong). A game window then opens. From the lobby:
+The game window opens right away - no terminal prompts. First pick a
+piece set (Pieces 1/2/3), then log in or register: type a username,
+Tab (or click) to the password field, type a password, and click
+**LOGIN** (fails if the username doesn't exist yet, or the password is
+wrong) or **REGISTER** (fails if the username is already taken). A
+rejected attempt keeps the typed username and clears the password so
+you can just retry, no restart needed. From the lobby:
 
 - **Play** — ELO-ranged matchmaking against whoever else clicks Play
   within ~100 rating points; a **Back** button appears while waiting.
@@ -93,8 +89,8 @@ python -m pytest --cov=kungfu_chess --cov-report=term-missing
 - `kungfu_chess/client/` — the networked client's non-visual layers:
   `client_state.py` (what the client knows), `network_transport.py`
   (the WebSocket connection), `input_controller.py` (clicks/keys ->
-  outgoing messages), `sound.py` (move/capture/game-start/game-over
-  sound effects).
+  outgoing messages), `sound.py` (select/move/capture/invalid/
+  game-start/game-over sound effects).
 - `kungfu_chess/view/` — rendering: `renderer.py` (board/pieces/side
   panels), `network_presentation.py` (every other screen: lobby, room
   dialogs, top banner), `network_client_view.py` (wires it all

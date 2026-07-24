@@ -1,5 +1,12 @@
 from kungfu_chess.client import sound
-from kungfu_chess.client.client_state import CAPTURE_EVENT, GAME_OVER_EVENT, GAME_START_EVENT, MOVE_EVENT
+from kungfu_chess.client.client_state import (
+    CAPTURE_EVENT,
+    GAME_OVER_EVENT,
+    GAME_START_EVENT,
+    INVALID_EVENT,
+    MOVE_EVENT,
+    SELECT_EVENT,
+)
 
 
 class _FakeWinsound:
@@ -29,10 +36,12 @@ def test_play_events_plays_one_call_per_distinct_event(monkeypatch):
     fake = _FakeWinsound()
     monkeypatch.setattr(sound, "winsound", fake)
 
-    sound.play_events(frozenset({MOVE_EVENT, CAPTURE_EVENT, GAME_START_EVENT, GAME_OVER_EVENT}))
+    sound.play_events(frozenset({
+        MOVE_EVENT, CAPTURE_EVENT, GAME_START_EVENT, GAME_OVER_EVENT, SELECT_EVENT, INVALID_EVENT,
+    }))
 
     played_files = {path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1] for path, _ in fake.calls}
-    assert played_files == {"move.wav", "capture.wav", "game_start.wav", "game_over.wav"}
+    assert played_files == {"move.wav", "capture.wav", "game_start.wav", "game_over.wav", "select.wav", "invalid.wav"}
 
 
 def test_play_events_ignores_unknown_event_tags(monkeypatch):

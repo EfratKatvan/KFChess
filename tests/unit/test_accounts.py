@@ -52,6 +52,22 @@ def test_password_is_not_stored_in_plain_text(db_path):
     assert stored != "hunter2"
 
 
+def test_two_accounts_with_the_same_password_get_different_stored_hashes(db_path):
+    """Confirms passwords are actually salted per-user, not just
+    hashed - a shared salt (or none) would mean two accounts with the
+    same password store the exact same hash, which a leaked database
+    would immediately reveal."""
+    accounts.register(db_path, "efrat", "hunter2")
+    accounts.register(db_path, "alice", "hunter2")
+    with sqlite3.connect(db_path) as connection:
+        rows = connection.execute(
+            "SELECT salt, password_hash FROM users WHERE username IN ('efrat', 'alice')"
+        ).fetchall()
+    (salt_a, hash_a), (salt_b, hash_b) = rows
+    assert salt_a != salt_b
+    assert hash_a != hash_b
+
+
 def test_get_rating_returns_none_for_an_unknown_username(db_path):
     assert accounts.get_rating(db_path, "nobody") is None
 

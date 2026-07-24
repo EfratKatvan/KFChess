@@ -5,7 +5,14 @@ import pathlib
 import sys
 from typing import Dict, FrozenSet, Optional
 
-from kungfu_chess.client.client_state import CAPTURE_EVENT, GAME_OVER_EVENT, GAME_START_EVENT, MOVE_EVENT
+from kungfu_chess.client.client_state import (
+    CAPTURE_EVENT,
+    GAME_OVER_EVENT,
+    GAME_START_EVENT,
+    INVALID_EVENT,
+    MOVE_EVENT,
+    SELECT_EVENT,
+)
 
 """Reactive sound effects: turns the event tags client_state.events_since
 computes into short sounds. Windows-only (winsound is stdlib there) - a
@@ -34,6 +41,8 @@ _FILENAME_BY_EVENT: Dict[str, str] = {
     CAPTURE_EVENT: "capture.wav",
     GAME_START_EVENT: "game_start.wav",
     GAME_OVER_EVENT: "game_over.wav",
+    SELECT_EVENT: "select.wav",
+    INVALID_EVENT: "invalid.wav",
 }
 
 if sys.platform == "win32":

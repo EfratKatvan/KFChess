@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import logging
+import secrets
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -10,6 +12,7 @@ from kungfu_chess.server.accounts_db import DEFAULT_DB_PATH
 
 STARTING_RATING = 1200
 ELO_K_FACTOR = 32
+PBKDF2_ITERATIONS = 200_000  # matches OWASP's current minimum recommendation for PBKDF2-HMAC-SHA256
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +33,14 @@ class AuthResult:
     reason: Optional[str] = None
 
 
-def _hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+def _hash_password(password: str, salt: str) -> str:
+    """Salted + stretched (PBKDF2-HMAC-SHA256, 200k iterations) rather
+    than a single plain SHA-256 pass - an unsalted single hash is
+    crackable via a precomputed rainbow table, and fast enough per
+    guess for GPU brute-forcing regardless of the actual password's
+    strength. A random salt per user (see register()) means even two
+    accounts with the same password get different stored hashes."""
+    return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ITERATIONS).hex()
 
 
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
@@ -48,8 +57,12 @@ def login(db_path: str, username: str, password: str) -> AuthResult:
         logger.info("login failed: %s (no such account)", username)
         return AuthResult(success=False, reason="no such account - please register")
 
-    stored_hash, rating = existing
-    if stored_hash != _hash_password(password):
+    salt, stored_hash, rating = existing
+    # Constant-time comparison - a plain != would let an attacker who
+    # can measure response time narrow down the correct hash one byte
+    # at a time (the comparison would return sooner on an early
+    # mismatch than a late one).
+    if not hmac.compare_digest(_hash_password(password, salt), stored_hash):
         logger.info("login failed: %s (wrong password)", username)
         return AuthResult(success=False, reason="wrong password")
     logger.info("login ok: %s", username)
@@ -65,7 +78,8 @@ def register(db_path: str, username: str, password: str) -> AuthResult:
         logger.info("register failed: %s (username already taken)", username)
         return AuthResult(success=False, reason="username already taken")
 
-    accounts_db.insert_user(db_path, username, _hash_password(password), STARTING_RATING)
+    salt = secrets.token_hex(16)
+    accounts_db.insert_user(db_path, username, salt, _hash_password(password, salt), STARTING_RATING)
     logger.info("register ok: %s (new account)", username)
     return AuthResult(success=True, rating=STARTING_RATING)
 

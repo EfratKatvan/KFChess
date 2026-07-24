@@ -9,11 +9,13 @@ from kungfu_chess.view.network_presentation import (
     create_room_button_rect,
     disconnect_text,
     join_room_button_rect,
+    login_entry_screen,
     play_button_rect,
     render_frame,
     room_pending_cancel_button_rect,
     room_pending_screen,
     screen_size,
+    skin_menu_screen,
     starting_text,
     text_entry_screen,
     waiting_screen,
@@ -95,6 +97,72 @@ def test_render_frame_waiting_phase_matches_waiting_screen():
     directly = waiting_screen(width, height, rating=1200)
 
     assert np.array_equal(from_render_frame.img, directly.img)
+
+
+def test_skin_menu_screen_has_the_expected_canvas_size():
+    canvas = skin_menu_screen(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    height_px, width_px = canvas.img.shape[:2]
+    assert (width_px, height_px) == (SCREEN_WIDTH, SCREEN_HEIGHT)
+
+
+def test_render_frame_dispatches_skin_menu_and_login_entry_phases():
+    skin_canvas = render_frame(ClientState(phase="skin_menu"), CELL_SIZE, "pieces3", Renderer())
+    width, height = screen_size(CELL_SIZE)
+    assert np.array_equal(skin_canvas.img, skin_menu_screen(width, height).img)
+
+    login_state = ClientState(phase="login_entry", login_username_value="efrat")
+    login_canvas = render_frame(login_state, CELL_SIZE, "pieces3", Renderer())
+    assert np.array_equal(login_canvas.img, login_entry_screen(width, height, login_state).img)
+
+
+def test_login_entry_screen_has_the_expected_canvas_size():
+    canvas = login_entry_screen(SCREEN_WIDTH, SCREEN_HEIGHT, ClientState(phase="login_entry"))
+
+    height_px, width_px = canvas.img.shape[:2]
+    assert (width_px, height_px) == (SCREEN_WIDTH, SCREEN_HEIGHT)
+
+
+def test_login_entry_screen_looks_different_as_the_typed_values_change():
+    empty = login_entry_screen(SCREEN_WIDTH, SCREEN_HEIGHT, ClientState(phase="login_entry"))
+    typed = login_entry_screen(
+        SCREEN_WIDTH, SCREEN_HEIGHT, ClientState(phase="login_entry", login_username_value="efrat"),
+    )
+
+    assert not np.array_equal(empty.img, typed.img)
+
+
+def test_login_entry_screen_masks_the_password_value():
+    """A password field showing the literal typed characters would be
+    a real privacy problem over someone's shoulder - it must render
+    differently from a username field holding the exact same text."""
+    state = ClientState(phase="login_entry", login_username_value="hunter2", login_active_field="username")
+    username_view = login_entry_screen(SCREEN_WIDTH, SCREEN_HEIGHT, state)
+
+    password_state = ClientState(phase="login_entry", login_password_value="hunter2", login_active_field="password")
+    password_view = login_entry_screen(SCREEN_WIDTH, SCREEN_HEIGHT, password_state)
+
+    assert not np.array_equal(username_view.img, password_view.img)
+
+
+def test_login_entry_screen_highlights_whichever_field_is_active():
+    username_active = login_entry_screen(
+        SCREEN_WIDTH, SCREEN_HEIGHT, ClientState(phase="login_entry", login_active_field="username"),
+    )
+    password_active = login_entry_screen(
+        SCREEN_WIDTH, SCREEN_HEIGHT, ClientState(phase="login_entry", login_active_field="password"),
+    )
+
+    assert not np.array_equal(username_active.img, password_active.img)
+
+
+def test_login_entry_screen_shows_the_failure_reason_when_present():
+    without_error = login_entry_screen(SCREEN_WIDTH, SCREEN_HEIGHT, ClientState(phase="login_entry"))
+    with_error = login_entry_screen(
+        SCREEN_WIDTH, SCREEN_HEIGHT, ClientState(phase="login_entry", login_failure_reason="wrong password"),
+    )
+
+    assert not np.array_equal(without_error.img, with_error.img)
 
 
 def test_text_entry_screen_has_the_expected_canvas_size():

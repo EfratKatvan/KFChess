@@ -50,13 +50,17 @@ class ClientState:
     the main thread can't see a torn mix of an old view_state with a
     newer selected_pos."""
 
-    # connecting -> lobby -> waiting/room_create_entry/room_join_entry ->
-    # room_pending_ack -> room_waiting/matched/spectating, or
-    # login_failed/no_opponent/room_action_failed/disconnected
+    # skin_menu -> login_entry -> connecting -> lobby ->
+    # waiting/room_create_entry/room_join_entry -> room_pending_ack ->
+    # room_waiting/matched/spectating, or back to login_entry (a failed
+    # login/register)/no_opponent/room_action_failed/disconnected
     phase: str = "connecting"
     color: Optional[str] = None  # None while spectating - a spectator plays no side
     rating: Optional[int] = None
     login_failure_reason: Optional[str] = None
+    login_username_value: str = ""  # typed so far on the login_entry screen - kept across a failed attempt, so it needn't be retyped
+    login_password_value: str = ""  # cleared on a failed attempt (see _on_login_failed) - never displayed, only masked
+    login_active_field: str = "username"  # "username" or "password" - which one further keystrokes go to
     white_player: Optional[PlayerInfo] = None
     black_player: Optional[PlayerInfo] = None
     view_state: Optional[BoardViewState] = None
@@ -88,7 +92,14 @@ def _on_login_ok(message: LoginOkMessage, state: ClientState) -> ClientState:
 
 
 def _on_login_failed(message: LoginFailedMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="login_failed", login_failure_reason=message.reason)
+    # Back to the login/register screen, not a dead end - the typed
+    # username is kept (no need to retype it), the password is cleared
+    # (never keep a rejected password sitting in memory/on screen).
+    return ClientState(
+        phase="login_entry",
+        login_failure_reason=message.reason,
+        login_username_value=state.login_username_value,
+    )
 
 
 def _on_waiting_for_opponent(message: WaitingForOpponentMessage, state: ClientState) -> ClientState:
@@ -239,6 +250,8 @@ GAME_START_EVENT = "game_start"
 MOVE_EVENT = "move"
 CAPTURE_EVENT = "capture"
 GAME_OVER_EVENT = "game_over"
+SELECT_EVENT = "select"
+INVALID_EVENT = "invalid"
 
 
 def events_since(old_state: ClientState, new_state: ClientState) -> FrozenSet[str]:
@@ -248,10 +261,11 @@ def events_since(old_state: ClientState, new_state: ClientState) -> FrozenSet[st
     exactly once per event, however often a re-broadcast StateMessage
     repeats the same board.
 
-    Move/capture entries are skipped whenever old_state has no
-    view_state yet (right after match-found or a reconnect) - otherwise
-    the first snapshot of an already-in-progress move log would replay
-    every past move/capture as one burst of beeps."""
+    Move/capture/select/invalid entries are all skipped whenever
+    old_state has no view_state yet (right after match-found or a
+    reconnect) - otherwise the first snapshot of an already-in-progress
+    game would replay its existing move log, selection, or invalid-
+    target as a burst of beeps."""
     events = set()
     if new_state.matched_at is not None and new_state.matched_at != old_state.matched_at:
         events.add(GAME_START_EVENT)
@@ -263,5 +277,9 @@ def events_since(old_state: ClientState, new_state: ClientState) -> FrozenSet[st
                 events.add(CAPTURE_EVENT if entry.is_capture else MOVE_EVENT)
         if new_state.view_state.game_over and not old_state.view_state.game_over:
             events.add(GAME_OVER_EVENT)
+        if new_state.selected_pos is not None and new_state.selected_pos != old_state.selected_pos:
+            events.add(SELECT_EVENT)
+        if new_state.invalid_target is not None and new_state.invalid_target != old_state.invalid_target:
+            events.add(INVALID_EVENT)
 
     return frozenset(events)

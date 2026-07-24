@@ -4,6 +4,11 @@ from kungfu_chess.client.client_state import ClientState
 from kungfu_chess.client.input_controller import (
     CREATE_ROOM_BUTTON_CLICKED,
     JOIN_ROOM_BUTTON_CLICKED,
+    LOGIN_FIELD_PASSWORD_CLICKED,
+    LOGIN_FIELD_USERNAME_CLICKED,
+    SKIN_PIECES1_SELECTED,
+    SKIN_PIECES2_SELECTED,
+    SKIN_PIECES3_SELECTED,
     TEXT_ENTRY_CANCEL_CLICKED,
     apply_key_press,
     decide_message,
@@ -20,6 +25,8 @@ from kungfu_chess.server.messages import (
     JoinRoomMessage,
     JumpMessage,
     LeaveRoomMessage,
+    LoginMessage,
+    RegisterMessage,
     ResignMessage,
     RestartMessage,
     SeekGameMessage,
@@ -30,9 +37,16 @@ from kungfu_chess.view.network_presentation import (
     TOP_BANNER_HEIGHT,
     create_room_button_rect,
     join_room_button_rect,
+    login_button_rect,
+    login_password_field_rect,
+    login_username_field_rect,
     play_button_rect,
+    register_button_rect,
     resign_button_rect,
     room_pending_cancel_button_rect,
+    skin_pieces1_button_rect,
+    skin_pieces2_button_rect,
+    skin_pieces3_button_rect,
     text_entry_cancel_button_rect,
 )
 from kungfu_chess.view.renderer import game_over_back_to_lobby_button_rect, game_over_button_rect
@@ -50,6 +64,138 @@ def _decide(state, is_left_click=False, is_right_click=False, x=0, y=0, mapper=N
         state, is_left_click, is_right_click, x, y,
         mapper or _mapper(), CELL_SIZE, SCREEN_WIDTH, SCREEN_HEIGHT,
     )
+
+
+# ==========================================
+# Skin menu
+# ==========================================
+
+def test_skin_menu_click_on_each_button_returns_its_own_sentinel():
+    state = ClientState(phase="skin_menu")
+    for rect_fn, sentinel in (
+        (skin_pieces1_button_rect, SKIN_PIECES1_SELECTED),
+        (skin_pieces2_button_rect, SKIN_PIECES2_SELECTED),
+        (skin_pieces3_button_rect, SKIN_PIECES3_SELECTED),
+    ):
+        x, y, w, h = rect_fn(SCREEN_WIDTH, SCREEN_HEIGHT)
+        assert _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2) == sentinel
+
+
+def test_skin_menu_click_elsewhere_sends_nothing():
+    state = ClientState(phase="skin_menu")
+
+    assert _decide(state, is_left_click=True, x=0, y=0) is None
+
+
+# ==========================================
+# Login screen
+# ==========================================
+
+def test_login_click_on_username_field_returns_the_focus_sentinel():
+    state = ClientState(phase="login_entry")
+    x, y, w, h = login_username_field_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    assert _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2) == LOGIN_FIELD_USERNAME_CLICKED
+
+
+def test_login_click_on_password_field_returns_the_focus_sentinel():
+    state = ClientState(phase="login_entry")
+    x, y, w, h = login_password_field_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    assert _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2) == LOGIN_FIELD_PASSWORD_CLICKED
+
+
+def test_login_button_click_with_both_fields_filled_sends_login_message():
+    state = ClientState(phase="login_entry", login_username_value="efrat", login_password_value="hunter2")
+    x, y, w, h = login_button_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2)
+
+    assert message == LoginMessage(username="efrat", password="hunter2")
+
+
+def test_register_button_click_with_both_fields_filled_sends_register_message():
+    state = ClientState(phase="login_entry", login_username_value="efrat", login_password_value="hunter2")
+    x, y, w, h = register_button_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    message = _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2)
+
+    assert message == RegisterMessage(username="efrat", password="hunter2")
+
+
+def test_login_button_click_with_an_empty_field_sends_nothing():
+    state = ClientState(phase="login_entry", login_username_value="efrat", login_password_value="")
+    x, y, w, h = login_button_rect(SCREEN_WIDTH, SCREEN_HEIGHT)
+
+    assert _decide(state, is_left_click=True, x=x + w // 2, y=y + h // 2) is None
+
+
+def test_typing_into_the_active_login_field_appends_to_it():
+    state = ClientState(phase="login_entry", login_active_field="username")
+
+    new_state, message = apply_key_press(ord("e"), state)
+
+    assert new_state.login_username_value == "e"
+    assert new_state.login_password_value == ""
+    assert message is None
+
+
+def test_typing_goes_to_the_password_field_once_it_is_active():
+    state = ClientState(phase="login_entry", login_active_field="password", login_username_value="efrat")
+
+    new_state, message = apply_key_press(ord("h"), state)
+
+    assert new_state.login_username_value == "efrat"
+    assert new_state.login_password_value == "h"
+    assert message is None
+
+
+def test_tab_switches_the_active_login_field():
+    state = ClientState(phase="login_entry", login_active_field="username")
+
+    new_state, _ = apply_key_press(9, state)
+    assert new_state.login_active_field == "password"
+
+    new_state_again, _ = apply_key_press(9, new_state)
+    assert new_state_again.login_active_field == "username"
+
+
+def test_backspace_removes_from_the_active_login_field():
+    state = ClientState(phase="login_entry", login_active_field="username", login_username_value="efrat")
+
+    new_state, message = apply_key_press(8, state)
+
+    assert new_state.login_username_value == "efra"
+    assert message is None
+
+
+def test_enter_with_both_login_fields_filled_submits_a_login_message():
+    state = ClientState(phase="login_entry", login_username_value="efrat", login_password_value="hunter2")
+
+    new_state, message = apply_key_press(13, state)
+
+    assert new_state is state  # apply_key_press doesn't transition phase itself - run_client's _dispatch does, on submit
+    assert message == LoginMessage(username="efrat", password="hunter2")
+
+
+def test_enter_with_an_empty_login_field_sends_nothing():
+    state = ClientState(phase="login_entry", login_username_value="efrat", login_password_value="")
+
+    new_state, message = apply_key_press(13, state)
+
+    assert message is None
+
+
+def test_escape_on_the_login_screen_leaves_state_untouched():
+    """Unlike the room text-entry phases, Escape here isn't consumed to
+    cancel back to anything - there's nothing before the login screen,
+    so it must fall through to run_client's own "close the window"."""
+    state = ClientState(phase="login_entry", login_username_value="efrat")
+
+    new_state, message = apply_key_press(image_view.ESC_KEY, state)
+
+    assert new_state is state
+    assert message is None
 
 
 def test_lobby_click_inside_play_button_sends_seek_game():

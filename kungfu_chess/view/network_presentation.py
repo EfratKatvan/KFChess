@@ -23,6 +23,28 @@ WAITING_TEXT = "Waiting for opponent..."
 NO_OPPONENT_TEXT = "No opponent found - try again later"
 DISCONNECTED_TEXT = "Disconnected from server - please restart"
 
+SKIN_MENU_TITLE = "Choose your piece set"
+PIECES1_BUTTON_TEXT = "Pieces 1"
+PIECES2_BUTTON_TEXT = "Pieces 2"
+PIECES3_BUTTON_TEXT = "Pieces 3"
+
+LOGIN_TITLE_TEXT = "Login or Register"
+LOGIN_BUTTON_TEXT = "LOGIN"
+REGISTER_BUTTON_TEXT = "REGISTER"
+LOGIN_USERNAME_LABEL = "Username"
+LOGIN_PASSWORD_LABEL = "Password"
+LOGIN_FIELD_WIDTH = 320
+LOGIN_FIELD_HEIGHT = 44
+LOGIN_FIELD_GAP_Y = 24
+LOGIN_FIELD_BG_COLOR_BGRA = (50, 50, 50, 255)
+LOGIN_FIELD_BORDER_COLOR_BGRA = (255, 255, 255, 255)
+LOGIN_FIELD_ACTIVE_BORDER_COLOR_BGRA = (0, 215, 255, 255)  # same gold as renderer.py's own selection highlight
+LOGIN_FIELD_BORDER_THICKNESS = 2
+LOGIN_MASK_CHAR = "*"  # password field never shows the real characters, only this
+LOGIN_ERROR_COLOR_BGRA = (60, 60, 255, 255)
+LOGIN_BUTTON_WIDTH = 150
+LOGIN_BUTTON_GAP_X = 20
+
 PLAY_BUTTON_TEXT = "PLAY"
 PLAY_BUTTON_WIDTH = 200
 PLAY_BUTTON_HEIGHT = 56
@@ -101,6 +123,125 @@ def text_screen(width: int, height: int, text: str) -> Img:
     canvas = Img()
     canvas.img = np.full((height, width, 4), _BACKGROUND_COLOR_BGRA, dtype=np.uint8)
     canvas.put_text(text, 40, height // 2, 1.0, _TEXT_COLOR_BGRA, 2)
+    return canvas
+
+
+def skin_pieces1_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    return (
+        width // 2 - PLAY_BUTTON_WIDTH // 2,
+        height // 2 - 40,
+        PLAY_BUTTON_WIDTH,
+        PLAY_BUTTON_HEIGHT,
+    )
+
+
+def skin_pieces2_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    """Sits directly below the Pieces 1 button - same stacking as
+    lobby_screen's Play/Create Room/Join Room."""
+    x, y, w, h = skin_pieces1_button_rect(width, height)
+    return (x, y + h + LOBBY_BUTTON_GAP_Y, w, h)
+
+
+def skin_pieces3_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    """Sits directly below the Pieces 2 button."""
+    x, y, w, h = skin_pieces2_button_rect(width, height)
+    return (x, y + h + LOBBY_BUTTON_GAP_Y, w, h)
+
+
+def skin_menu_screen(width: int, height: int) -> Img:
+    """The very first screen shown, before any network connection - a
+    one-time choice of which piece sprite set (kungfu_chess/assets/
+    pieces1|2|3) to render with for the rest of this run. Purely
+    local/client-side; the server never learns or cares which one was
+    picked (see client/input_controller.py's SKIN_*_SELECTED sentinels
+    and view/network_client_view.py, which applies the choice to its
+    own local piece_set variable, not to ClientState)."""
+    canvas = Img()
+    canvas.img = np.full((height, width, 4), _BACKGROUND_COLOR_BGRA, dtype=np.uint8)
+    title_w, _ = canvas.text_size(SKIN_MENU_TITLE, 1.0, 2)
+    canvas.put_text(SKIN_MENU_TITLE, width // 2 - title_w // 2, height // 2 - 100, 1.0, _TEXT_COLOR_BGRA, 2)
+    _draw_button(canvas, *skin_pieces1_button_rect(width, height), PIECES1_BUTTON_TEXT)
+    _draw_button(canvas, *skin_pieces2_button_rect(width, height), PIECES2_BUTTON_TEXT)
+    _draw_button(canvas, *skin_pieces3_button_rect(width, height), PIECES3_BUTTON_TEXT)
+    return canvas
+
+
+def login_username_field_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    return (
+        width // 2 - LOGIN_FIELD_WIDTH // 2,
+        height // 2 - 100,
+        LOGIN_FIELD_WIDTH,
+        LOGIN_FIELD_HEIGHT,
+    )
+
+
+def login_password_field_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    """Sits directly below the username field."""
+    x, y, w, h = login_username_field_rect(width, height)
+    return (x, y + h + LOGIN_FIELD_GAP_Y, w, h)
+
+
+def login_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    """Sits below the password field, to the left of Register - the two
+    share one centered row rather than stacking, since they're
+    alternatives (pick one), not a sequence."""
+    _, password_y, _, password_h = login_password_field_rect(width, height)
+    total_width = LOGIN_BUTTON_WIDTH * 2 + LOGIN_BUTTON_GAP_X
+    return (
+        width // 2 - total_width // 2,
+        password_y + password_h + 30,
+        LOGIN_BUTTON_WIDTH,
+        PLAY_BUTTON_HEIGHT,
+    )
+
+
+def register_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    x, y, w, h = login_button_rect(width, height)
+    return (x + w + LOGIN_BUTTON_GAP_X, y, w, h)
+
+
+def _draw_login_field(canvas: Img, rect: Tuple[int, int, int, int], label: str, value: str, is_active: bool, mask: bool) -> None:
+    x, y, w, h = rect
+    canvas.put_text(label, x, y - 10, 0.5, _TEXT_COLOR_BGRA, 1)
+    canvas.draw_rect(x, y, w, h, LOGIN_FIELD_BG_COLOR_BGRA, -1)
+    border_color = LOGIN_FIELD_ACTIVE_BORDER_COLOR_BGRA if is_active else LOGIN_FIELD_BORDER_COLOR_BGRA
+    canvas.draw_rect(x, y, w, h, border_color, LOGIN_FIELD_BORDER_THICKNESS)
+    displayed = (LOGIN_MASK_CHAR * len(value)) if mask else value
+    if is_active:
+        displayed += TEXT_ENTRY_CURSOR
+    canvas.put_text(displayed, x + 12, y + h // 2 + 8, 0.7, _TEXT_COLOR_BGRA, 2)
+
+
+def login_entry_screen(width: int, height: int, state: ClientState) -> Img:
+    """Shown right after the skin menu (or again after a rejected
+    login/register, with the username kept and the password cleared -
+    see client_state._on_login_failed) - collects a username and a
+    masked password, then either LOGIN or REGISTER builds and sends
+    the matching message (see client/input_controller.py). No network
+    connection exists yet until one of those is actually submitted."""
+    canvas = Img()
+    canvas.img = np.full((height, width, 4), _BACKGROUND_COLOR_BGRA, dtype=np.uint8)
+    title_w, _ = canvas.text_size(LOGIN_TITLE_TEXT, 1.0, 2)
+    canvas.put_text(LOGIN_TITLE_TEXT, width // 2 - title_w // 2, height // 2 - 160, 1.0, _TEXT_COLOR_BGRA, 2)
+
+    _draw_login_field(
+        canvas, login_username_field_rect(width, height), LOGIN_USERNAME_LABEL,
+        state.login_username_value, is_active=state.login_active_field == "username", mask=False,
+    )
+    _draw_login_field(
+        canvas, login_password_field_rect(width, height), LOGIN_PASSWORD_LABEL,
+        state.login_password_value, is_active=state.login_active_field == "password", mask=True,
+    )
+
+    _draw_button(canvas, *login_button_rect(width, height), LOGIN_BUTTON_TEXT)
+    _draw_button(canvas, *register_button_rect(width, height), REGISTER_BUTTON_TEXT)
+
+    if state.login_failure_reason is not None:
+        error_text = f"Login failed: {state.login_failure_reason}"
+        error_w, _ = canvas.text_size(error_text, 0.55, 1)
+        _, button_y, _, button_h = login_button_rect(width, height)
+        canvas.put_text(error_text, width // 2 - error_w // 2, button_y + button_h + 30, 0.55, LOGIN_ERROR_COLOR_BGRA, 1)
+
     return canvas
 
 
@@ -354,8 +495,10 @@ def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: R
         if state.opponent_disconnected_at is not None else None
     )
 
-    if state.phase == "login_failed":
-        return text_screen(width, height, f"Login failed: {state.login_failure_reason}")
+    if state.phase == "skin_menu":
+        return skin_menu_screen(width, height)
+    if state.phase == "login_entry":
+        return login_entry_screen(width, height, state)
     if state.phase == "lobby":
         return lobby_screen(width, height, state.rating)
     if state.phase == "no_opponent":

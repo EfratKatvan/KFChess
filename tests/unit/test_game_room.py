@@ -174,10 +174,15 @@ def test_tick_once_does_not_broadcast_again_before_the_interval_elapses(db_path)
 
 
 async def _no_broadcast_yet_scenario(db_path):
+    # Registration (now deliberately slow - see accounts.PBKDF2_ITERATIONS)
+    # must happen before constructing GameRoom, not after - its
+    # constructor starts the broadcast-throttle clock immediately, and
+    # this test's whole premise is "nothing has broadcast yet" within a
+    # tight ~67ms window right after that.
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
-    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
     await room.start()  # sends match_found - one message each, not a broadcast
 
     sent_count_after_start = len(white_ws.sent)

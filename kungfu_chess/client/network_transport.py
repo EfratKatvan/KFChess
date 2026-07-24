@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from websockets.asyncio.client import connect
 
+from kungfu_chess.assets_config import DEFAULT_PIECE_SET
 from kungfu_chess.client import sound
 from kungfu_chess.client.client_state import ClientState, apply_message, events_since
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
@@ -49,6 +50,7 @@ class ClientBox:
     state: ClientState = field(default_factory=ClientState)
     ws: Optional[Any] = None
     loop: Optional[asyncio.AbstractEventLoop] = None
+    piece_set: str = DEFAULT_PIECE_SET  # chosen once on the skin_menu screen; read every frame by the render loop
 
 
 def send(box: ClientBox, message: Any) -> None:
@@ -70,9 +72,11 @@ def _play_sound_safely(events: Any) -> None:
 
 def network_thread_main(server_uri: str, initial_message: Any, box: ClientBox) -> None:
     """initial_message is a LoginMessage or RegisterMessage, already
-    built by network_client_view.py from the shell's Login/Register
-    prompt - this layer just sends whichever one it's handed, without
-    needing to know the difference itself."""
+    built by network_client_view.py from whatever was typed into the
+    in-canvas login screen (see its login_entry phase) - this layer
+    just sends whichever one it's handed, without needing to know the
+    difference itself. Only started once that's actually submitted -
+    no connection exists before then."""
     async def client_main() -> None:
         async with connect(server_uri) as ws:
             box.ws = ws
