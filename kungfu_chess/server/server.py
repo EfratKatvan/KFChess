@@ -92,9 +92,9 @@ async def _handle_connection(matchmaker: Matchmaker, db_path: str, ws: ServerCon
     auth = await _authenticate(ws, db_path)
     if auth is None:
         return  # never enters the lobby - bad login or the connection dropped before completing it
-    username, rating = auth
+    username, _ = auth
 
-    accepted = await matchmaker.on_connect(ws, username, rating)
+    accepted = await matchmaker.on_connect(ws, username)
     if not accepted:
         return  # already connected from another window - matchmaker sent LoginFailedMessage itself
 

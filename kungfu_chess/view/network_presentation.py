@@ -413,15 +413,18 @@ def _draw_top_banner(
     viewer_color: Optional[str], room_id: Optional[str] = None,
     show_resign_button: bool = False,
 ) -> None:
-    """Draws the identity bar at canvas(0, 0) - "You: name (rating)" on
-    the left for a player (viewer_color set), or "White: ..."/"Black:
-    ..." for a spectator (viewer_color is None, since they play no
-    side) - plus the room id centered, if this game came from one, and
-    a Resign button in the reserved left strip while a real player's
-    game is still live (show_resign_button - never true for a
-    spectator or once game_over, see render_frame). Caller must have
-    already sized canvas with at least TOP_BANNER_HEIGHT of room at
-    the top."""
+    """Draws the identity bar at canvas(0, 0) - "You: name (rating)"
+    for a player (viewer_color set), or "White: ..."/"Black: ..." for
+    a spectator (viewer_color is None, since they play no side) - plus
+    the room id centered, if this game came from one, and a Resign
+    button in the reserved left strip while a real player's game is
+    still live (show_resign_button - never true for a spectator or
+    once game_over, see render_frame). For a player, "You: ..." is
+    drawn over whichever side (left/right) their own color's side
+    panel lives on - see renderer.py's White-left/Black-right side
+    panels - rather than always on the left, so it's never mistaken
+    for sitting above the opponent's panel. Caller must have already
+    sized canvas with at least TOP_BANNER_HEIGHT of room at the top."""
     canvas.draw_rect(0, 0, width, TOP_BANNER_HEIGHT, TOP_BANNER_COLOR_BGRA, -1)
     text_y = TOP_BANNER_HEIGHT // 2 + 6
 
@@ -429,16 +432,24 @@ def _draw_top_banner(
         left_text = f"White: {white_player.username} ({white_player.rating})"
         right_text = f"Black: {black_player.username} ({black_player.rating})"
         left_color = _TEXT_COLOR_BGRA
+        right_color = _TEXT_COLOR_BGRA
         left_text_x = TOP_BANNER_PADDING_X
     else:
         your_player = white_player if viewer_color == WHITE else black_player
         opponent_player = black_player if viewer_color == WHITE else white_player
-        left_text = f"You: {your_player.username} ({your_player.rating})"
-        right_text = f"{opponent_player.username} ({opponent_player.rating})"
-        left_color = TOP_BANNER_ACCENT_COLOR_BGRA
+        you_text = f"You: {your_player.username} ({your_player.rating})"
+        opponent_text = f"{opponent_player.username} ({opponent_player.rating})"
+        if viewer_color == WHITE:
+            left_text, right_text = you_text, opponent_text
+            left_color, right_color = TOP_BANNER_ACCENT_COLOR_BGRA, _TEXT_COLOR_BGRA
+        else:
+            left_text, right_text = opponent_text, you_text
+            left_color, right_color = _TEXT_COLOR_BGRA, TOP_BANNER_ACCENT_COLOR_BGRA
         # Reserved even when show_resign_button is False (e.g. after
         # game_over) so this text doesn't visibly jump left the moment
-        # the button disappears.
+        # the button disappears. The Resign button itself always lives
+        # in this same left strip regardless of viewer_color - it's a
+        # control, not an identity label.
         left_text_x = _RESIGN_RESERVED_WIDTH
         if show_resign_button:
             button_x, button_y, button_w, button_h = resign_button_rect(width, TOP_BANNER_HEIGHT)
@@ -454,7 +465,7 @@ def _draw_top_banner(
     right_text_w, _ = canvas.text_size(right_text, TOP_BANNER_FONT_SIZE, TOP_BANNER_TEXT_THICKNESS)
     canvas.put_text(
         right_text, width - right_text_w - TOP_BANNER_PADDING_X, text_y,
-        TOP_BANNER_FONT_SIZE, _TEXT_COLOR_BGRA, TOP_BANNER_TEXT_THICKNESS,
+        TOP_BANNER_FONT_SIZE, right_color, TOP_BANNER_TEXT_THICKNESS,
     )
 
     if room_id is not None:

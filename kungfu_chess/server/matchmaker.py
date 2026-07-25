@@ -71,7 +71,6 @@ class Matchmaker:
         self._rooms: Dict[ServerConnection, GameRoom] = {}
         self._disconnected_players: Dict[str, Tuple[GameRoom, str]] = {}
         self._active_connections: Dict[str, ServerConnection] = {}  # username -> its one live connection
-        self._ratings: Dict[str, int] = {}  # username -> rating, as of its current connection's login
 
         # The Room dialog's Create/Join/Cancel flow - independent of, and
         # parallel to, the ELO-proximity _waiting queue above.
@@ -108,7 +107,7 @@ class Matchmaker:
             # time) - never let that take down the caller's own cleanup.
             logger.debug("send failed on a closed/broken socket: %s", error)
 
-    async def on_connect(self, ws: ServerConnection, username: str, rating: int) -> bool:
+    async def on_connect(self, ws: ServerConnection, username: str) -> bool:
         """Returns False (and sends LoginFailedMessage itself) if this
         username already has a live connection elsewhere - the caller
         should close the socket without entering the lobby/message
@@ -119,7 +118,6 @@ class Matchmaker:
             ))
             return False
         self._active_connections[username] = ws
-        self._ratings[username] = rating
 
         pending = self._disconnected_players.pop(username, None)
         if pending is not None:
@@ -180,7 +178,12 @@ class Matchmaker:
         username = self._username_of(ws)
         if username is None:
             return
-        rating = self._ratings[username]
+        # Fetched fresh rather than cached from login, since a player who
+        # has already finished one or more games this session has a
+        # rating that's since moved in the database - a stale snapshot
+        # could approve (or refuse) a match that no longer reflects
+        # either player's real current rating.
+        rating = accounts.get_rating(self._db_path, username)
 
         opponent = self._find_opponent_within_elo_range(rating)
         if opponent is not None:
@@ -295,7 +298,6 @@ class Matchmaker:
         username = self._username_of(ws)
         if username is not None:
             del self._active_connections[username]
-            del self._ratings[username]
 
         seeker = self._waiting.pop(ws, None)
         if seeker is not None:
