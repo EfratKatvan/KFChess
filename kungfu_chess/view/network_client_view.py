@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import replace
+from typing import Callable, Dict
 
 import cv2
 
@@ -120,31 +121,74 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
         cv2.destroyAllWindows()
 
 
+# One handler per local sentinel, dispatched through _SENTINEL_HANDLERS
+# below by the sentinel's own value (each is a unique string - see
+# input_controller.py) rather than a growing if/elif chain, the same
+# dispatch-table pattern used throughout the server (client_state.py's
+# _HANDLERS, matchmaker.py's _lobby_handlers, game_room.py's
+# _MESSAGE_HANDLERS) - just keyed by value here instead of by type.
+def _create_room_button_clicked(box: ClientBox) -> None:
+    box.state = ClientState(phase="room_create_entry", rating=box.state.rating)
+
+
+def _join_room_button_clicked(box: ClientBox) -> None:
+    box.state = ClientState(phase="room_join_entry", rating=box.state.rating)
+
+
+def _text_entry_cancel_clicked(box: ClientBox) -> None:
+    box.state = ClientState(phase="lobby", rating=box.state.rating)
+
+
+def _skin_pieces1_selected(box: ClientBox) -> None:
+    box.piece_set, box.state = "pieces1", ClientState(phase="login_entry")
+
+
+def _skin_pieces2_selected(box: ClientBox) -> None:
+    box.piece_set, box.state = "pieces2", ClientState(phase="login_entry")
+
+
+def _skin_pieces3_selected(box: ClientBox) -> None:
+    box.piece_set, box.state = "pieces3", ClientState(phase="login_entry")
+
+
+def _login_field_username_clicked(box: ClientBox) -> None:
+    box.state = replace(box.state, login_active_field="username")
+
+
+def _login_field_password_clicked(box: ClientBox) -> None:
+    box.state = replace(box.state, login_active_field="password")
+
+
+_SENTINEL_HANDLERS: Dict[str, Callable[[ClientBox], None]] = {
+    CREATE_ROOM_BUTTON_CLICKED: _create_room_button_clicked,
+    JOIN_ROOM_BUTTON_CLICKED: _join_room_button_clicked,
+    TEXT_ENTRY_CANCEL_CLICKED: _text_entry_cancel_clicked,
+    SKIN_PIECES1_SELECTED: _skin_pieces1_selected,
+    SKIN_PIECES2_SELECTED: _skin_pieces2_selected,
+    SKIN_PIECES3_SELECTED: _skin_pieces3_selected,
+    LOGIN_FIELD_USERNAME_CLICKED: _login_field_username_clicked,
+    LOGIN_FIELD_PASSWORD_CLICKED: _login_field_password_clicked,
+}
+
+
 def _dispatch(box: ClientBox, server_uri: str, message: object) -> None:
-    """Shared by on_mouse and the key-press handling below - a local
-    sentinel gets a direct ClientState transition; a LoginMessage/
-    RegisterMessage (only ever produced while phase == "login_entry",
-    see input_controller.py) starts the network thread instead of
-    being sent, since no connection exists yet at that point; anything
-    else is sent over the connection network_transport.py already owns."""
-    if message == CREATE_ROOM_BUTTON_CLICKED:
-        box.state = ClientState(phase="room_create_entry", rating=box.state.rating)
-    elif message == JOIN_ROOM_BUTTON_CLICKED:
-        box.state = ClientState(phase="room_join_entry", rating=box.state.rating)
-    elif message == TEXT_ENTRY_CANCEL_CLICKED:
-        box.state = ClientState(phase="lobby", rating=box.state.rating)
-    elif message == SKIN_PIECES1_SELECTED:
-        box.piece_set, box.state = "pieces1", ClientState(phase="login_entry")
-    elif message == SKIN_PIECES2_SELECTED:
-        box.piece_set, box.state = "pieces2", ClientState(phase="login_entry")
-    elif message == SKIN_PIECES3_SELECTED:
-        box.piece_set, box.state = "pieces3", ClientState(phase="login_entry")
-    elif message == LOGIN_FIELD_USERNAME_CLICKED:
-        box.state = replace(box.state, login_active_field="username")
-    elif message == LOGIN_FIELD_PASSWORD_CLICKED:
-        box.state = replace(box.state, login_active_field="password")
-    elif isinstance(message, (LoginMessage, RegisterMessage)):
+    """Shared by on_mouse and the key-press handling above - a local
+    sentinel gets a direct ClientState transition (via
+    _SENTINEL_HANDLERS); a LoginMessage/RegisterMessage (only ever
+    produced while phase == "login_entry", see input_controller.py)
+    starts the network thread instead of being sent, since no
+    connection exists yet at that point; anything else is sent over
+    the connection network_transport.py already owns. Every protocol
+    message is a frozen (hashable) dataclass - see server/messages.py -
+    so looking one up in _SENTINEL_HANDLERS (which never matches, since
+    only the local string sentinels are keys in it) is always safe."""
+    handler = _SENTINEL_HANDLERS.get(message)
+    if handler is not None:
+        handler(box)
+        return
+    if isinstance(message, (LoginMessage, RegisterMessage)):
         box.state = replace(box.state, phase="connecting")
         threading.Thread(target=network_thread_main, args=(server_uri, message, box), daemon=True).start()
-    elif message is not None:
+        return
+    if message is not None:
         send(box, message)

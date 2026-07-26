@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import replace
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from kungfu_chess.client.client_state import ClientState
 from kungfu_chess.input.board_mapper import BoardMapper
@@ -78,62 +78,121 @@ _TEXT_ENTRY_PHASES = ("room_create_entry", "room_join_entry")
 _MAX_LOGIN_FIELD_LENGTH = 32
 
 
-def decide_message(
-    state: ClientState,
-    is_left_click: bool,
-    is_right_click: bool,
-    x: int,
-    y: int,
-    mapper: BoardMapper,
-    cell_size: int,
-    screen_width: int,
-    screen_height: int,
+def _point_in_rect(x: int, y: int, rect) -> bool:
+    rect_x, rect_y, width, height = rect
+    return rect_x <= x < rect_x + width and rect_y <= y < rect_y + height
+
+
+def _build_login_message(state: ClientState, message_type) -> Optional[Any]:
+    """LoginMessage or RegisterMessage from whatever's currently typed
+    into the two login fields - None (a no-op click/Enter) if either
+    is still empty, the same "don't submit a blank value" guard
+    apply_key_press's room text-entry Enter handler already uses."""
+    username = state.login_username_value.strip()
+    password = state.login_password_value
+    if not username or not password:
+        return None
+    return message_type(username=username, password=password)
+
+
+# ==========================================
+# decide_message: one handler per ClientState.phase, dispatched through
+# _CLICK_HANDLERS below instead of a growing if/elif chain (mirroring
+# client_state.py's _HANDLERS and matchmaker.py's _lobby_handlers).
+# Every handler shares the same signature so the table stays uniform,
+# even though most ignore mapper/cell_size - only the "matched" handler
+# (an actual board) needs those.
+# ==========================================
+
+def _decide_skin_menu_message(
+    state: ClientState, is_left_click: bool, is_right_click: bool, x: int, y: int,
+    mapper: BoardMapper, cell_size: int, screen_width: int, screen_height: int,
 ) -> Optional[Any]:
-    """Pure decision: given the current state and one click, what
-    message (if any) should be sent to the server. Returns None for
-    clicks that mean nothing right now (wrong phase, still in the
-    starting countdown, opponent disconnected, empty cell, ...)."""
-    if state.phase == "skin_menu":
-        if is_left_click and _point_in_rect(x, y, skin_pieces1_button_rect(screen_width, screen_height)):
-            return SKIN_PIECES1_SELECTED
-        if is_left_click and _point_in_rect(x, y, skin_pieces2_button_rect(screen_width, screen_height)):
-            return SKIN_PIECES2_SELECTED
-        if is_left_click and _point_in_rect(x, y, skin_pieces3_button_rect(screen_width, screen_height)):
-            return SKIN_PIECES3_SELECTED
+    if not is_left_click:
         return None
-    if state.phase == "login_entry":
-        if not is_left_click:
-            return None
-        if _point_in_rect(x, y, login_username_field_rect(screen_width, screen_height)):
-            return LOGIN_FIELD_USERNAME_CLICKED
-        if _point_in_rect(x, y, login_password_field_rect(screen_width, screen_height)):
-            return LOGIN_FIELD_PASSWORD_CLICKED
-        if _point_in_rect(x, y, login_button_rect(screen_width, screen_height)):
-            return _build_login_message(state, LoginMessage)
-        if _point_in_rect(x, y, register_button_rect(screen_width, screen_height)):
-            return _build_login_message(state, RegisterMessage)
+    if _point_in_rect(x, y, skin_pieces1_button_rect(screen_width, screen_height)):
+        return SKIN_PIECES1_SELECTED
+    if _point_in_rect(x, y, skin_pieces2_button_rect(screen_width, screen_height)):
+        return SKIN_PIECES2_SELECTED
+    if _point_in_rect(x, y, skin_pieces3_button_rect(screen_width, screen_height)):
+        return SKIN_PIECES3_SELECTED
+    return None
+
+
+def _decide_login_entry_message(
+    state: ClientState, is_left_click: bool, is_right_click: bool, x: int, y: int,
+    mapper: BoardMapper, cell_size: int, screen_width: int, screen_height: int,
+) -> Optional[Any]:
+    if not is_left_click:
         return None
-    if state.phase in ("lobby", "no_opponent", "room_action_failed"):
-        if is_left_click and _point_in_rect(x, y, play_button_rect(screen_width, screen_height)):
-            return SeekGameMessage()
-        if is_left_click and _point_in_rect(x, y, create_room_button_rect(screen_width, screen_height)):
-            return CREATE_ROOM_BUTTON_CLICKED
-        if is_left_click and _point_in_rect(x, y, join_room_button_rect(screen_width, screen_height)):
-            return JOIN_ROOM_BUTTON_CLICKED
+    if _point_in_rect(x, y, login_username_field_rect(screen_width, screen_height)):
+        return LOGIN_FIELD_USERNAME_CLICKED
+    if _point_in_rect(x, y, login_password_field_rect(screen_width, screen_height)):
+        return LOGIN_FIELD_PASSWORD_CLICKED
+    if _point_in_rect(x, y, login_button_rect(screen_width, screen_height)):
+        return _build_login_message(state, LoginMessage)
+    if _point_in_rect(x, y, register_button_rect(screen_width, screen_height)):
+        return _build_login_message(state, RegisterMessage)
+    return None
+
+
+def _decide_lobby_message(
+    state: ClientState, is_left_click: bool, is_right_click: bool, x: int, y: int,
+    mapper: BoardMapper, cell_size: int, screen_width: int, screen_height: int,
+) -> Optional[Any]:
+    """Shared by "lobby", "no_opponent", and "room_action_failed" - all
+    three show the same Play/Create Room/Join Room buttons, just with a
+    different message above them (see network_presentation.py)."""
+    if not is_left_click:
         return None
-    if state.phase in _TEXT_ENTRY_PHASES:
-        if is_left_click and _point_in_rect(x, y, text_entry_cancel_button_rect(screen_width, screen_height)):
-            return TEXT_ENTRY_CANCEL_CLICKED
-        return None
-    if state.phase == "room_waiting":
-        if is_left_click and _point_in_rect(x, y, room_pending_cancel_button_rect(screen_width, screen_height)):
-            return CancelRoomMessage()
-        return None
-    if state.phase == "waiting":
-        if is_left_click and _point_in_rect(x, y, room_pending_cancel_button_rect(screen_width, screen_height)):
-            return CancelSeekMessage()
-        return None
-    if state.phase != "matched" or state.view_state is None:
+    if _point_in_rect(x, y, play_button_rect(screen_width, screen_height)):
+        return SeekGameMessage()
+    if _point_in_rect(x, y, create_room_button_rect(screen_width, screen_height)):
+        return CREATE_ROOM_BUTTON_CLICKED
+    if _point_in_rect(x, y, join_room_button_rect(screen_width, screen_height)):
+        return JOIN_ROOM_BUTTON_CLICKED
+    return None
+
+
+def _decide_text_entry_message(
+    state: ClientState, is_left_click: bool, is_right_click: bool, x: int, y: int,
+    mapper: BoardMapper, cell_size: int, screen_width: int, screen_height: int,
+) -> Optional[Any]:
+    """Shared by "room_create_entry" and "room_join_entry" - the typed
+    text itself is handled by apply_key_press, not here; the only click
+    target on this screen is Cancel."""
+    if is_left_click and _point_in_rect(x, y, text_entry_cancel_button_rect(screen_width, screen_height)):
+        return TEXT_ENTRY_CANCEL_CLICKED
+    return None
+
+
+def _decide_room_waiting_message(
+    state: ClientState, is_left_click: bool, is_right_click: bool, x: int, y: int,
+    mapper: BoardMapper, cell_size: int, screen_width: int, screen_height: int,
+) -> Optional[Any]:
+    if is_left_click and _point_in_rect(x, y, room_pending_cancel_button_rect(screen_width, screen_height)):
+        return CancelRoomMessage()
+    return None
+
+
+def _decide_waiting_message(
+    state: ClientState, is_left_click: bool, is_right_click: bool, x: int, y: int,
+    mapper: BoardMapper, cell_size: int, screen_width: int, screen_height: int,
+) -> Optional[Any]:
+    if is_left_click and _point_in_rect(x, y, room_pending_cancel_button_rect(screen_width, screen_height)):
+        return CancelSeekMessage()
+    return None
+
+
+def _decide_matched_message(
+    state: ClientState, is_left_click: bool, is_right_click: bool, x: int, y: int,
+    mapper: BoardMapper, cell_size: int, screen_width: int, screen_height: int,
+) -> Optional[Any]:
+    """The only handler that reads an actual board - everything else
+    above is pure button hit-testing. Guards (no view_state yet, still
+    in the starting countdown, opponent disconnected) all fall through
+    to "no message", same as the old code's early returns."""
+    if state.view_state is None:
         return None
     if state.matched_at is not None and time.perf_counter() - state.matched_at < STARTING_DURATION_S:
         return None  # still in the starting countdown - no board is shown yet, ignore clicks
@@ -167,32 +226,50 @@ def decide_message(
     return None
 
 
-def apply_key_press(key: int, state: ClientState) -> Tuple[ClientState, Optional[Any]]:
-    """Pure: one cv2 key code (as returned by Img.show(), already
-    masked to its low byte there - see its own docstring for why) plus
-    the current state -> (new state, message to send or None). A no-op
-    for every phase except the login screen and the two room-name
-    text-entry ones, mirroring decide_message's own phase gating."""
-    if state.phase == "login_entry":
-        return _apply_login_key_press(key, state)
-    if state.phase not in _TEXT_ENTRY_PHASES:
-        return state, None
-    if key == image_view.ESC_KEY:
-        return ClientState(phase="lobby", rating=state.rating), None
-    if key in _ENTER_KEYS:
-        value = state.text_entry_value.strip()
-        if not value:
-            return state, None
-        kind = "create" if state.phase == "room_create_entry" else "join"
-        new_state = replace(state, phase="room_pending_ack", pending_room_action=kind)
-        message = CreateRoomMessage(room_id=value) if kind == "create" else JoinRoomMessage(room_id=value)
-        return new_state, message
-    if key == _BACKSPACE_KEY:
-        return replace(state, text_entry_value=state.text_entry_value[:-1]), None
-    if 32 <= key <= 126 and len(state.text_entry_value) < protocol.MAX_ROOM_ID_LENGTH:
-        return replace(state, text_entry_value=state.text_entry_value + chr(key)), None
-    return state, None  # arrow/function keys, -1 (no key this frame), cap already hit, etc.
+# Any phase with no entry here (connecting, spectating, disconnected,
+# room_pending_ack, ...) means a click means nothing right now - same
+# as the old code's final "if state.phase != matched: return None".
+_CLICK_HANDLERS: Dict[str, Callable[..., Optional[Any]]] = {
+    "skin_menu": _decide_skin_menu_message,
+    "login_entry": _decide_login_entry_message,
+    "lobby": _decide_lobby_message,
+    "no_opponent": _decide_lobby_message,
+    "room_action_failed": _decide_lobby_message,
+    **{phase: _decide_text_entry_message for phase in _TEXT_ENTRY_PHASES},
+    "room_waiting": _decide_room_waiting_message,
+    "waiting": _decide_waiting_message,
+    "matched": _decide_matched_message,
+}
 
+
+def decide_message(
+    state: ClientState,
+    is_left_click: bool,
+    is_right_click: bool,
+    x: int,
+    y: int,
+    mapper: BoardMapper,
+    cell_size: int,
+    screen_width: int,
+    screen_height: int,
+) -> Optional[Any]:
+    """Pure decision: given the current state and one click, what
+    message (if any) should be sent to the server. Dispatches by
+    state.phase through _CLICK_HANDLERS, one function per phase, instead
+    of a growing if/elif chain. Returns None for clicks that mean
+    nothing right now (wrong phase, still in the starting countdown,
+    opponent disconnected, empty cell, ...)."""
+    handler = _CLICK_HANDLERS.get(state.phase)
+    if handler is None:
+        return None
+    return handler(state, is_left_click, is_right_click, x, y, mapper, cell_size, screen_width, screen_height)
+
+
+# ==========================================
+# apply_key_press: same one-handler-per-phase dispatch as above, through
+# _KEY_PRESS_HANDLERS - a no-op (state unchanged, no message) for every
+# phase with no entry there.
+# ==========================================
 
 def _apply_login_key_press(key: int, state: ClientState) -> Tuple[ClientState, Optional[Any]]:
     """The login screen's own key handling - two fields instead of one,
@@ -220,18 +297,41 @@ def _replace_active_login_field(state: ClientState, new_value: str) -> ClientSta
     return replace(state, login_password_value=new_value)
 
 
-def _build_login_message(state: ClientState, message_type) -> Optional[Any]:
-    """LoginMessage or RegisterMessage from whatever's currently typed
-    into the two login fields - None (a no-op click/Enter) if either
-    is still empty, the same "don't submit a blank value" guard
-    apply_key_press's room text-entry Enter handler already uses."""
-    username = state.login_username_value.strip()
-    password = state.login_password_value
-    if not username or not password:
-        return None
-    return message_type(username=username, password=password)
+def _apply_text_entry_key_press(key: int, state: ClientState) -> Tuple[ClientState, Optional[Any]]:
+    """Shared by "room_create_entry" and "room_join_entry" - Escape
+    cancels back to the lobby, Enter submits (if non-blank) as a
+    CreateRoomMessage/JoinRoomMessage depending on which phase this is,
+    Backspace/printable characters edit state.text_entry_value."""
+    if key == image_view.ESC_KEY:
+        return ClientState(phase="lobby", rating=state.rating), None
+    if key in _ENTER_KEYS:
+        value = state.text_entry_value.strip()
+        if not value:
+            return state, None
+        kind = "create" if state.phase == "room_create_entry" else "join"
+        new_state = replace(state, phase="room_pending_ack", pending_room_action=kind)
+        message = CreateRoomMessage(room_id=value) if kind == "create" else JoinRoomMessage(room_id=value)
+        return new_state, message
+    if key == _BACKSPACE_KEY:
+        return replace(state, text_entry_value=state.text_entry_value[:-1]), None
+    if 32 <= key <= 126 and len(state.text_entry_value) < protocol.MAX_ROOM_ID_LENGTH:
+        return replace(state, text_entry_value=state.text_entry_value + chr(key)), None
+    return state, None  # arrow/function keys, -1 (no key this frame), cap already hit, etc.
 
 
-def _point_in_rect(x: int, y: int, rect) -> bool:
-    rect_x, rect_y, width, height = rect
-    return rect_x <= x < rect_x + width and rect_y <= y < rect_y + height
+_KEY_PRESS_HANDLERS: Dict[str, Callable[[int, ClientState], Tuple[ClientState, Optional[Any]]]] = {
+    "login_entry": _apply_login_key_press,
+    **{phase: _apply_text_entry_key_press for phase in _TEXT_ENTRY_PHASES},
+}
+
+
+def apply_key_press(key: int, state: ClientState) -> Tuple[ClientState, Optional[Any]]:
+    """Pure: one cv2 key code (as returned by Img.show(), already
+    masked to its low byte there - see its own docstring for why) plus
+    the current state -> (new state, message to send or None). A no-op
+    for every phase except the login screen and the two room-name
+    text-entry ones, mirroring decide_message's own phase dispatch."""
+    handler = _KEY_PRESS_HANDLERS.get(state.phase)
+    if handler is None:
+        return state, None
+    return handler(key, state)
