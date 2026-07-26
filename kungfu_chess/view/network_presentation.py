@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
@@ -490,51 +490,82 @@ def disconnect_text(remaining_s: float) -> str:
     return f"Opponent disconnected - auto-resign in {int(remaining_s) + 1}..."
 
 
-def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
-    """The single entry point run_client's loop calls every frame -
-    decides which screen the current phase calls for and builds it.
-    Pure given (state, cell_size, piece_set, renderer) - no I/O, so
-    it's independently testable without a real window/network."""
-    width, height = screen_size(cell_size)
+# One handler per ClientState.phase, dispatched through _PHASE_SCREENS
+# below instead of a growing if/elif chain - the same pattern used for
+# the client's click/key dispatch (input_controller.py's
+# _CLICK_HANDLERS/_KEY_PRESS_HANDLERS, network_client_view.py's
+# _SENTINEL_HANDLERS), just applied to "what to draw" instead of "what
+# message to send". Every handler shares the same signature so the
+# table stays uniform, even though most ignore cell_size/piece_set/
+# renderer - only _render_matched_or_spectating (an actual board) needs
+# those.
+def _render_skin_menu(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return skin_menu_screen(width, height)
 
+
+def _render_login_entry(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return login_entry_screen(width, height, state)
+
+
+def _render_lobby(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return lobby_screen(width, height, state.rating)
+
+
+def _render_no_opponent(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return lobby_screen(width, height, state.rating, message=NO_OPPONENT_TEXT)
+
+
+def _render_room_action_failed(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    verb = "create" if state.room_action_failure_kind == "create" else "join"
+    return lobby_screen(width, height, state.rating, message=f"Could not {verb} room: {state.room_action_failure_reason}")
+
+
+def _render_room_create_entry(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return text_entry_screen(width, height, CREATE_ROOM_ENTRY_TITLE, state.text_entry_value)
+
+
+def _render_room_join_entry(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return text_entry_screen(width, height, JOIN_ROOM_ENTRY_TITLE, state.text_entry_value)
+
+
+def _render_room_pending_ack(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    text = "Creating room..." if state.pending_room_action == "create" else "Joining room..."
+    return text_screen(width, height, text)
+
+
+def _render_room_waiting(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return room_pending_screen(width, height, state.room_id, state.rating)
+
+
+def _render_waiting(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return waiting_screen(width, height, state.rating)
+
+
+def _render_disconnected(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    return text_screen(width, height, DISCONNECTED_TEXT)
+
+
+def _render_matched_or_spectating(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    """Shared by "matched" and "spectating" - the only two phases that
+    ever show an actual board. Unlike every other phase above, this one
+    isn't a single fixed screen - it still needs its own sequential
+    guards (starting countdown, opponent-disconnect countdown, no
+    view_state yet) before it can draw the board itself."""
     starting_remaining_s = (
         STARTING_DURATION_S - (time.perf_counter() - state.matched_at)
         if state.matched_at is not None else None
     )
+    if starting_remaining_s is not None and starting_remaining_s > 0:
+        return text_screen(width, height, starting_text(state.color, starting_remaining_s))
+
     disconnect_remaining_s = (
         state.opponent_disconnect_grace_seconds - (time.perf_counter() - state.opponent_disconnected_at)
         if state.opponent_disconnected_at is not None else None
     )
-
-    if state.phase == "skin_menu":
-        return skin_menu_screen(width, height)
-    if state.phase == "login_entry":
-        return login_entry_screen(width, height, state)
-    if state.phase == "lobby":
-        return lobby_screen(width, height, state.rating)
-    if state.phase == "no_opponent":
-        return lobby_screen(width, height, state.rating, message=NO_OPPONENT_TEXT)
-    if state.phase == "room_action_failed":
-        verb = "create" if state.room_action_failure_kind == "create" else "join"
-        return lobby_screen(width, height, state.rating, message=f"Could not {verb} room: {state.room_action_failure_reason}")
-    if state.phase == "room_create_entry":
-        return text_entry_screen(width, height, CREATE_ROOM_ENTRY_TITLE, state.text_entry_value)
-    if state.phase == "room_join_entry":
-        return text_entry_screen(width, height, JOIN_ROOM_ENTRY_TITLE, state.text_entry_value)
-    if state.phase == "room_pending_ack":
-        text = "Creating room..." if state.pending_room_action == "create" else "Joining room..."
-        return text_screen(width, height, text)
-    if state.phase == "room_waiting":
-        return room_pending_screen(width, height, state.room_id, state.rating)
-    if state.phase == "waiting":
-        return waiting_screen(width, height, state.rating)
-    if state.phase == "disconnected":
-        return text_screen(width, height, DISCONNECTED_TEXT)
-    if starting_remaining_s is not None and starting_remaining_s > 0:
-        return text_screen(width, height, starting_text(state.color, starting_remaining_s))
     if disconnect_remaining_s is not None and disconnect_remaining_s > 0:
         return text_screen(width, height, disconnect_text(disconnect_remaining_s))
-    if state.phase not in ("matched", "spectating") or state.view_state is None:
+
+    if state.view_state is None:
         return text_screen(width, height, LOGGING_IN_TEXT)
 
     game_over_progress = 1.0
@@ -560,3 +591,35 @@ def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: R
             show_resign_button=state.color is not None and not state.view_state.game_over,
         )
     return canvas
+
+
+_PHASE_SCREENS: Dict[str, Callable[[ClientState, int, int, int, str, Renderer], Img]] = {
+    "skin_menu": _render_skin_menu,
+    "login_entry": _render_login_entry,
+    "lobby": _render_lobby,
+    "no_opponent": _render_no_opponent,
+    "room_action_failed": _render_room_action_failed,
+    "room_create_entry": _render_room_create_entry,
+    "room_join_entry": _render_room_join_entry,
+    "room_pending_ack": _render_room_pending_ack,
+    "room_waiting": _render_room_waiting,
+    "waiting": _render_waiting,
+    "disconnected": _render_disconnected,
+    "matched": _render_matched_or_spectating,
+    "spectating": _render_matched_or_spectating,
+}
+
+
+def render_frame(state: ClientState, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
+    """The single entry point run_client's loop calls every frame -
+    decides which screen the current phase calls for and builds it, by
+    dispatching through _PHASE_SCREENS. Pure given (state, cell_size,
+    piece_set, renderer) - no I/O, so it's independently testable
+    without a real window/network. Any phase with no entry in
+    _PHASE_SCREENS (currently just "connecting") shows LOGGING_IN_TEXT -
+    there's nothing more specific to draw yet."""
+    width, height = screen_size(cell_size)
+    handler = _PHASE_SCREENS.get(state.phase)
+    if handler is None:
+        return text_screen(width, height, LOGGING_IN_TEXT)
+    return handler(state, width, height, cell_size, piece_set, renderer)
