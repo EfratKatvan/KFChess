@@ -174,6 +174,14 @@ client ever needs to know which physical machine anything lives on:
    kind of stream. A spectator does the same, just without ever being granted the
    write lease - a pure subscriber.
 
+To be precise about what "who's on which server" actually means, since it's easy to
+conflate three different things: a player's **Gateway connection** is incidental and
+stateless (any Gateway works, nothing about it needs to be recorded per-player); the
+**shared seeker queue** (Redis) only holds a player while they're waiting to be
+matched; **room ownership** (the lease from section 3) is the one mapping that
+actually matters for "who's on which server," and it only comes into existence the
+instant a match happens - not at login.
+
 ### Failure modes (explicitly required by the brief)
 
 | Component fails | Effect | Recovery |
@@ -182,6 +190,27 @@ client ever needs to know which physical machine anything lives on:
 | A Matchmaker instance dies | No data is lost - the seeker queue and room registry live in Redis, not in that instance's own memory (unlike today's single-process dict) | Orchestrator restarts it; the replacement resumes serving the same shared queue immediately |
 | Redis dies | The most serious failure, since everything above depends on it | Redis Cluster/Sentinel with replication; already-*running* games are unaffected (they only need their own two sockets) - only *new* matchmaking/room-joins pause fleet-wide until it recovers |
 | The Accounts DB dies | New logins/registrations fail | Already-running games are unaffected until their game-over rating write, which should be buffered/retried (a small outbox via the control-plane broker) rather than silently lost; mitigate with a replicated, multi-availability-zone DB with automatic failover |
+
+**On geography and resilience**: it's tempting to think "host everything in one
+especially stable, secure location" - but the real answer is the opposite: no single
+location, however stable, should be trusted to never fail (power, fire, a cut fiber
+line, or worse). The Redis clustering and multi-availability-zone DB failover above
+already assume this - they exist specifically so the system survives losing an
+*entire physical location*, not just a single machine. Game-hosting workers
+themselves should run across multiple regions for the same reason, with Gateways
+routing each player to their nearest healthy region.
+
+**Naming the reference scenario explicitly, per component**: the failure-mode table
+above actually makes two different bets about what's acceptable to lose - worth
+stating plainly rather than leaving implicit. For live game/board state, the
+reference scenario is *"losing one in-progress game is acceptable"* - a durable,
+replayable move log (e.g. via Kafka) was considered and deliberately not built,
+because the cost isn't justified for a 30-90 second casual match; a crashed room is
+simply voided and both players re-queue (no rating penalty). For ratings/account
+data, the reference scenario is the opposite - *"an update must never be silently
+lost"* - hence the buffered/retried write and the replicated DB. Same underlying
+question (reconstruct after failure, or design to never lose it?) answered
+differently per component, because the two kinds of data have very different value.
 
 ## 8. Question 3 - network traffic for one active player (~1 move every 2 seconds)
 
@@ -234,7 +263,11 @@ That's continuous churn, not a one-time cost, with concrete consequences:
   asyncio task inside an already-running worker."
 - **Accounts service** sees a matching ~83,000 rating-update writes/sec sustained,
   globally - reinforcing section 6's answer that this write path needs a dedicated,
-  horizontally-scalable service, not a single SQLite file.
+  horizontally-scalable service, not a single SQLite file. Note this scales
+  differently from every stateless tier above: the Accounts *service* itself can run
+  as more identical instances, but the *database* behind it scales via
+  **replication** (a primary plus synced replicas) - not by running more unrelated
+  copies of it the way a stateless worker scales.
 - **Rolling deploys/scale-down become cheap**: a Game-hosting worker being retired
   just stops accepting new rooms and drains its existing ones (bounded, ≤90s wait)
   before exiting - no live-migration machinery needed, unlike a service with
