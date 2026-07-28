@@ -410,3 +410,231 @@ single component needs to be huge; it needs to be replicated a lot.
 - **Games-per-worker (~500-1,000) and connections-per-Gateway (~20,000)** are planning
   numbers, not measurements - the next real step is benchmarking actual tick cost and
   socket overhead on real hardware to replace them with data.
+
+## 13. From six logical components to four deployable units
+
+Everything above answers *why* to distribute; this section and the ones that follow
+answer *how to actually package it* - concretely, as Docker images this codebase can
+be built into. The project brief lists six logical components (API Gateway, WebSocket
+Gateway, Matchmaker, Game Allocator, Game Server Shards, Observability) plus a
+recommended stack (NATS/Redis PubSub, Redis, PostgreSQL, Docker Compose, K8s/K3s). A
+logical component is not automatically its own container - the right grouping
+question is: **do these components share the same exposure surface and the same
+scaling profile?** Combine when yes; keep separate when they differ in protocol,
+statefulness, or blast radius:
+
+| Rule | Applied here |
+|---|---|
+| Bundle services with the same exposure (protocol) and the same scaling profile | Login/Rooms(REST)/Rating are all plain REST, stateless, backed by Postgres - they'd scale identically (more replicas behind a load balancer) |
+| Keep separate anything that differs in protocol / statefulness / blast radius | WebSocket is a stateful, long-lived connection (scales on connection count, not QPS); a Game Server Shard holds live state in memory and its crash only affects the rooms it hosts |
+| Cross-cutting infrastructure is not a "service" at all | Observability is never its own application container - it's Prometheus/Grafana/logs reading telemetry from everything else |
+
+**Result: 6 logical components -> 4 deployable units + Observability as infra:**
+
+1. **API Service** = Auth + Rooms(REST) + Rating/History -> one Docker image
+2. **Matchmaking Service** = Matchmaker + Game Allocator -> one Docker image
+3. **WS Gateway** -> stays separate (different protocol/statefulness)
+4. **Game Server Shards** -> stays separate (blast radius, holds live state)
+5. **Observability** -> infra, not an application container
+
+### 13.1 The real grouping criterion is "same required infrastructure," not just "same layer"
+
+A sharper version of the rule above: two components are worth bundling not just
+because they're logically similar, but because they need the **same
+infrastructure/dependencies (the same `pip install`) and the same "level" of protocol
+exposure**. If two components both need Redis and NATS at the same level, and their
+dependency sets are identical, the only real difference between them is *which
+endpoint gets called* (e.g. `/room` vs. `/calculation`) - and at that point bundling
+them is an economic decision, not just a logical one. This is exactly the case for
+Matchmaker + Game Allocator: both need Redis and NATS, both are lightweight and
+non-realtime from the client's point of view - they belong in the same deployable
+unit not merely because they're sequential steps in one pipeline, but because they'd
+need identical infrastructure regardless.
+
+### 13.2 Separate pure logic from its transport adapter (ports & adapters)
+
+The existing code already demonstrates the right shape for this: `accounts.py` is
+pure logic (password hashing, ELO math, `AuthResult`) with zero knowledge of how it's
+reached - `server.py` happens to wrap it in a WebSocket call today, but it could just
+as easily be wrapped in an HTTP handler without changing a single line of the logic
+itself. **This is the principle to apply to all four deployable units**: internal
+decisions (`"are these two players an ELO match?"`, `"which worker has room?"`)
+should always be plain functions with no idea whether they were invoked from an HTTP
+handler, a NATS subscriber, or a unit test. Each deployable unit is *pure logic* +
+one or more thin *adapters* (a REST adapter, a NATS adapter) wrapping it - which also
+keeps the door open to wrapping the same logic in a different protocol later without
+touching it.
+
+## 14. Mapping current code to deployable units
+
+| # | Logical component (brief) | Deployable unit | Protocol | Scales on | Current code that moves there |
+|---|---|---|---|---|---|
+| 1 | API Gateway (login/rooms/history) | **API Service** | HTTP/REST | request rate | `accounts.py` + `accounts_db.py` - almost 1:1, already networking-free and takes `db_path` as a parameter |
+| 5 (part) | Rating/History | **API Service** (same unit) | HTTP/REST | request rate | part of `accounts.py` (`update_ratings_after_game`) - the call moves from `game_room.py` writing the DB directly to an internal HTTP call to the API Service |
+| 2 | WebSocket Gateway | **WS Gateway** | WebSocket | open-connection count | `server.py` (`_handle_connection`, `serve(...)`) - just the socket acceptance; auth logic moves to the API Service, the gateway only routes |
+| 3 | Matchmaker | **Matchmaking Service** | internal (NATS/HTTP) | queue depth | `matchmaker.py` - the `_waiting`/`_find_opponent_within_elo_range` part (fairness/ELO only) |
+| 4 | Game Allocator | **Matchmaking Service** (same unit) | internal (NATS) | allocation rate | `matchmaker.py` - the part that today **instantiates `GameRoom` directly** (`_start_seeking`, `_join_room`) - exactly the placement decision that needs to become its own responsibility inside the same unit |
+| - | Room Registry (Create/Join) | Redis, owned by the Matchmaking Service | Redis protocol | - | `rooms.py` (`RoomRegistry`, `Room`) - already pure, I/O-free logic; moves almost as-is into a Redis schema |
+| 5 | Game Server Shards | **Game Server Shards** | WebSocket (data-plane from the Gateway) | active-room count / CPU | `game_room.py` (`GameRoom`) + `kungfu_chess/engine/*` - the game logic itself barely changes; only *who* it sends to/receives from changes (never the client directly, always a stream the WS Gateway routes) |
+| 6 | Observability | separate infra, not an application container | Prometheus scrape / OTLP | - | doesn't exist yet - added as logging/metrics in every unit |
+| - | Wire protocol | shared library imported by all four units | - | - | `protocol.py`, `messages.py`, `serialization.py` - unchanged in shape, just becomes a package shared across units |
+
+### 14.1 Scope of a Game Server Shard: only the "live game" window
+
+Worth stating explicitly: a Shard is responsible for neither the administrative start
+nor the administrative end of a game - only the window during which it's *live*:
+
+- **Game start** (deciding which worker hosts it, acquiring the lease) -> the **Game
+  Allocator**'s job (inside the Matchmaking Service), *before* the Shard has even
+  heard of the room.
+- **The live game itself** (tick loop, accepting moves, broadcasting) -> the **Game
+  Server Shard**'s job alone - exactly what `GameRoom._run` already does today.
+- **Game end** (rating update, DB write, releasing the lease, clearing the room
+  registry entry) -> split between the Shard (releases its lease, requests the rating
+  update) and the **API Service** (which actually performs the Postgres write - the
+  one DB choke point from section 6).
+
+The Shard is deliberately a "thin in time" layer - it enters the picture only after
+allocation and exits it the instant the game ends, with no knowledge of what happens
+before or after.
+
+### 14.2 WS Gateway: stateful per connection, stateless as a fleet
+
+A question worth answering explicitly: should the Gateway be stateless? It depends on
+which level you're looking at. A **single connection** is inherently stateful - a
+live TCP/WebSocket socket exists for as long as the player is connected. But **the
+fleet as a whole** can and should be stateless: no specific Gateway instance "owns" a
+given player - if a connection drops, the player can reconnect through *any* other
+Gateway instance, because reconnect/presence mapping lives in Redis, not in that
+Gateway process's own memory. This is the same point made in section 7 ("a player's
+Gateway connection is incidental and stateless") - the thing to verify at
+implementation time is that no data structure inside the Gateway's own code holds
+anything that needs to survive that specific instance crashing.
+
+## 15. End-to-end flow of the target architecture
+
+```
+Client
+  --(HTTP: login/register/rooms/history)--> API Service --> PostgreSQL
+  --(WebSocket, live)--> WS Gateway
+      WS Gateway --(seek/create/join room)--> Matchmaking Service
+          Matchmaker  <--> Redis (shared seeker ZSET, room registry+lease)
+          Game Allocator <--> Redis
+          Game Allocator --(NATS: match-found, allocate)--> NATS
+      NATS --(notifies)--> WS Gateway
+      WS Gateway ==(data-plane: moves/state, 10-15Hz, direct)==> Game Server Shard
+          Game Server Shard --(move log)--> NATS JetStream
+          Game Server Shard --(rating update at game-over)--> API Service
+          Game Server Shard --(heartbeat/lease renew)--> Redis
+  Observability reads metrics/logs from API Service, WS Gateway,
+  Matchmaking Service and every Game Server Shard - never on any player's
+  request path.
+```
+
+Step by step:
+
+1. **Login**: the client calls the **API Service** (REST) for login/register ->
+   reads/writes PostgreSQL, gets back a session/token.
+2. **Live connection**: the client opens a WebSocket against the **WS Gateway** (not
+   the API Service - different protocol, different scaling axis).
+3. **Seeking a match**: clicking "Play" -> the WS Gateway forwards a seek request to
+   the **Matchmaking Service**. Its internal `Matchmaker` looks at the shared queue in
+   Redis (not a local dict, as today) and finds an ELO-appropriate opponent.
+4. **Allocation**: once paired, the `Matchmaker` hands the decision to the `Game
+   Allocator` (**same deployable unit**, separate responsibility in code) - it picks
+   an available Game Server Shard, acquires its lease in Redis
+   (`SET room:<id>:owner <worker> NX PX 5000`), and publishes a `match-found` event on
+   NATS.
+5. **The game itself**: the WS Gateway, having heard the event, opens a direct
+   data-plane stream between the client and the specific assigned Shard - **not
+   through NATS**, since the volume is too high (sections 2 and 8). The Shard runs
+   `GameEngine`/`RealTimeArbiter` exactly as it does today.
+6. **Game end**: the Shard sends a rating-update request to the API Service (an
+   internal HTTP call, not a direct DB write as today) and releases its Redis lease.
+7. **Observability** reads metrics/logs from all four units throughout - never part of
+   any player's request path.
+
+## 16. Two concrete infrastructure decisions
+
+### 16.1 The matchmaking queue must be a Redis ZSET, not a linear scan
+
+Today, `matchmaker.py`'s `_find_opponent_within_elo_range` (line 216) loops over
+**every** waiting player (`self._waiting.values()`) until it finds one inside the ELO
+range - O(n) per match attempt. The right Redis structure is a **ZSET** (sorted set):
+`ZADD seekers:queue <rating> <user_id>` on entering the queue, then finding candidates
+in-range via `ZRANGEBYSCORE seekers:queue <rating-100> <rating+100>` - a logarithmic
+range query (`O(log n + m)`, where `m` is the number of results in range) instead of a
+scan over the whole queue. Worth locking in now, as part of moving the seeker queue
+from an in-memory dict to Redis (roadmap stage 0, section 17).
+
+### 16.2 NATS vs. Redis Pub/Sub for the control plane
+
+The brief lists "NATS / Redis PubSub" as two options for the control plane - a real
+decision worth making explicit rather than leaving implicit:
+
+| | Redis Pub/Sub | NATS (+ JetStream) |
+|---|---|---|
+| Extra infra to run | none - Redis is already required anyway | a separate system (extra Docker/ops cost) |
+| Durability | **none** - a message to a subscriber that isn't currently connected is simply lost | JetStream retains a durable log for a bounded time, replayable |
+| Where we actually need durability | - | the move log for crashed-room recovery (section 3) - **required**, not a nice-to-have |
+| Complexity | very simple, no extra API to learn | a dedicated API, but richer capacity/routing too |
+
+**Recommendation**: use NATS+JetStream as the brief suggests, specifically because
+crashed-room recovery genuinely needs durability that Redis Pub/Sub cannot provide.
+That said, if the immediate goal is only a **local Docker Compose** for development,
+without crash recovery yet, it's reasonable to start with Redis Pub/Sub for the
+lightweight control events (match-found, game-ended) to save one infra piece in the
+early roadmap stages, and add NATS+JetStream only once crashed-room recovery is
+actually implemented. This is an intentionally open decision, not a settled one.
+
+## 17. Docker packaging: one image with roles, vs. one Dockerfile per unit
+
+Section 13's four deployable units don't necessarily mean four separate `Dockerfile`s.
+Since all four units share the same codebase (Python, the same
+`protocol.py`/`messages.py`, largely overlapping pip dependencies), two packaging
+strategies are both legitimate:
+
+| Strategy | How it works | Pro | Con |
+|---|---|---|---|
+| **A. A separate Dockerfile per unit** (4 images) | each unit is its own container, with only the dependencies it actually needs | small, precise image per role, full build isolation | 4 files to maintain, 4 build pipelines |
+| **B. One Docker image, "role" chosen at run time** | a single `Dockerfile` installs every dependency; the role (`api` / `ws-gateway` / `matchmaking` / `game-shard`) is chosen by an entrypoint argument or `SERVICE_ROLE` env var - all four entries in `docker-compose.yml` share the same `image:`/`build:`, differing only in `command:`/`environment:` | one Dockerfile to maintain, guaranteed dependency-version consistency across units (no drift between images), fewer CI pipelines | a somewhat larger image (bundles dependencies only some roles use) |
+
+**Recommendation**: start with **strategy B** (one image, roles chosen at run time) -
+this both matches the observation that the `pip install` set is nearly identical
+across units and that the real difference between them is just *which endpoint gets
+hit*, and it doesn't compromise anything about scaling: `docker-compose.yml` (and
+later Kubernetes) still runs four separate `services:`/`Deployments` from that one
+image, each with its own replica count and autoscaling metric - exactly as it would
+with four separate images, just built from one `Dockerfile`. If a specific role (e.g.
+Game Server Shard) later needs a heavy, unique dependency the other roles don't - that
+is the natural point to split *that one role* into its own Dockerfile, without
+touching the rest.
+
+## 18. Staged implementation roadmap
+
+Suggested stages for actually building this (each stage leaves the system working):
+
+1. **Stage 0**: add Redis as a dependency; move `Matchmaker._waiting`/`_rooms`/
+   `RoomRegistry` from in-memory dicts to Redis (as a ZSET-backed queue, section 16.1)
+   - still one process.
+2. **Stage 1**: split `accounts.py`/`accounts_db.py` into a standalone API Service
+   (HTTP); `server.py` calls it over HTTP instead of importing it directly.
+3. **Stage 2**: split socket acceptance itself (`server.py`) into a separate WS
+   Gateway that talks to the rest of the system (still one process at this stage)
+   over Redis/HTTP.
+4. **Stage 3**: actually split `matchmaker.py` into its two responsibilities
+   (Matchmaker fairness + Game Allocator placement) inside one Matchmaking Service
+   process, with lease-based room ownership in Redis.
+5. **Stage 4**: `game_room.py` becomes a standalone Game Server Shard, receiving
+   commands from and sending state to the WS Gateway rather than the client directly;
+   replace the full-snapshot broadcast (~5.6KB/tick) with the sparse-event protocol
+   (section 8).
+6. **Stage 5**: package per section 17's decision (recommended: one image, role chosen
+   via `SERVICE_ROLE`) + a local `docker-compose.yml` running everything alongside
+   Redis/NATS/Postgres.
+7. **Stage 6**: add Observability (logs/metrics/health checks/load tests) + K8s/K3s
+   manifests.
+
+Verification at each stage: `python -m pytest` should keep passing, and two client
+processes (`python app.py` run twice) should still be able to connect, get matched,
+and play a game to completion - the same manual check `README.md` already describes.
