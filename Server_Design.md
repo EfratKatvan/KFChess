@@ -616,7 +616,7 @@ range - O(n) per match attempt. The right Redis structure is a **ZSET** (sorted 
 in-range via `ZRANGEBYSCORE seekers:queue <rating-100> <rating+100>` - a logarithmic
 range query (`O(log n + m)`, where `m` is the number of results in range) instead of a
 scan over the whole queue. Worth locking in now, as part of moving the seeker queue
-from an in-memory dict to Redis (roadmap stage 0, section 17).
+from an in-memory dict to Redis (roadmap stage 0, section 19).
 
 ### 16.2 NATS vs. Redis Pub/Sub for the control plane
 
@@ -661,7 +661,33 @@ Game Server Shard) later needs a heavy, unique dependency the other roles don't 
 is the natural point to split *that one role* into its own Dockerfile, without
 touching the rest.
 
-## 18. Staged implementation roadmap
+## 18. Kubernetes vs. K3s: which orchestrator, and when
+
+Section 17 decided how to *package* the four deployable units; this section decides
+what actually *runs* them as a cluster, once docker-compose on one box isn't enough.
+Two real options:
+
+| | Full Kubernetes | K3s |
+|---|---|---|
+| What it is | The standard orchestrator (what a managed EKS/GKE/AKS runs under the hood) | A CNCF-certified, lightweight K8s distribution (Rancher) - one ~50MB binary |
+| API / manifests | Full API surface | **Identical** API, same manifests, same `kubectl` - just a stripped-down control plane (SQLite instead of etcd by default, no legacy in-tree cloud drivers) |
+| Control-plane weight | Heavy: etcd, API server, scheduler, controller-manager - meant to run HA across multiple machines itself | Runs on a single small VM; much lower resource overhead |
+| Ecosystem | Mature: HPA autoscaling, service mesh, cloud load-balancer integration, secrets management | Same ecosystem is available, just not bundled by default |
+| Migration cost later | - | API-compatible with full K8s - moving up is a lift-and-shift, not a rewrite |
+| Fits when | Genuine multi-node/multi-region scale (section 7's per-region repeated stack), or a managed cluster where someone else operates the control plane | Developing or running this at small-to-medium scale, self-hosted, want the option to graduate later without redoing manifests |
+
+**Recommendation for this project**: start with **K3s** (roadmap stage 6, section 19)
+- the four deployable units plus Redis, NATS, and Postgres run comfortably on it during
+development and even a real but modest deployment, and every manifest written against
+it stays valid if the project ever needs to graduate to full K8s for genuine
+multi-region scale (section 7). Reach for **Agones** specifically for the Game Server
+Shard fleet (the Orchestrator row in section 1) once shard lifecycle management
+(ready/allocated/draining, section 4's warm-pool point) outgrows plain Deployment/
+ReplicaSet semantics - this applies the same whether the cluster underneath is K3s or
+full K8s, since Agones runs on both; it isn't a reason by itself to pick one over the
+other.
+
+## 19. Staged implementation roadmap
 
 Suggested stages for actually building this (each stage leaves the system working):
 
@@ -683,8 +709,8 @@ Suggested stages for actually building this (each stage leaves the system workin
 6. **Stage 5**: package per section 17's decision (recommended: one image, role chosen
    via `SERVICE_ROLE`) + a local `docker-compose.yml` running everything alongside
    Redis/NATS/Postgres.
-7. **Stage 6**: add Observability (logs/metrics/health checks/load tests) + K8s/K3s
-   manifests.
+7. **Stage 6**: add Observability (logs/metrics/health checks/load tests) + cluster
+   manifests, starting on K3s per section 18's recommendation.
 
 Verification at each stage: `python -m pytest` should keep passing, and two client
 processes (`python app.py` run twice) should still be able to connect, get matched,
