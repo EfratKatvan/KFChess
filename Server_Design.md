@@ -26,35 +26,41 @@ process and machine boundaries - not a foreign concept bolted onto the project.
 
 | Role | What it does | Talks to | Protocol | Scales on |
 |---|---|---|---|---|
-| **Gateway / Edge** (stateless, many, geo-distributed) | Client's entry point; terminates the WebSocket, handles login/register, routes the player onward | Client; Accounts service; Matchmaker; a Game-hosting worker once matched | WebSocket (client-facing); HTTP/REST (internal) | Open connections |
-| **Matchmaker service** (a handful of instances, not one) | The "bridge between opponents" - owns the shared ELO-seeker queue and the room registry | Gateway; Game-hosting fleet; Redis | HTTP/REST in from Gateway; publishes a low-volume "game-created" event | Queue depth |
-| **Game-hosting workers** (by far the most instances) | Run the real-time game loop - today's `GameRoom` logic, unchanged, just made addressable | Clients directly over WebSocket (handed off by Gateway); Accounts service (rating write at game-over) | WebSocket to clients; HTTP/REST to Accounts service | Active-room count / CPU |
-| **Accounts/Ratings service** (small, few instances) | The *only* thing that talks to the SQL database directly - login, register, rating reads/writes | Postgres/MySQL cluster; called by Gateway and by Game-hosting workers | SQL wire protocol to the DB; HTTP/REST to its callers | Request rate |
-| **Redis** (shared coordination store) | Seeker queue, room-ownership registry (`room_id` -> hosting worker, leased - see section 3), presence/reconnect routing | Matchmaker, Gateway, Game-hosting workers | Redis protocol (RESP) | Lookup/lease rate |
-| **Control-plane broker** (NATS/Kafka) | Low-volume events: game-created, game-finished, presence changes | Matchmaker, Game-hosting workers, Persistence workers | Broker's own protocol | Event rate (low volume) |
-| **Orchestrator** (Kubernetes / K3s) | Starts, stops, restarts, and scales the Docker fleet; health-checks workers | Everything (control plane, not the data path) | - | - |
+| **API Gateway** (stateless, many, geo-distributed) | Non-realtime entry point: login/register, room history, account-facing REST calls - no game logic | Client; Accounts service | HTTP/REST | Request rate |
+| **WS Gateway** (stateless, many, geo-distributed) | Live-connection entry point: holds the player's WebSocket, forwards gameplay traffic to whichever worker owns their room - also no game logic | Client (WebSocket); Matchmaker (seek requests); the specific Game-hosting worker once matched (direct data-plane stream) | WebSocket (client-facing and worker-facing) | Open connections |
+| **Matchmaker service** (a handful of instances, not one) | The "bridge between opponents" - pairs waiting players by ELO from the shared seeker queue; a pure *fairness* decision | WS Gateway; Game Allocator; Redis | HTTP/REST in from WS Gateway; publishes a low-volume "match-found" event | Queue depth |
+| **Game Allocator** (a handful of instances) | A deliberately separate concern from matchmaking: given a freshly-matched pair, decides *which* Game-hosting worker has capacity to host the room, and acquires that worker's room-ownership lease (section 3) - a *placement* decision | Matchmaker; Game-hosting fleet; Redis | NATS control events | Allocation rate |
+| **Game-hosting workers** (by far the most instances) | Run the real-time game loop - today's `GameRoom` logic, unchanged, just made addressable | Clients directly over WebSocket (via WS Gateway); Accounts service (rating write at game-over); NATS JetStream (durable move log - section 3) | WebSocket to clients; HTTP/REST to Accounts service; NATS for the move log | Active-room count / CPU |
+| **Accounts/Ratings service** (small, few instances) | The *only* thing that talks to the SQL database directly - login, register, rating reads/writes, the final move-history summary per finished game | Postgres/MySQL cluster; called by API Gateway and by Game-hosting workers | SQL wire protocol to the DB; HTTP/REST to its callers | Request rate |
+| **Redis** (shared coordination store) | Seeker queue, room-ownership registry (`room_id` -> hosting worker, leased - see section 3), presence/reconnect routing | Matchmaker, Game Allocator, WS Gateway, Game-hosting workers | Redis protocol (RESP) | Lookup/lease rate |
+| **NATS** (control-plane bus, with JetStream for durable move-logging) | Low-volume events (match-found, game-finished, presence) *and*, via JetStream, a short-retention durable log of in-progress moves per room, for crash recovery (section 3) | Matchmaker, Game Allocator, Game-hosting workers | NATS / JetStream protocol | Event rate; JetStream storage (bounded - ~90s retention per room) |
+| **Observability** (its own small fleet) | Logs, metrics, alerts, distributed traces, load-test tooling - not on any player's hot path, but essential for operating a fleet this size | Read-only telemetry from every other role | Metrics scrape (e.g. Prometheus) / trace export (e.g. OTLP) | Its own concern, not covered further here |
+| **Orchestrator** (Kubernetes / K3s, with Agones managing the Game-hosting fleet specifically) | Starts, stops, restarts, and scales the Docker fleet; health-checks workers | Everything (control plane, not the data path) | - | - |
 
-This directly answers two things the brief asks about: the matchmaker **is** its own
-process (not folded into a worker or the gateway), and "does everyone reach the same
-place" is exactly what the Gateway tier solves - every client's first hop is one of
-*many* interchangeable gateway instances, not one fixed address.
+This directly answers what the brief asks about: the Matchmaker and the Game
+Allocator are each their **own** process, deliberately, because "who should play
+whom" (fairness) and "which physical worker has room for this game" (placement) are
+different concerns; and "does everyone reach the same place" is exactly what the
+Gateway tier (API + WS) solves - every client's first hop is one of *many*
+interchangeable gateway instances, not one fixed address.
 
 ## 2. Two kinds of traffic need two kinds of transport
 
 Not everything above should share one pipe. Two very different traffic shapes exist:
 
 - **Control plane** - low volume, latency-tolerant: matchmaking decisions, room
-  creation, game-finished notifications, presence changes. A real message broker
-  (NATS/Kafka) suits this well - the decoupling is valuable (a Gateway publishing
-  "player wants a match" doesn't need to know in advance which worker will end up
-  hosting it), and the volume is low enough that broker overhead is a non-issue.
+  creation, game-finished notifications, presence changes. **NATS** suits this well -
+  the decoupling is valuable (a WS Gateway publishing "player wants a match" doesn't
+  need to know in advance which worker will end up hosting it), and the volume is low
+  enough that broker overhead is a non-issue.
 - **Data plane** - high volume, latency-sensitive: the live gameplay stream itself,
   up to 15 broadcasts/sec *per active room* (today's `BROADCAST_INTERVAL_SECONDS`).
-  This must be a **direct stream** from Gateway to the *specific* Game-hosting worker
-  that owns the room (resolved once via the room registry), not routed through the
-  shared broker on every tick. Pushing the full gameplay volume (section 8: multiple
-  Tbps at this scale, before optimization) through a general-purpose broker would
-  make the broker itself the bottleneck.
+  This must be a **direct stream** from the WS Gateway to the *specific* Game-hosting
+  worker that owns the room (resolved once via the room registry), not routed through
+  NATS on every tick. Pushing the full gameplay volume (section 8: multiple Tbps at
+  this scale, before optimization) through a general-purpose broker would make the
+  broker itself the bottleneck - NATS carries the low-volume control events and the
+  JetStream move log (section 3), never the raw gameplay stream itself.
 
 ## 3. Room ownership: the gap a registry alone doesn't close
 
@@ -75,6 +81,51 @@ counterpart of what `game_room.py`'s `handle_disconnect`/`try_reconnect` and
 process - the lease is the same idea (a bounded grace period before someone else can
 claim the seat), just applied to "which worker owns this room" instead of "which
 connection owns this color."
+
+### Recovering a crashed room without losing the game
+
+A registry and a lease answer "who owns this room" - they don't answer what happens
+to the *game itself* once that owner disappears. Simply voiding a crashed room and
+sending both players back to matchmaking is the cheaper, more common choice in the
+industry, and it's defensible - but it's a poor experience for the two players who
+were mid-game, the same way losing an unsaved document is, regardless of how the
+crash happened. Since `GameEngine`'s `RealTimeArbiter` already computes every piece's
+position and cooldown as a deterministic function of *elapsed time since each move
+started* - not some hidden mutable state - a crashed room's state is cheap to
+reconstruct from its move history, rather than lost outright or fully replicated:
+
+- Every accepted move (`MoveLoggedEvent` - already carries `elapsed_ms`) is published
+  to a **NATS JetStream** stream scoped to that `room_id`, alongside the low-volume
+  control events elsewhere on NATS. Unlike that control traffic, this needs a
+  durable, ordered, replayable log - JetStream (not plain pub/sub) is built for
+  exactly that.
+- Retention is short and bounded on purpose: a room's stream only needs to live for
+  the room's lifetime (at most 90 seconds) plus a small grace window - never an
+  ever-growing dataset.
+- On a worker crash, the **Game Allocator** notices (the orchestrator's health-check,
+  plus the room lease expiring), assigns a *replacement* worker for each room that
+  worker held, and that new worker replays the room's JetStream stream: rebuild the
+  board from `STARTING_POSITION`, apply each `MoveLoggedEvent` in order, and use the
+  recorded timestamps to work out which pieces are still mid-flight or cooling down
+  *right now* - the same math `RealTimeArbiter` already does, just run forward from
+  history instead of from live ticks.
+- The new worker then acquires the room's lease (with priority, since the Game
+  Allocator specifically routed it there) and starts ticking normally; both players'
+  WS Gateways are redirected to the new worker address via the room registry.
+- This was weighed against a **paired hot-standby worker** (mirroring every room live
+  onto a second process, so failover is instant with no replay at all) and rejected
+  for cost: that would roughly double the entire Game-hosting fleet's footprint,
+  forever, to shave a brief, bounded replay gap down to near-zero - a poor trade for
+  a 30-90 second casual match. JetStream replay costs almost nothing extra per
+  worker (the durable copy lives in the JetStream cluster, not duplicated on every
+  worker) at the price of a short, bounded reconnect gap instead of a seamless one.
+- Postgres still only ever receives the **final** move-history summary once a game
+  actually ends (matching section 9's ~83,000 writes/sec) - it was never a candidate
+  for the *live* log itself: at 10M concurrent players moving roughly every 2
+  seconds, that's on the order of 5,000,000 move-events/sec system-wide, far beyond
+  what a relational database is built to sustain as a continuous write stream.
+  JetStream, an append-only log by design, is the right tool for that volume;
+  Postgres is the right tool for the durable, low-frequency summary.
 
 ## 4. "Open a Docker per game" vs. pooling many games in one process
 
@@ -157,22 +208,26 @@ process can hold 10M sockets, and - separately - no single Python process can ru
 "Everyone can play with everyone, and anyone can join any room" works because no
 client ever needs to know which physical machine anything lives on:
 
-1. A player connects to whichever Gateway is nearest (GeoDNS/global load balancer).
-   The Gateway computes no game logic - it only holds the socket and forwards traffic.
-2. **Play** -> Gateway forwards to the Matchmaker, which sees every waiting player
+1. A player logs in via the nearest **API Gateway** (login/register, no game logic),
+   then opens a live connection through the nearest **WS Gateway** (also no game
+   logic - it only holds the socket and forwards traffic).
+2. **Play** -> WS Gateway forwards to the Matchmaker, which sees every waiting player
    *globally* (the shared Redis-backed queue - section 1), not just players on this
    one Gateway. A player on a US gateway and one on a Tokyo gateway are both visible
    to the same queue and can be matched, unlike today's single-process
    `Matchmaker._waiting` dict, which only ever sees seekers connected to it.
-3. Once matched, the Matchmaker acquires a room-ownership lease (section 3) on an
-   available Game-hosting worker and publishes a low-volume `game-created`
-   control-plane event carrying `{room_id, worker_address}` back to both players'
-   gateways.
-4. Each Gateway opens the direct, high-frequency **data-plane** stream (section 2) to
-   that specific worker. **Join Room** for an arbitrary `room_id` works identically:
-   any Gateway looks up the current owner in the room registry and opens the same
-   kind of stream. A spectator does the same, just without ever being granted the
-   write lease - a pure subscriber.
+3. Once matched, the Matchmaker hands off to the **Game Allocator** - deliberately a
+   separate service, since "who should play whom" (fairness) and "which physical
+   worker has room for this game" (capacity/placement) are different concerns. The
+   Game Allocator picks an available Game-hosting worker, acquires its
+   room-ownership lease (section 3), and publishes a low-volume `match-found`
+   control-plane event carrying `{room_id, worker_address}` back to both players' WS
+   Gateways.
+4. Each WS Gateway opens the direct, high-frequency **data-plane** stream (section 2)
+   to that specific worker. **Join Room** for an arbitrary `room_id` works
+   identically: any WS Gateway looks up the current owner in the room registry and
+   opens the same kind of stream. A spectator does the same, just without ever being
+   granted the write lease - a pure subscriber.
 
 To be precise about what "who's on which server" actually means, since it's easy to
 conflate three different things: a player's **Gateway connection** is incidental and
@@ -186,7 +241,7 @@ instant a match happens - not at login.
 
 | Component fails | Effect | Recovery |
 |---|---|---|
-| A Game-hosting worker/Docker dies mid-game | Both clients lose their socket at the same instant; in-memory room state (not persisted) is gone | Orchestrator health-check notices the worker is gone; its room lease (section 3) simply expires, so no Gateway can route a new joiner into it. Given a game only lasts 30-90 seconds, the honest answer is to let the game end/fail gracefully (no rating penalty) and let both players re-queue, rather than engineering full mid-game state replication for such a short match - real-time chess also has pieces mid-flight/mid-interception, so an exact snapshot-resume risks a visibly wrong replay for a marginal benefit |
+| A Game-hosting worker/Docker dies mid-game | Both clients lose their socket at the same instant; the crashing worker's own in-memory state is gone | Orchestrator health-check plus the expiring room lease (section 3) tell the Game Allocator the worker is gone; it assigns a replacement worker per affected room, which **replays that room's NATS JetStream move log** (section 3) to reconstruct the board and re-acquires the lease - both WS Gateways redirect to the new worker. A short, bounded reconnect gap (at most ~90 seconds' worth of moves to replay, typically far less) - the game continues instead of being voided |
 | A Matchmaker instance dies | No data is lost - the seeker queue and room registry live in Redis, not in that instance's own memory (unlike today's single-process dict) | Orchestrator restarts it; the replacement resumes serving the same shared queue immediately |
 | Redis dies | The most serious failure, since everything above depends on it | Redis Cluster/Sentinel with replication; already-*running* games are unaffected (they only need their own two sockets) - only *new* matchmaking/room-joins pause fleet-wide until it recovers |
 | The Accounts DB dies | New logins/registrations fail | Already-running games are unaffected until their game-over rating write, which should be buffered/retried (a small outbox via the control-plane broker) rather than silently lost; mitigate with a replicated, multi-availability-zone DB with automatic failover |
@@ -200,17 +255,22 @@ already assume this - they exist specifically so the system survives losing an
 themselves should run across multiple regions for the same reason, with Gateways
 routing each player to their nearest healthy region.
 
-**Naming the reference scenario explicitly, per component**: the failure-mode table
-above actually makes two different bets about what's acceptable to lose - worth
-stating plainly rather than leaving implicit. For live game/board state, the
-reference scenario is *"losing one in-progress game is acceptable"* - a durable,
-replayable move log (e.g. via Kafka) was considered and deliberately not built,
-because the cost isn't justified for a 30-90 second casual match; a crashed room is
-simply voided and both players re-queue (no rating penalty). For ratings/account
-data, the reference scenario is the opposite - *"an update must never be silently
-lost"* - hence the buffered/retried write and the replicated DB. Same underlying
-question (reconstruct after failure, or design to never lose it?) answered
-differently per component, because the two kinds of data have very different value.
+**Naming the reference scenario explicitly, per component**: every piece of state in
+this design answers the same underlying question - reconstruct after failure, or
+accept losing it? - and the answer genuinely differs by component, worth stating
+plainly rather than leaving implicit. For live game/board state, the reference
+scenario is *"a crashed room should recover, not vanish"* (section 3's JetStream
+replay) - affordable to build because the physics is a deterministic function of
+time and move history, and because retention only ever needs to cover a single
+~90-second game, not a growing dataset. For ratings/account data, the reference
+scenario is stricter still - *"an update must never be silently lost"* - hence the
+buffered/retried write and the replicated DB; a wrong or missing rating update has
+no cheap recovery path the way a board position does. A **paired hot-standby
+worker** (mirroring every room live onto a second process, so failover is instant
+with no replay at all) was also considered and rejected here specifically for cost:
+it would roughly double the Game-hosting fleet's footprint, forever, to shave a
+brief, bounded replay gap down to near-zero - a poor trade for a 30-90 second casual
+match.
 
 ## 8. Question 3 - network traffic for one active player (~1 move every 2 seconds)
 
@@ -243,6 +303,14 @@ interpolates a piece's on-screen position between `position` and `target_positio
 using `progress` on the *client* side; the only change is *how often the server needs
 to resend the inputs to that interpolation* - once per move instead of once per tick.
 
+**A second, smaller stream**: section 3's JetStream move log adds its own write
+volume, separate from all of the player-facing traffic above - since it's written
+once per move rather than multiplied by however many recipients see it, it's roughly
+5,000,000 moves/sec system-wide x ~150-250B ≈ **~6-10 Gbps** into the JetStream
+cluster - the same order of magnitude as the fixed target-design row above, and
+comfortably within what a purpose-built append-only log is designed to sustain
+(unlike writing that same volume directly into Postgres).
+
 ## 9. Question 4 - games last 30-90 seconds; what does that mean for Docker roles?
 
 By Little's Law: 5,000,000 concurrent games ÷ ~60s average lifetime implies:
@@ -272,6 +340,9 @@ That's continuous churn, not a one-time cost, with concrete consequences:
   just stops accepting new rooms and drains its existing ones (bounded, ≤90s wait)
   before exiting - no live-migration machinery needed, unlike a service with
   hours-long sessions.
+- **Bounded replay cost**: the same short game length driving the conclusions above
+  also caps how much a crashed room's replacement worker ever needs to replay
+  (section 3) - at most ~90 seconds' worth of moves, typically far less.
 
 One upside worth naming explicitly: because games are so short-lived, the system
 **rebalances fast** - an overloaded Game-hosting worker fully drains within about a
@@ -304,10 +375,12 @@ single component needs to be huge; it needs to be replicated a lot.
 1. **100M registered users** - a replicated Postgres/MySQL cluster behind a single
    Accounts service (section 6) comfortably handles the data volume; SQLite is ruled
    out for architectural reasons (single writer, no network protocol), not size.
-2. **10M concurrent players, routing, shared rooms, role division** - a Gateway tier,
-   a Redis-backed Matchmaker tier with leased room ownership, and a ~10,000-worker
-   Game-hosting fleet (sections 1-3, 7, 10), with explicit failure handling for every
-   tier.
+2. **10M concurrent players, routing, shared rooms, role division** - a split
+   API/WS Gateway tier, a Redis-backed Matchmaker paired with a separate Game
+   Allocator (fairness and placement kept as distinct concerns), leased room
+   ownership with JetStream-based crash recovery, and a ~10,000-worker Game-hosting
+   fleet (sections 1-3, 7, 10) - with explicit failure handling for every tier,
+   including a crashed room recovering rather than vanishing.
 3. **Network traffic at ~1 move/2s** - measured directly from the real code (~84
    KB/s/player, ~6.7 Tbps fleet-wide unmodified) and identified as the top
    optimization target, with a concrete fix that reuses the client's existing
@@ -326,9 +399,14 @@ single component needs to be huge; it needs to be replicated a lot.
   room again through *any* Gateway, not just the one that held the original socket -
   works by construction here (the room registry is globally reachable), but needs
   verification under real failover timing.
-- **Control-plane broker capacity**: needs explicit sizing for ~83,000
-  game-created/game-finished events/sec plus presence churn - low volume relative to
-  gameplay traffic, but not zero, and worth a real load test rather than an assumption.
+- **NATS capacity, two different shapes**: the low-volume control events (~83,000
+  match-found/game-finished/sec plus presence churn) need sizing, and separately -
+  at a very different scale - so does the JetStream move-log stream (~6-10 Gbps,
+  section 8). Both are estimates, not measurements; worth a real load test on each.
+- **JetStream replay correctness under real load**: the replay math (section 3)
+  assumes `RealTimeArbiter`'s position/cooldown logic can be run forward from
+  recorded timestamps with no drift - reasonable given how it's built today, but not
+  yet verified against a real crash-and-replay test.
 - **Games-per-worker (~500-1,000) and connections-per-Gateway (~20,000)** are planning
   numbers, not measurements - the next real step is benchmarking actual tick cost and
   socket overhead on real hardware to replace them with data.
