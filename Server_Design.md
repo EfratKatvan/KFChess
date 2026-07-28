@@ -421,7 +421,38 @@ recommended stack (NATS/Redis PubSub, Redis, PostgreSQL, Docker Compose, K8s/K3s
 logical component is not automatically its own container - the right grouping
 question is: **do these components share the same exposure surface and the same
 scaling profile?** Combine when yes; keep separate when they differ in protocol,
-statefulness, or blast radius:
+statefulness, or blast radius.
+
+**Today's actual code, as a diagram** - one process, one event loop, everything
+sharing in-memory state:
+
+```mermaid
+flowchart TD
+    Client(["Client - app.py"])
+    Server["server.py: run()\nsingle process, single event loop"]
+    Accounts["accounts.py\n(logic: password hashing, ELO)"]
+    AccountsDB["accounts_db.py\n(raw SQL)"]
+    SQLite[("kfchess_users.db\nSQLite - local file")]
+    MM["Matchmaker\nsingle in-memory instance"]
+    RR["RoomRegistry\n(rooms.py) - in-memory dict"]
+    GR["GameRoom\none asyncio.Task per game"]
+    Engine["GameEngine + RuleEngine +\nRealTimeArbiter (kungfu_chess/engine)"]
+
+    Client -- "WebSocket ws://localhost:8765" --> Server
+    Server -- "_authenticate()" --> Accounts --> AccountsDB --> SQLite
+    Server -- "on_connect/on_message/on_disconnect" --> MM
+    MM -- "_waiting: Dict[ws, Seeker]\nlinear ELO scan" --> MM
+    MM -- "Create/Join Room" --> RR
+    MM -- "creates directly (fused: matching+allocation)" --> GR
+    GR --> Engine
+    GR -- "tick 60Hz, broadcast 15Hz\n~5.6KB/message" --> Client
+    GR -- "rating update at game-over" --> Accounts
+```
+
+The state that matters for splitting this up (`_waiting`, `_rooms`,
+`_active_connections`, `RoomRegistry`) is keyed by a live `ServerConnection` object in
+memory, not by an opaque id (`user_id`/`room_id`) - that's exactly what has to change
+before any of this can be split across processes.
 
 | Rule | Applied here |
 |---|---|
@@ -513,22 +544,54 @@ anything that needs to survive that specific instance crashing.
 
 ## 15. End-to-end flow of the target architecture
 
-```
-Client
-  --(HTTP: login/register/rooms/history)--> API Service --> PostgreSQL
-  --(WebSocket, live)--> WS Gateway
-      WS Gateway --(seek/create/join room)--> Matchmaking Service
-          Matchmaker  <--> Redis (shared seeker ZSET, room registry+lease)
-          Game Allocator <--> Redis
-          Game Allocator --(NATS: match-found, allocate)--> NATS
-      NATS --(notifies)--> WS Gateway
-      WS Gateway ==(data-plane: moves/state, 10-15Hz, direct)==> Game Server Shard
-          Game Server Shard --(move log)--> NATS JetStream
-          Game Server Shard --(rating update at game-over)--> API Service
-          Game Server Shard --(heartbeat/lease renew)--> Redis
-  Observability reads metrics/logs from API Service, WS Gateway,
-  Matchmaking Service and every Game Server Shard - never on any player's
-  request path.
+```mermaid
+flowchart TD
+    C(["Client (player)"])
+
+    subgraph U1["Deployable unit 1: API Service (one Docker image)"]
+        API["Auth · Rooms(REST) · Rating/History"]
+    end
+
+    subgraph U2["Deployable unit 2: WS Gateway (one Docker image)"]
+        WSG["Holds live WebSocket connections\nno game logic"]
+    end
+
+    subgraph U3["Deployable unit 3: Matchmaking Service (one Docker image)"]
+        MMK["Matchmaker\n(fairness/ELO)"]
+        GA["Game Allocator\n(placement)"]
+        MMK -- "match-found" --> GA
+    end
+
+    subgraph U4["Deployable unit 4: Game Server Shards (many Dockers)"]
+        GS1["Shard A\nGameRoom x N"]
+        GS2["Shard B\nGameRoom x N"]
+    end
+
+    Redis[("Redis\nseeker ZSET · Room Registry+Lease · presence")]
+    NATS[("NATS + JetStream\ncontrol events · durable move log for recovery")]
+    PG[("PostgreSQL\nusers · games · rating · history")]
+    OBS["Observability\nlogs/metrics/alerts/traces"]
+
+    C -- "HTTP: login/register/rooms/history" --> API
+    API --> PG
+
+    C -- "live WebSocket" --> WSG
+    WSG -- "seek/create/join room" --> MMK
+    MMK <--> Redis
+    GA <--> Redis
+    GA -. "NATS: match-found, allocate" .-> NATS
+    NATS -. "notifies" .-> WSG
+
+    WSG == "data-plane: moves/state, 10-15Hz, direct" ==> GS1
+    WSG == "data-plane" ==> GS2
+    GS1 -- "move log (JetStream)" --> NATS
+    GS1 -- "rating update at game-over" --> API
+    GS1 -- "heartbeat/lease renew" --> Redis
+
+    API --> OBS
+    WSG --> OBS
+    MMK --> OBS
+    GS1 --> OBS
 ```
 
 Step by step:
