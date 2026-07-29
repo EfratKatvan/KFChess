@@ -9,8 +9,9 @@ from typing import Awaitable, Callable, Dict, Optional, Tuple, Type
 from redis.asyncio import Redis
 from websockets.asyncio.server import ServerConnection
 
-from kungfu_chess.server import accounts, protocol
-from kungfu_chess.server.accounts import DEFAULT_DB_PATH
+from kungfu_chess.server import protocol
+from kungfu_chess.server.accounts_client import AccountsClient
+from kungfu_chess.server.accounts_client import get_client as get_accounts_client
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
@@ -69,8 +70,8 @@ class Matchmaker:
     rejected outright, rather than silently entering the lobby and
     potentially seeking against itself."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH, redis_client: Optional[Redis] = None) -> None:
-        self._db_path = db_path
+    def __init__(self, accounts_client: Optional[AccountsClient] = None, redis_client: Optional[Redis] = None) -> None:
+        self._accounts_client = accounts_client or get_accounts_client()
         self._redis = redis_client or get_redis_client()
         # A per-instance namespace, not a fixed key: production only ever
         # constructs one Matchmaker, so this changes nothing there - it
@@ -196,7 +197,7 @@ class Matchmaker:
         # rating that's since moved in the database - a stale snapshot
         # could approve (or refuse) a match that no longer reflects
         # either player's real current rating.
-        rating = accounts.get_rating(self._db_path, username)
+        rating = await self._accounts_client.get_rating(username)
 
         opponent_username = await self._claim_opponent_within_elo_range(rating)
         if opponent_username is not None:
@@ -206,7 +207,7 @@ class Matchmaker:
                 room = GameRoom(
                     white_ws=opponent.ws, white_username=opponent_username,
                     black_ws=ws, black_username=username,
-                    db_path=self._db_path,
+                    accounts_client=self._accounts_client,
                 )
                 self._rooms[opponent.ws] = room
                 self._rooms[ws] = room
@@ -292,7 +293,7 @@ class Matchmaker:
             game_room = GameRoom(
                 white_ws=creator_ws, white_username=room.creator_username,
                 black_ws=ws, black_username=username,
-                db_path=self._db_path, room_id=room.room_id,
+                accounts_client=self._accounts_client, room_id=room.room_id,
                 on_game_over=lambda: self._close_room(room.room_id),
             )
             self._room_games[room.room_id] = game_room
@@ -307,12 +308,14 @@ class Matchmaker:
         self._rooms[ws] = game_room
         logger.info("room %s: %s joined as a spectator", room.room_id, username)
         await game_room.add_spectator(ws)
+        white_rating = await self._accounts_client.get_rating(room.creator_username)
+        black_rating = await self._accounts_client.get_rating(room.opponent_username)
         await ws.send(serialize_message(SpectatingMessage(
             room_id=room.room_id,
             white_username=room.creator_username,
-            white_rating=accounts.get_rating(self._db_path, room.creator_username),
+            white_rating=white_rating,
             black_username=room.opponent_username,
-            black_rating=accounts.get_rating(self._db_path, room.opponent_username),
+            black_rating=black_rating,
         )))
 
     async def _cancel_room(self, ws: ServerConnection, message: CancelRoomMessage) -> None:

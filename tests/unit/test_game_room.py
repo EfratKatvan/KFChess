@@ -6,18 +6,19 @@ from kungfu_chess.engine.board_view_state import BoardViewState, PieceView
 from kungfu_chess.model.piece import KING, WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.server import accounts, protocol
+from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import ResignMessage, SelectOrMoveMessage
 from tests.unit.test_matchmaker import FakeConnection, _last_type
 
 
-def _make_room(db_path, white_ws=None, black_ws=None):
+def _make_room(db_path, accounts_base_url, white_ws=None, black_ws=None):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
     return GameRoom(
         white_ws or FakeConnection("white"), "white_player",
         black_ws or FakeConnection("black"), "black_player",
-        db_path=db_path,
+        accounts_client=AccountsClient(accounts_base_url),
     )
 
 
@@ -38,12 +39,12 @@ def _view_state_with_survivor(color: str) -> BoardViewState:
     )
 
 
-def test_match_found_sent_to_both_connections_on_start(db_path):
-    asyncio.run(_start_scenario(db_path))
+def test_match_found_sent_to_both_connections_on_start(db_path, accounts_base_url):
+    asyncio.run(_start_scenario(db_path, accounts_base_url))
 
 
-async def _start_scenario(db_path):
-    room = _make_room(db_path)
+async def _start_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
 
     await room.start()
 
@@ -60,13 +61,13 @@ async def _start_scenario(db_path):
     room.stop()
 
 
-def test_white_cannot_move_a_black_piece_through_the_room(db_path):
-    asyncio.run(_gating_scenario(db_path))
+def test_white_cannot_move_a_black_piece_through_the_room(db_path, accounts_base_url):
+    asyncio.run(_gating_scenario(db_path, accounts_base_url))
 
 
-async def _gating_scenario(db_path):
+async def _gating_scenario(db_path, accounts_base_url):
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
-    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", accounts_client=AccountsClient(accounts_base_url))
     await room.start()
 
     # A black pawn starts at row 1 in the standard starting position - white shouldn't be able to select it.
@@ -79,19 +80,19 @@ async def _gating_scenario(db_path):
     room.stop()
 
 
-def test_apply_rating_update_credits_the_survivors_color_as_the_winner(db_path):
-    asyncio.run(_rating_update_scenario(db_path))
+def test_apply_rating_update_credits_the_survivors_color_as_the_winner(db_path, accounts_base_url):
+    asyncio.run(_rating_update_scenario(db_path, accounts_base_url))
 
 
-async def _rating_update_scenario(db_path):
+async def _rating_update_scenario(db_path, accounts_base_url):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
 
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
-    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", accounts_client=AccountsClient(accounts_base_url))
     await room.start()
 
-    room._apply_rating_update(_view_state_with_survivor(WHITE))  # only white's king survives
+    await room._apply_rating_update(_view_state_with_survivor(WHITE))  # only white's king survives
 
     assert accounts.get_rating(db_path, "white_player") == accounts.STARTING_RATING + accounts.ELO_K_FACTOR // 2
     assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING - accounts.ELO_K_FACTOR // 2
@@ -99,23 +100,23 @@ async def _rating_update_scenario(db_path):
     room.stop()
 
 
-def test_apply_rating_update_only_ever_applies_once_per_game(db_path):
-    asyncio.run(_rating_update_once_scenario(db_path))
+def test_apply_rating_update_only_ever_applies_once_per_game(db_path, accounts_base_url):
+    asyncio.run(_rating_update_once_scenario(db_path, accounts_base_url))
 
 
-async def _rating_update_once_scenario(db_path):
+async def _rating_update_once_scenario(db_path, accounts_base_url):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
 
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
-    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", accounts_client=AccountsClient(accounts_base_url))
     await room.start()
 
     view_state = _view_state_with_survivor(WHITE)
-    room._apply_rating_update(view_state)
+    await room._apply_rating_update(view_state)
     rating_after_first_call = accounts.get_rating(db_path, "white_player")
 
-    room._apply_rating_update(view_state)  # a second call must be a no-op (_rating_update_applied guard)
+    await room._apply_rating_update(view_state)  # a second call must be a no-op (_rating_update_applied guard)
     rating_after_second_call = accounts.get_rating(db_path, "white_player")
 
     assert rating_after_first_call == rating_after_second_call
@@ -127,13 +128,13 @@ async def _rating_update_once_scenario(db_path):
 # Disconnect / reconnect / auto-resign
 # ==========================================
 
-def test_handle_disconnect_pauses_the_room_and_notifies_the_survivor(db_path):
-    asyncio.run(_disconnect_scenario(db_path))
+def test_handle_disconnect_pauses_the_room_and_notifies_the_survivor(db_path, accounts_base_url):
+    asyncio.run(_disconnect_scenario(db_path, accounts_base_url))
 
 
-async def _disconnect_scenario(db_path):
+async def _disconnect_scenario(db_path, accounts_base_url):
     black_ws = FakeConnection("black")
-    room = _make_room(db_path, black_ws=black_ws)
+    room = _make_room(db_path, accounts_base_url, black_ws=black_ws)
     await room.start()
 
     await room.handle_disconnect(WHITE)
@@ -145,12 +146,12 @@ async def _disconnect_scenario(db_path):
     room.stop()
 
 
-def test_paused_room_does_not_advance_the_engine_clock(db_path):
-    asyncio.run(_paused_clock_scenario(db_path))
+def test_paused_room_does_not_advance_the_engine_clock(db_path, accounts_base_url):
+    asyncio.run(_paused_clock_scenario(db_path, accounts_base_url))
 
 
-async def _paused_clock_scenario(db_path):
-    room = _make_room(db_path)
+async def _paused_clock_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     await room.handle_disconnect(WHITE)
 
@@ -169,11 +170,11 @@ async def _paused_clock_scenario(db_path):
 # send is throttled to BROADCAST_INTERVAL_SECONDS
 # ==========================================
 
-def test_tick_once_does_not_broadcast_again_before_the_interval_elapses(db_path):
-    asyncio.run(_no_broadcast_yet_scenario(db_path))
+def test_tick_once_does_not_broadcast_again_before_the_interval_elapses(db_path, accounts_base_url):
+    asyncio.run(_no_broadcast_yet_scenario(db_path, accounts_base_url))
 
 
-async def _no_broadcast_yet_scenario(db_path):
+async def _no_broadcast_yet_scenario(db_path, accounts_base_url):
     # Registration (now deliberately slow - see accounts.PBKDF2_ITERATIONS)
     # must happen before constructing GameRoom, not after - its
     # constructor starts the broadcast-throttle clock immediately, and
@@ -182,7 +183,7 @@ async def _no_broadcast_yet_scenario(db_path):
     white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
-    room = GameRoom(white_ws, "white_player", black_ws, "black_player", db_path=db_path)
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", accounts_client=AccountsClient(accounts_base_url))
     await room.start()  # sends match_found - one message each, not a broadcast
 
     sent_count_after_start = len(white_ws.sent)
@@ -192,14 +193,14 @@ async def _no_broadcast_yet_scenario(db_path):
     room.stop()
 
 
-def test_tick_once_broadcasts_once_the_interval_has_elapsed(db_path):
-    asyncio.run(_broadcast_after_interval_scenario(db_path))
+def test_tick_once_broadcasts_once_the_interval_has_elapsed(db_path, accounts_base_url):
+    asyncio.run(_broadcast_after_interval_scenario(db_path, accounts_base_url))
 
 
-async def _broadcast_after_interval_scenario(db_path):
+async def _broadcast_after_interval_scenario(db_path, accounts_base_url):
     from kungfu_chess.server.game_room import BROADCAST_INTERVAL_SECONDS
 
-    room = _make_room(db_path)
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     white_ws = room._connections[WHITE]
     sent_count_after_start = len(white_ws.sent)
@@ -213,14 +214,14 @@ async def _broadcast_after_interval_scenario(db_path):
     room.stop()
 
 
-def test_physics_advances_every_tick_regardless_of_the_broadcast_throttle(db_path):
+def test_physics_advances_every_tick_regardless_of_the_broadcast_throttle(db_path, accounts_base_url):
     """The throttle only affects whether _broadcast() is called - engine.wait()
     must still run on every single _tick_once(), so motion timing stays accurate."""
-    asyncio.run(_physics_unaffected_scenario(db_path))
+    asyncio.run(_physics_unaffected_scenario(db_path, accounts_base_url))
 
 
-async def _physics_unaffected_scenario(db_path):
-    room = _make_room(db_path)
+async def _physics_unaffected_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
 
     room._last_tick -= 1.0  # pretend a full second has passed
@@ -233,13 +234,13 @@ async def _physics_unaffected_scenario(db_path):
     room.stop()
 
 
-def test_try_reconnect_resumes_the_clock_and_notifies_the_survivor(db_path):
-    asyncio.run(_reconnect_scenario(db_path))
+def test_try_reconnect_resumes_the_clock_and_notifies_the_survivor(db_path, accounts_base_url):
+    asyncio.run(_reconnect_scenario(db_path, accounts_base_url))
 
 
-async def _reconnect_scenario(db_path):
+async def _reconnect_scenario(db_path, accounts_base_url):
     black_ws = FakeConnection("black")
-    room = _make_room(db_path, black_ws=black_ws)
+    room = _make_room(db_path, accounts_base_url, black_ws=black_ws)
     await room.start()
     await room.handle_disconnect(WHITE)
 
@@ -256,12 +257,12 @@ async def _reconnect_scenario(db_path):
     room.stop()
 
 
-def test_try_reconnect_rejects_the_wrong_color(db_path):
-    asyncio.run(_reconnect_wrong_color_scenario(db_path))
+def test_try_reconnect_rejects_the_wrong_color(db_path, accounts_base_url):
+    asyncio.run(_reconnect_wrong_color_scenario(db_path, accounts_base_url))
 
 
-async def _reconnect_wrong_color_scenario(db_path):
-    room = _make_room(db_path)
+async def _reconnect_wrong_color_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     await room.handle_disconnect(WHITE)
 
@@ -272,13 +273,13 @@ async def _reconnect_wrong_color_scenario(db_path):
     room.stop()
 
 
-def test_auto_resign_ends_the_game_and_credits_the_survivor(db_path, monkeypatch):
+def test_auto_resign_ends_the_game_and_credits_the_survivor(db_path, monkeypatch, accounts_base_url):
     monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.05)
-    asyncio.run(_auto_resign_scenario(db_path))
+    asyncio.run(_auto_resign_scenario(db_path, accounts_base_url))
 
 
-async def _auto_resign_scenario(db_path):
-    room = _make_room(db_path)
+async def _auto_resign_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
 
     await room.handle_disconnect(WHITE)  # black is the survivor
@@ -291,12 +292,12 @@ async def _auto_resign_scenario(db_path):
     room.stop()
 
 
-def test_resign_ends_the_game_and_credits_the_opponent(db_path):
-    asyncio.run(_resign_scenario(db_path))
+def test_resign_ends_the_game_and_credits_the_opponent(db_path, accounts_base_url):
+    asyncio.run(_resign_scenario(db_path, accounts_base_url))
 
 
-async def _resign_scenario(db_path):
-    room = _make_room(db_path)
+async def _resign_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
 
     await room.handle_message(WHITE, ResignMessage())
@@ -308,12 +309,12 @@ async def _resign_scenario(db_path):
     room.stop()
 
 
-def test_resign_after_game_over_is_a_no_op(db_path):
-    asyncio.run(_resign_after_game_over_scenario(db_path))
+def test_resign_after_game_over_is_a_no_op(db_path, accounts_base_url):
+    asyncio.run(_resign_after_game_over_scenario(db_path, accounts_base_url))
 
 
-async def _resign_after_game_over_scenario(db_path):
-    room = _make_room(db_path)
+async def _resign_after_game_over_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
 
     await room.handle_message(WHITE, ResignMessage())  # black wins
@@ -325,12 +326,12 @@ async def _resign_after_game_over_scenario(db_path):
     room.stop()
 
 
-def test_leave_by_a_real_player_stops_the_room_and_returns_the_opponent(db_path):
-    asyncio.run(_leave_scenario(db_path))
+def test_leave_by_a_real_player_stops_the_room_and_returns_the_opponent(db_path, accounts_base_url):
+    asyncio.run(_leave_scenario(db_path, accounts_base_url))
 
 
-async def _leave_scenario(db_path):
-    room = _make_room(db_path)
+async def _leave_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     room._engine.resign()  # the game must already be over - Matchmaker._leave_room only calls this once it is
 
@@ -341,12 +342,12 @@ async def _leave_scenario(db_path):
     assert room._tick_task.cancelled()
 
 
-def test_leave_by_a_spectator_affects_no_one_else(db_path):
-    asyncio.run(_spectator_leave_scenario(db_path))
+def test_leave_by_a_spectator_affects_no_one_else(db_path, accounts_base_url):
+    asyncio.run(_spectator_leave_scenario(db_path, accounts_base_url))
 
 
-async def _spectator_leave_scenario(db_path):
-    room = _make_room(db_path)
+async def _spectator_leave_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     room._engine.resign()
     spectator_ws = FakeConnection("spectator")
@@ -362,13 +363,13 @@ async def _spectator_leave_scenario(db_path):
     room.stop()
 
 
-def test_reconnecting_before_the_grace_period_cancels_the_auto_resign(db_path, monkeypatch):
+def test_reconnecting_before_the_grace_period_cancels_the_auto_resign(db_path, monkeypatch, accounts_base_url):
     monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.2)
-    asyncio.run(_reconnect_cancels_resign_scenario(db_path))
+    asyncio.run(_reconnect_cancels_resign_scenario(db_path, accounts_base_url))
 
 
-async def _reconnect_cancels_resign_scenario(db_path):
-    room = _make_room(db_path)
+async def _reconnect_cancels_resign_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
 
     await room.handle_disconnect(WHITE)
@@ -386,12 +387,12 @@ async def _reconnect_cancels_resign_scenario(db_path):
 # Spectators
 # ==========================================
 
-def test_add_spectator_sends_an_immediate_state_snapshot(db_path):
-    asyncio.run(_add_spectator_scenario(db_path))
+def test_add_spectator_sends_an_immediate_state_snapshot(db_path, accounts_base_url):
+    asyncio.run(_add_spectator_scenario(db_path, accounts_base_url))
 
 
-async def _add_spectator_scenario(db_path):
-    room = _make_room(db_path)
+async def _add_spectator_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     spectator_ws = FakeConnection("spectator")
 
@@ -402,12 +403,12 @@ async def _add_spectator_scenario(db_path):
     room.stop()
 
 
-def test_spectator_state_message_has_no_personal_selection(db_path):
-    asyncio.run(_spectator_state_shape_scenario(db_path))
+def test_spectator_state_message_has_no_personal_selection(db_path, accounts_base_url):
+    asyncio.run(_spectator_state_shape_scenario(db_path, accounts_base_url))
 
 
-async def _spectator_state_shape_scenario(db_path):
-    room = _make_room(db_path)
+async def _spectator_state_shape_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     spectator_ws = FakeConnection("spectator")
 
@@ -421,14 +422,14 @@ async def _spectator_state_shape_scenario(db_path):
     room.stop()
 
 
-def test_spectator_receives_broadcasts_on_the_normal_tick_interval(db_path):
-    asyncio.run(_spectator_broadcast_scenario(db_path))
+def test_spectator_receives_broadcasts_on_the_normal_tick_interval(db_path, accounts_base_url):
+    asyncio.run(_spectator_broadcast_scenario(db_path, accounts_base_url))
 
 
-async def _spectator_broadcast_scenario(db_path):
+async def _spectator_broadcast_scenario(db_path, accounts_base_url):
     from kungfu_chess.server.game_room import BROADCAST_INTERVAL_SECONDS
 
-    room = _make_room(db_path)
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     spectator_ws = FakeConnection("spectator")
     await room.add_spectator(spectator_ws)
@@ -443,14 +444,14 @@ async def _spectator_broadcast_scenario(db_path):
     room.stop()
 
 
-def test_remove_spectator_stops_further_broadcasts_to_it(db_path):
-    asyncio.run(_remove_spectator_scenario(db_path))
+def test_remove_spectator_stops_further_broadcasts_to_it(db_path, accounts_base_url):
+    asyncio.run(_remove_spectator_scenario(db_path, accounts_base_url))
 
 
-async def _remove_spectator_scenario(db_path):
+async def _remove_spectator_scenario(db_path, accounts_base_url):
     from kungfu_chess.server.game_room import BROADCAST_INTERVAL_SECONDS
 
-    room = _make_room(db_path)
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     spectator_ws = FakeConnection("spectator")
     await room.add_spectator(spectator_ws)
@@ -465,14 +466,14 @@ async def _remove_spectator_scenario(db_path):
     room.stop()
 
 
-def test_spectator_survives_a_restart(db_path):
+def test_spectator_survives_a_restart(db_path, accounts_base_url):
     """A RestartMessage rebuilds the game via _build_fresh_game - a
     spectator watching a room shouldn't have to rejoin after one."""
-    asyncio.run(_spectator_survives_restart_scenario(db_path))
+    asyncio.run(_spectator_survives_restart_scenario(db_path, accounts_base_url))
 
 
-async def _spectator_survives_restart_scenario(db_path):
-    room = _make_room(db_path)
+async def _spectator_survives_restart_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
     await room.start()
     spectator_ws = FakeConnection("spectator")
     await room.add_spectator(spectator_ws)
@@ -482,35 +483,39 @@ async def _spectator_survives_restart_scenario(db_path):
     assert spectator_ws in room._spectators
 
 
-def test_match_found_message_carries_the_room_id_when_set(db_path):
-    asyncio.run(_match_found_room_id_scenario(db_path))
+def test_match_found_message_carries_the_room_id_when_set(db_path, accounts_base_url):
+    asyncio.run(_match_found_room_id_scenario(db_path, accounts_base_url))
 
 
-async def _match_found_room_id_scenario(db_path):
+async def _match_found_room_id_scenario(db_path, accounts_base_url):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
     room = GameRoom(
         FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
-        db_path=db_path, room_id="ABC123",
+        accounts_client=AccountsClient(accounts_base_url), room_id="ABC123",
     )
 
-    assert room._match_found_message(WHITE).room_id == "ABC123"
+    assert (await room._match_found_message(WHITE)).room_id == "ABC123"
 
 
-def test_match_found_message_room_id_is_none_for_a_play_matched_game(db_path):
-    room = _make_room(db_path)
-
-    assert room._match_found_message(WHITE).room_id is None
+def test_match_found_message_room_id_is_none_for_a_play_matched_game(db_path, accounts_base_url):
+    asyncio.run(_match_found_room_id_none_scenario(db_path, accounts_base_url))
 
 
-def test_on_game_over_callback_does_not_fire_at_game_over_itself(db_path):
+async def _match_found_room_id_none_scenario(db_path, accounts_base_url):
+    room = _make_room(db_path, accounts_base_url)
+
+    assert (await room._match_found_message(WHITE)).room_id is None
+
+
+def test_on_game_over_callback_does_not_fire_at_game_over_itself(db_path, accounts_base_url):
     """Both players might still click New Game in the same room - the
     room's own name in the registry must stay reserved for them until
     someone actually leaves, not free up the instant the game ends."""
-    asyncio.run(_no_callback_at_game_over_scenario(db_path))
+    asyncio.run(_no_callback_at_game_over_scenario(db_path, accounts_base_url))
 
 
-async def _no_callback_at_game_over_scenario(db_path):
+async def _no_callback_at_game_over_scenario(db_path, accounts_base_url):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
     calls = []
@@ -520,23 +525,23 @@ async def _no_callback_at_game_over_scenario(db_path):
 
     room = GameRoom(
         FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
-        db_path=db_path, room_id="ABC123", on_game_over=on_game_over,
+        accounts_client=AccountsClient(accounts_base_url), room_id="ABC123", on_game_over=on_game_over,
     )
     await room.start()
 
     view_state = _view_state_with_survivor(WHITE)
-    room._apply_rating_update(view_state)
+    await room._apply_rating_update(view_state)
 
     assert calls == []
 
     room.stop()
 
 
-def test_on_game_over_callback_fires_exactly_once_when_a_player_leaves(db_path):
-    asyncio.run(_on_game_over_callback_scenario(db_path))
+def test_on_game_over_callback_fires_exactly_once_when_a_player_leaves(db_path, accounts_base_url):
+    asyncio.run(_on_game_over_callback_scenario(db_path, accounts_base_url))
 
 
-async def _on_game_over_callback_scenario(db_path):
+async def _on_game_over_callback_scenario(db_path, accounts_base_url):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
     calls = []
@@ -546,7 +551,7 @@ async def _on_game_over_callback_scenario(db_path):
 
     room = GameRoom(
         FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
-        db_path=db_path, room_id="ABC123", on_game_over=on_game_over,
+        accounts_client=AccountsClient(accounts_base_url), room_id="ABC123", on_game_over=on_game_over,
     )
     await room.start()
     room._engine.resign()

@@ -8,6 +8,8 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from kungfu_chess.logging_config import configure_logging
 from kungfu_chess.server import accounts
+from kungfu_chess.server.accounts_client import ACCOUNTS_SERVICE_URL, AccountsClient
+from kungfu_chess.server.accounts_client import get_client as get_accounts_client
 from kungfu_chess.server.matchmaker import Matchmaker
 from kungfu_chess.server.messages import LoginFailedMessage, LoginMessage, LoginOkMessage, RegisterMessage
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
@@ -65,11 +67,13 @@ def _login_response(result: accounts.AuthResult) -> Any:
     return LoginOkMessage(rating=result.rating)
 
 
-async def _authenticate(ws: ServerConnection, db_path: str) -> Optional[Tuple[str, int]]:
+async def _authenticate(ws: ServerConnection, accounts_client: AccountsClient) -> Optional[Tuple[str, int]]:
     """Application: orchestrates one login/register by calling each
     layer in turn - transport/protocol (_recv_login_message), model
-    (accounts.login or accounts.register, chosen by the request's own
-    type), presentation (_login_response), then transport again
+    (accounts_client.login or accounts_client.register, chosen by the
+    request's own type - an HTTP call to the Accounts/Ratings API
+    Service, not a direct accounts.py/sqlite3 call, per Server_Design.md
+    section 6), presentation (_login_response), then transport again
     (_try_send) - without any layer's logic living inside another.
     Returns the authenticated (username, rating), or None if the
     connection should be dropped (bad credentials, username already
@@ -79,17 +83,17 @@ async def _authenticate(ws: ServerConnection, db_path: str) -> Optional[Tuple[st
         return None
 
     if isinstance(message, RegisterMessage):
-        result = accounts.register(db_path, message.username, message.password)
+        result = await accounts_client.register(message.username, message.password)
     else:
-        result = accounts.login(db_path, message.username, message.password)
+        result = await accounts_client.login(message.username, message.password)
     await _try_send(ws, _login_response(result))
     if not result.success:
         return None
     return message.username, result.rating
 
 
-async def _handle_connection(matchmaker: Matchmaker, db_path: str, ws: ServerConnection) -> None:
-    auth = await _authenticate(ws, db_path)
+async def _handle_connection(matchmaker: Matchmaker, accounts_client: AccountsClient, ws: ServerConnection) -> None:
+    auth = await _authenticate(ws, accounts_client)
     if auth is None:
         return  # never enters the lobby - bad login or the connection dropped before completing it
     username, _ = auth
@@ -105,10 +109,10 @@ async def _handle_connection(matchmaker: Matchmaker, db_path: str, ws: ServerCon
         await matchmaker.on_disconnect(ws)
 
 
-async def run(host: str = HOST, port: int = PORT, db_path: str = accounts.DEFAULT_DB_PATH) -> None:
-    accounts.init_db(db_path)
-    matchmaker = Matchmaker(db_path=db_path)
-    async with serve(lambda ws: _handle_connection(matchmaker, db_path, ws), host, port):
+async def run(host: str = HOST, port: int = PORT, accounts_service_url: str = ACCOUNTS_SERVICE_URL) -> None:
+    accounts_client = get_accounts_client(accounts_service_url)
+    matchmaker = Matchmaker(accounts_client=accounts_client)
+    async with serve(lambda ws: _handle_connection(matchmaker, accounts_client, ws), host, port):
         logger.info("Kung Fu Chess server listening on ws://%s:%s", host, port)
         await asyncio.Future()  # runs until the process is killed
 

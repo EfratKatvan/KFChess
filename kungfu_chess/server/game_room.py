@@ -15,7 +15,8 @@ from kungfu_chess.model.piece import KING, WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
 from kungfu_chess.rules.rule_engine import RuleEngine
-from kungfu_chess.server import accounts, protocol
+from kungfu_chess.server import protocol
+from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.messages import (
     JumpMessage,
     MatchFoundMessage,
@@ -50,13 +51,13 @@ class GameRoom:
         self,
         white_ws: ServerConnection, white_username: str,
         black_ws: ServerConnection, black_username: str,
-        db_path: str = accounts.DEFAULT_DB_PATH,
+        accounts_client: AccountsClient,
         room_id: Optional[str] = None,
         on_game_over: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         self._connections: Dict[str, ServerConnection] = {WHITE: white_ws, BLACK: black_ws}
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
-        self._db_path = db_path
+        self._accounts_client = accounts_client
         self._room_id = room_id
         self._on_game_over = on_game_over
         # Spectators live outside _connections (they have no color) - a
@@ -98,14 +99,16 @@ class GameRoom:
 
     async def start(self) -> None:
         for color, ws in self._connections.items():
-            await self._safe_send(ws, self._match_found_message(color))
+            await self._safe_send(ws, await self._match_found_message(color))
         self._tick_task = asyncio.create_task(self._run())
 
-    def _match_found_message(self, color: str) -> MatchFoundMessage:
+    async def _match_found_message(self, color: str) -> MatchFoundMessage:
+        white_rating = await self._accounts_client.get_rating(self._usernames[WHITE])
+        black_rating = await self._accounts_client.get_rating(self._usernames[BLACK])
         return MatchFoundMessage(
             color=color,
-            white_username=self._usernames[WHITE], white_rating=accounts.get_rating(self._db_path, self._usernames[WHITE]),
-            black_username=self._usernames[BLACK], black_rating=accounts.get_rating(self._db_path, self._usernames[BLACK]),
+            white_username=self._usernames[WHITE], white_rating=white_rating,
+            black_username=self._usernames[BLACK], black_rating=black_rating,
             room_id=self._room_id,
         )
 
@@ -194,26 +197,25 @@ class GameRoom:
         self._paused = False
         self._last_tick = time.perf_counter()  # don't count the paused duration as elapsed game time
         await self._safe_send(self._connections[_other_color(color)], OpponentReconnectedMessage())
-        await self._safe_send(new_ws, self._match_found_message(color))  # so the reconnecting client re-learns its own color/username/rating
+        await self._safe_send(new_ws, await self._match_found_message(color))  # so the reconnecting client re-learns its own color/username/rating
         return True
 
-    def _handle_select_or_move(self, controller: Controller, message: SelectOrMoveMessage) -> None:
+    async def _handle_select_or_move(self, controller: Controller, message: SelectOrMoveMessage) -> None:
         controller.handle_cell(Position(message.row, message.col))
 
-    def _handle_jump(self, controller: Controller, message: JumpMessage) -> None:
+    async def _handle_jump(self, controller: Controller, message: JumpMessage) -> None:
         controller.handle_jump_cell(Position(message.row, message.col))
 
-    def _handle_restart(self, controller: Controller, message: RestartMessage) -> None:
+    async def _handle_restart(self, controller: Controller, message: RestartMessage) -> None:
         if self._engine.is_game_over():
             self._build_fresh_game()
 
-    def _handle_resign(self, controller: Controller, message: ResignMessage) -> None:
+    async def _handle_resign(self, controller: Controller, message: ResignMessage) -> None:
         """Voluntary forfeit, on demand - the player-triggered
         counterpart to _auto_resign_after_grace's disconnect-timeout
-        one. Left as a sync handler (no immediate broadcast) like every
-        other handler here - the result shows up on the next regular
-        tick, at most ~66ms later (BROADCAST_INTERVAL_SECONDS), same as
-        an ordinary move."""
+        one. No immediate broadcast - the result shows up on the next
+        regular tick, at most ~66ms later (BROADCAST_INTERVAL_SECONDS),
+        same as an ordinary move."""
         if self._engine.is_game_over():
             return  # already ended - nothing left to resign from
         resigning_color = controller.owner_color
@@ -221,13 +223,13 @@ class GameRoom:
         logger.info("%s resigned", self._usernames[resigning_color])
         self._engine.resign()
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
-        self._apply_rating_update(view_state, winner_color=winner_color)
+        await self._apply_rating_update(view_state, winner_color=winner_color)
 
     # Dispatch table for in-game messages - one handler per message
     # kind, in place of a growing if/elif isinstance chain. Built from
-    # plain (unbound) functions defined just above, called as
-    # handler(self, controller, message).
-    _MESSAGE_HANDLERS: Dict[Type[Any], Callable[["GameRoom", Controller, Any], None]] = {
+    # plain (unbound) coroutine functions defined just above, called as
+    # await handler(self, controller, message).
+    _MESSAGE_HANDLERS: Dict[Type[Any], Callable[["GameRoom", Controller, Any], Awaitable[None]]] = {
         SelectOrMoveMessage: _handle_select_or_move,
         JumpMessage: _handle_jump,
         RestartMessage: _handle_restart,
@@ -240,7 +242,7 @@ class GameRoom:
         controller = self._controllers[color]
         handler = self._MESSAGE_HANDLERS.get(type(message))
         if handler is not None:
-            handler(self, controller, message)
+            await handler(self, controller, message)
 
     async def _run(self) -> None:
         while True:
@@ -272,13 +274,13 @@ class GameRoom:
         self._paused = False
         self._engine.resign()
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
-        self._apply_rating_update(view_state, winner_color=surviving_color)
+        await self._apply_rating_update(view_state, winner_color=surviving_color)
         await self._broadcast()
 
     async def _broadcast(self) -> None:
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
         if view_state.game_over:
-            self._apply_rating_update(view_state)
+            await self._apply_rating_update(view_state)
         await asyncio.gather(
             *(
                 self._safe_send(ws, self._personalized_message(color, view_state))
@@ -290,7 +292,7 @@ class GameRoom:
             ),
         )
 
-    def _apply_rating_update(self, view_state: BoardViewState, winner_color: Optional[str] = None) -> None:
+    async def _apply_rating_update(self, view_state: BoardViewState, winner_color: Optional[str] = None) -> None:
         """Runs exactly once per finished game (self-guarding, not just
         relying on the caller to check first). winner_color is only
         passed explicitly for an auto-resign (both kings are still on
@@ -307,10 +309,10 @@ class GameRoom:
             winner_color = WHITE if white_has_king else BLACK
         loser_color = _other_color(winner_color)
         winner_username, loser_username = self._usernames[winner_color], self._usernames[loser_color]
-        old_winner_rating = accounts.get_rating(self._db_path, winner_username)
-        old_loser_rating = accounts.get_rating(self._db_path, loser_username)
-        new_winner_rating, new_loser_rating = accounts.update_ratings_after_game(
-            self._db_path, winner_username, loser_username
+        old_winner_rating = await self._accounts_client.get_rating(winner_username)
+        old_loser_rating = await self._accounts_client.get_rating(loser_username)
+        new_winner_rating, new_loser_rating = await self._accounts_client.update_ratings_after_game(
+            winner_username, loser_username
         )
         logger.info(
             "rating update: %s %d->%d, %s %d->%d",

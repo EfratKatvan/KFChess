@@ -5,6 +5,7 @@ import pytest
 
 from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.server import accounts, accounts_db, protocol
+from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.matchmaker import Matchmaker
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
@@ -80,12 +81,12 @@ def db_path(tmp_path):
     return path
 
 
-def test_logging_in_lands_in_the_lobby_without_entering_matchmaking(db_path):
-    asyncio.run(_login_lands_in_lobby(db_path))
+def test_logging_in_lands_in_the_lobby_without_entering_matchmaking(db_path, accounts_base_url):
+    asyncio.run(_login_lands_in_lobby(db_path, accounts_base_url))
 
 
-async def _login_lands_in_lobby(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _login_lands_in_lobby(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -94,12 +95,12 @@ async def _login_lands_in_lobby(db_path):
     await matchmaker.on_disconnect(alice)
 
 
-def test_clicking_play_with_no_one_else_seeking_waits_for_an_opponent(db_path):
-    asyncio.run(_lone_seeker_waits(db_path))
+def test_clicking_play_with_no_one_else_seeking_waits_for_an_opponent(db_path, accounts_base_url):
+    asyncio.run(_lone_seeker_waits(db_path, accounts_base_url))
 
 
-async def _lone_seeker_waits(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _lone_seeker_waits(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -109,12 +110,12 @@ async def _lone_seeker_waits(db_path):
     await matchmaker.on_disconnect(alice)
 
 
-def test_second_seeker_within_elo_range_pairs_as_white_and_black(db_path):
-    asyncio.run(_second_seeker_pairs(db_path))
+def test_second_seeker_within_elo_range_pairs_as_white_and_black(db_path, accounts_base_url):
+    asyncio.run(_second_seeker_pairs(db_path, accounts_base_url))
 
 
-async def _second_seeker_pairs(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _second_seeker_pairs(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
 
@@ -132,16 +133,16 @@ async def _second_seeker_pairs(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_room_name_stays_reserved_after_game_over_until_someone_leaves(db_path):
+def test_room_name_stays_reserved_after_game_over_until_someone_leaves(db_path, accounts_base_url):
     """The room name must not be up for grabs while its two players
     might still click New Game and keep playing in it - only actually
     leaving frees it (see GameRoom.leave, matchmaker.py's own
     docstring update, and the equivalent test in test_game_room.py)."""
-    asyncio.run(_room_name_reservation_scenario(db_path))
+    asyncio.run(_room_name_reservation_scenario(db_path, accounts_base_url))
 
 
-async def _room_name_reservation_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _room_name_reservation_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice, bob, carol = FakeConnection("alice"), FakeConnection("bob"), FakeConnection("carol")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _connect(matchmaker, db_path, bob, "bob", 1200)
@@ -161,12 +162,12 @@ async def _room_name_reservation_scenario(db_path):
     await matchmaker.on_disconnect(carol)
 
 
-def test_leave_room_before_game_over_is_a_no_op(db_path):
-    asyncio.run(_leave_room_before_game_over_scenario(db_path))
+def test_leave_room_before_game_over_is_a_no_op(db_path, accounts_base_url):
+    asyncio.run(_leave_room_before_game_over_scenario(db_path, accounts_base_url))
 
 
-async def _leave_room_before_game_over_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _leave_room_before_game_over_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice, bob = FakeConnection("alice"), FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _connect(matchmaker, db_path, bob, "bob", 1200)
@@ -182,12 +183,12 @@ async def _leave_room_before_game_over_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_leave_room_after_game_over_frees_the_connection_for_the_lobby(db_path):
-    asyncio.run(_leave_room_after_game_over_scenario(db_path))
+def test_leave_room_after_game_over_frees_the_connection_for_the_lobby(db_path, accounts_base_url):
+    asyncio.run(_leave_room_after_game_over_scenario(db_path, accounts_base_url))
 
 
-async def _leave_room_after_game_over_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _leave_room_after_game_over_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice, bob = FakeConnection("alice"), FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _connect(matchmaker, db_path, bob, "bob", 1200)
@@ -215,12 +216,12 @@ async def _leave_room_after_game_over_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_seeker_outside_elo_range_is_not_paired(db_path):
-    asyncio.run(_out_of_range_seeker_not_paired(db_path))
+def test_seeker_outside_elo_range_is_not_paired(db_path, accounts_base_url):
+    asyncio.run(_out_of_range_seeker_not_paired(db_path, accounts_base_url))
 
 
-async def _out_of_range_seeker_not_paired(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _out_of_range_seeker_not_paired(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
 
@@ -236,18 +237,18 @@ async def _out_of_range_seeker_not_paired(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_seeking_uses_the_players_current_rating_not_their_rating_at_login(db_path):
+def test_seeking_uses_the_players_current_rating_not_their_rating_at_login(db_path, accounts_base_url):
     """A player's rating can move during their session (e.g. after
     finishing a game and clicking Play again) - matchmaking must weigh
     that current rating, not the value captured back when they first
     connected (see matchmaker.py's _start_seeking, which now fetches
     fresh from the database on every seek instead of a login-time
     cache)."""
-    asyncio.run(_seeking_uses_current_rating_scenario(db_path))
+    asyncio.run(_seeking_uses_current_rating_scenario(db_path, accounts_base_url))
 
 
-async def _seeking_uses_current_rating_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _seeking_uses_current_rating_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -267,12 +268,12 @@ async def _seeking_uses_current_rating_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_seeker_pairs_with_an_in_range_seeker_while_an_out_of_range_seeker_keeps_waiting(db_path):
-    asyncio.run(_paired_with_in_range_seeker(db_path))
+def test_seeker_pairs_with_an_in_range_seeker_while_an_out_of_range_seeker_keeps_waiting(db_path, accounts_base_url):
+    asyncio.run(_paired_with_in_range_seeker(db_path, accounts_base_url))
 
 
-async def _paired_with_in_range_seeker(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _paired_with_in_range_seeker(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")  # 1000 - out of range of dave (diff 300)
     carol = FakeConnection("carol")  # 1250 - in range of dave (diff 50)
     dave = FakeConnection("dave")  # 1300
@@ -293,12 +294,12 @@ async def _paired_with_in_range_seeker(db_path):
     await matchmaker.on_disconnect(dave)
 
 
-def test_matchmaker_pairs_a_third_and_fourth_seeker_independently(db_path):
-    asyncio.run(_third_and_fourth_pair(db_path))
+def test_matchmaker_pairs_a_third_and_fourth_seeker_independently(db_path, accounts_base_url):
+    asyncio.run(_third_and_fourth_pair(db_path, accounts_base_url))
 
 
-async def _third_and_fourth_pair(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _third_and_fourth_pair(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice, bob, carol, dave = (FakeConnection(name) for name in "abcd")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -319,13 +320,13 @@ async def _third_and_fourth_pair(db_path):
         await matchmaker.on_disconnect(connection)
 
 
-def test_waiting_seeker_gets_no_opponent_found_after_timeout(monkeypatch, db_path):
+def test_waiting_seeker_gets_no_opponent_found_after_timeout(monkeypatch, db_path, accounts_base_url):
     monkeypatch.setattr(protocol, "MATCHMAKING_TIMEOUT_SECONDS", 0.05)
-    asyncio.run(_timeout_scenario(db_path))
+    asyncio.run(_timeout_scenario(db_path, accounts_base_url))
 
 
-async def _timeout_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _timeout_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -335,12 +336,12 @@ async def _timeout_scenario(db_path):
     assert _last_type(alice) == protocol.NO_OPPONENT_FOUND
 
 
-def test_cancel_seek_returns_the_waiting_seeker_to_the_lobby(db_path):
-    asyncio.run(_cancel_seek_scenario(db_path))
+def test_cancel_seek_returns_the_waiting_seeker_to_the_lobby(db_path, accounts_base_url):
+    asyncio.run(_cancel_seek_scenario(db_path, accounts_base_url))
 
 
-async def _cancel_seek_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _cancel_seek_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _seek(matchmaker, alice)
@@ -355,12 +356,12 @@ async def _cancel_seek_scenario(db_path):
     assert _last_type(bob) == protocol.WAITING_FOR_OPPONENT  # not silently paired with the cancelled alice
 
 
-def test_cancel_seek_with_nothing_pending_is_a_no_op(db_path):
-    asyncio.run(_cancel_seek_no_op_scenario(db_path))
+def test_cancel_seek_with_nothing_pending_is_a_no_op(db_path, accounts_base_url):
+    asyncio.run(_cancel_seek_no_op_scenario(db_path, accounts_base_url))
 
 
-async def _cancel_seek_no_op_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _cancel_seek_no_op_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
 
@@ -369,12 +370,12 @@ async def _cancel_seek_no_op_scenario(db_path):
     assert alice.sent == []
 
 
-def test_disconnecting_a_waiting_seeker_frees_the_matchmaker(db_path):
-    asyncio.run(_disconnect_while_waiting(db_path))
+def test_disconnecting_a_waiting_seeker_frees_the_matchmaker(db_path, accounts_base_url):
+    asyncio.run(_disconnect_while_waiting(db_path, accounts_base_url))
 
 
-async def _disconnect_while_waiting(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _disconnect_while_waiting(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _seek(matchmaker, alice)
@@ -386,12 +387,12 @@ async def _disconnect_while_waiting(db_path):
     assert _last_type(bob) == protocol.WAITING_FOR_OPPONENT  # not silently paired with the departed alice
 
 
-def test_reconnecting_with_the_same_username_rejoins_the_same_room_instead_of_the_lobby(db_path):
-    asyncio.run(_reconnect_rejoins_room(db_path))
+def test_reconnecting_with_the_same_username_rejoins_the_same_room_instead_of_the_lobby(db_path, accounts_base_url):
+    asyncio.run(_reconnect_rejoins_room(db_path, accounts_base_url))
 
 
-async def _reconnect_rejoins_room(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _reconnect_rejoins_room(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -415,12 +416,12 @@ async def _reconnect_rejoins_room(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_second_login_with_the_same_username_while_the_first_is_waiting_is_rejected(db_path):
-    asyncio.run(_duplicate_login_while_waiting(db_path))
+def test_second_login_with_the_same_username_while_the_first_is_waiting_is_rejected(db_path, accounts_base_url):
+    asyncio.run(_duplicate_login_while_waiting(db_path, accounts_base_url))
 
 
-async def _duplicate_login_while_waiting(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _duplicate_login_while_waiting(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     alice_again = FakeConnection("alice-again")
 
@@ -436,12 +437,12 @@ async def _duplicate_login_while_waiting(db_path):
     await matchmaker.on_disconnect(alice)
 
 
-def test_second_login_with_the_same_username_while_the_first_is_in_a_match_is_rejected(db_path):
-    asyncio.run(_duplicate_login_while_matched(db_path))
+def test_second_login_with_the_same_username_while_the_first_is_in_a_match_is_rejected(db_path, accounts_base_url):
+    asyncio.run(_duplicate_login_while_matched(db_path, accounts_base_url))
 
 
-async def _duplicate_login_while_matched(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _duplicate_login_while_matched(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -460,14 +461,14 @@ async def _duplicate_login_while_matched(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_reconnecting_with_the_same_username_is_allowed_after_the_original_disconnects(db_path):
+def test_reconnecting_with_the_same_username_is_allowed_after_the_original_disconnects(db_path, accounts_base_url):
     """The duplicate-login rejection must not block a genuine
     reconnect - only a *simultaneous* second session is rejected."""
-    asyncio.run(_reconnect_not_blocked_by_duplicate_check(db_path))
+    asyncio.run(_reconnect_not_blocked_by_duplicate_check(db_path, accounts_base_url))
 
 
-async def _reconnect_not_blocked_by_duplicate_check(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _reconnect_not_blocked_by_duplicate_check(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -487,16 +488,16 @@ async def _reconnect_not_blocked_by_duplicate_check(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_reconnecting_after_the_grace_period_falls_back_to_the_lobby(db_path, monkeypatch):
+def test_reconnecting_after_the_grace_period_falls_back_to_the_lobby(db_path, monkeypatch, accounts_base_url):
     monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.05)
-    asyncio.run(_reconnect_after_grace_expired(db_path))
+    asyncio.run(_reconnect_after_grace_expired(db_path, accounts_base_url))
 
 
-async def _reconnect_after_grace_expired(db_path):
+async def _reconnect_after_grace_expired(db_path, accounts_base_url):
     accounts.register(db_path, "alice", "pw")
     accounts.register(db_path, "bob", "pw")
 
-    matchmaker = Matchmaker(db_path=db_path)
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -522,12 +523,12 @@ async def _reconnect_after_grace_expired(db_path):
 # Rooms: Create/Join/Cancel, spectators
 # ==========================================
 
-def test_create_room_sends_room_created_with_an_id(db_path):
-    asyncio.run(_create_room_scenario(db_path))
+def test_create_room_sends_room_created_with_an_id(db_path, accounts_base_url):
+    asyncio.run(_create_room_scenario(db_path, accounts_base_url))
 
 
-async def _create_room_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _create_room_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
 
@@ -539,12 +540,12 @@ async def _create_room_scenario(db_path):
     await matchmaker.on_disconnect(alice)
 
 
-def test_joining_a_pending_room_starts_a_game_with_creator_as_white(db_path):
-    asyncio.run(_join_as_opponent_scenario(db_path))
+def test_joining_a_pending_room_starts_a_game_with_creator_as_white(db_path, accounts_base_url):
+    asyncio.run(_join_as_opponent_scenario(db_path, accounts_base_url))
 
 
-async def _join_as_opponent_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _join_as_opponent_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -565,12 +566,12 @@ async def _join_as_opponent_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_joining_a_started_room_sends_spectating_instead_of_match_found(db_path):
-    asyncio.run(_join_as_spectator_scenario(db_path))
+def test_joining_a_started_room_sends_spectating_instead_of_match_found(db_path, accounts_base_url):
+    asyncio.run(_join_as_spectator_scenario(db_path, accounts_base_url))
 
 
-async def _join_as_spectator_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _join_as_spectator_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     carol = FakeConnection("carol")
@@ -593,12 +594,12 @@ async def _join_as_spectator_scenario(db_path):
     await matchmaker.on_disconnect(carol)
 
 
-def test_joining_an_unknown_room_id_sends_join_room_failed(db_path):
-    asyncio.run(_join_unknown_room_scenario(db_path))
+def test_joining_an_unknown_room_id_sends_join_room_failed(db_path, accounts_base_url):
+    asyncio.run(_join_unknown_room_scenario(db_path, accounts_base_url))
 
 
-async def _join_unknown_room_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _join_unknown_room_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, bob, "bob", 1200)
 
@@ -610,12 +611,12 @@ async def _join_unknown_room_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_cancel_room_returns_the_creator_to_the_lobby(db_path):
-    asyncio.run(_cancel_room_scenario(db_path))
+def test_cancel_room_returns_the_creator_to_the_lobby(db_path, accounts_base_url):
+    asyncio.run(_cancel_room_scenario(db_path, accounts_base_url))
 
 
-async def _cancel_room_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _cancel_room_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _create_room(matchmaker, alice)
@@ -633,12 +634,12 @@ async def _cancel_room_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_spectator_disconnect_does_not_pause_the_room(db_path):
-    asyncio.run(_spectator_disconnect_scenario(db_path))
+def test_spectator_disconnect_does_not_pause_the_room(db_path, accounts_base_url):
+    asyncio.run(_spectator_disconnect_scenario(db_path, accounts_base_url))
 
 
-async def _spectator_disconnect_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _spectator_disconnect_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     carol = FakeConnection("carol")
@@ -661,17 +662,17 @@ async def _spectator_disconnect_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_disconnecting_after_game_over_kicks_the_opponent_to_the_lobby_too(db_path):
-    asyncio.run(_disconnect_after_game_over_scenario(db_path))
+def test_disconnecting_after_game_over_kicks_the_opponent_to_the_lobby_too(db_path, accounts_base_url):
+    asyncio.run(_disconnect_after_game_over_scenario(db_path, accounts_base_url))
 
 
-async def _disconnect_after_game_over_scenario(db_path):
+async def _disconnect_after_game_over_scenario(db_path, accounts_base_url):
     """Closing the window after the game already ended must behave
     like clicking "Back to Lobby" (see test_leave_room_after_game_over_
     frees_the_connection_for_the_lobby) - not like a mid-game
     disconnect, which would otherwise start a pointless reconnect-grace
     countdown for a game that's already decided."""
-    matchmaker = Matchmaker(db_path=db_path)
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice, bob = FakeConnection("alice"), FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _connect(matchmaker, db_path, bob, "bob", 1200)
@@ -692,12 +693,12 @@ async def _disconnect_after_game_over_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_room_creator_disconnecting_before_anyone_joins_frees_the_room_id(db_path):
-    asyncio.run(_pending_creator_disconnect_scenario(db_path))
+def test_room_creator_disconnecting_before_anyone_joins_frees_the_room_id(db_path, accounts_base_url):
+    asyncio.run(_pending_creator_disconnect_scenario(db_path, accounts_base_url))
 
 
-async def _pending_creator_disconnect_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _pending_creator_disconnect_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _create_room(matchmaker, alice)
@@ -713,12 +714,12 @@ async def _pending_creator_disconnect_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_create_room_uses_the_players_typed_name(db_path):
-    asyncio.run(_create_room_typed_name_scenario(db_path))
+def test_create_room_uses_the_players_typed_name(db_path, accounts_base_url):
+    asyncio.run(_create_room_typed_name_scenario(db_path, accounts_base_url))
 
 
-async def _create_room_typed_name_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _create_room_typed_name_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
 
@@ -729,12 +730,12 @@ async def _create_room_typed_name_scenario(db_path):
     await matchmaker.on_disconnect(alice)
 
 
-def test_create_room_with_an_already_taken_name_sends_create_room_failed(db_path):
-    asyncio.run(_create_room_name_taken_scenario(db_path))
+def test_create_room_with_an_already_taken_name_sends_create_room_failed(db_path, accounts_base_url):
+    asyncio.run(_create_room_name_taken_scenario(db_path, accounts_base_url))
 
 
-async def _create_room_name_taken_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _create_room_name_taken_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -750,12 +751,12 @@ async def _create_room_name_taken_scenario(db_path):
     await matchmaker.on_disconnect(bob)
 
 
-def test_create_room_while_already_in_a_room_sends_create_room_failed(db_path):
-    asyncio.run(_create_room_while_already_in_one_scenario(db_path))
+def test_create_room_while_already_in_a_room_sends_create_room_failed(db_path, accounts_base_url):
+    asyncio.run(_create_room_while_already_in_one_scenario(db_path, accounts_base_url))
 
 
-async def _create_room_while_already_in_one_scenario(db_path):
-    matchmaker = Matchmaker(db_path=db_path)
+async def _create_room_while_already_in_one_scenario(db_path, accounts_base_url):
+    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _create_room(matchmaker, alice, room_id="room-one")
