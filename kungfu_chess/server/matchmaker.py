@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, Optional, Tuple, Type
 
+from redis.asyncio import Redis
 from websockets.asyncio.server import ServerConnection
 
 from kungfu_chess.server import accounts, protocol
@@ -28,6 +30,7 @@ from kungfu_chess.server.messages import (
     SpectatingMessage,
     WaitingForOpponentMessage,
 )
+from kungfu_chess.server.redis_client import get_client as get_redis_client
 from kungfu_chess.server.rooms import RoomError, RoomRegistry
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
@@ -35,13 +38,14 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class _Seeker:
-    """One player currently in the waiting pool, i.e. has clicked
-    "Play" and hasn't been matched yet."""
+class _WaitingLocal:
+    """The half of a waiting seeker (has clicked "Play", not yet
+    matched) that can't live in Redis - the live socket and its
+    timeout task. The rating itself lives only as the seekers-queue
+    ZSET's score (see Matchmaker._start_seeking) - not duplicated
+    here, so there's exactly one place it can go stale."""
 
     ws: ServerConnection
-    username: str
-    rating: int
     timeout_task: asyncio.Task
 
 
@@ -65,16 +69,27 @@ class Matchmaker:
     rejected outright, rather than silently entering the lobby and
     potentially seeking against itself."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH) -> None:
+    def __init__(self, db_path: str = DEFAULT_DB_PATH, redis_client: Optional[Redis] = None) -> None:
         self._db_path = db_path
-        self._waiting: Dict[ServerConnection, _Seeker] = {}
+        self._redis = redis_client or get_redis_client()
+        # A per-instance namespace, not a fixed key: production only ever
+        # constructs one Matchmaker, so this changes nothing there - it
+        # exists so that separate Matchmaker instances (chiefly separate
+        # tests) never see each other's entries in the one shared Redis
+        # server, without needing any explicit flush/teardown (an empty
+        # ZSET or an explicitly-deleted key just disappears on its own).
+        self._namespace = uuid.uuid4().hex
+        self._seekers_queue_key = f"seekers:queue:{self._namespace}"
+        self._waiting: Dict[str, _WaitingLocal] = {}  # username -> its local (non-Redis) bookkeeping
         self._rooms: Dict[ServerConnection, GameRoom] = {}
         self._disconnected_players: Dict[str, Tuple[GameRoom, str]] = {}
         self._active_connections: Dict[str, ServerConnection] = {}  # username -> its one live connection
 
         # The Room dialog's Create/Join/Cancel flow - independent of, and
-        # parallel to, the ELO-proximity _waiting queue above.
-        self._room_registry = RoomRegistry()
+        # parallel to, the ELO-proximity _waiting queue above. Shares this
+        # Matchmaker's Redis client and per-instance namespace, same as
+        # the seekers queue.
+        self._room_registry = RoomRegistry(redis_client=self._redis, namespace=self._namespace)
         self._room_games: Dict[str, GameRoom] = {}  # room_id -> its started GameRoom
         self._pending_room_creators: Dict[ServerConnection, str] = {}  # ws -> room_id, only while no opponent has joined yet
 
@@ -165,7 +180,7 @@ class Matchmaker:
         room = self._rooms.get(ws)
         if room is None or not room.is_game_over():
             return
-        also_leaving = room.leave(ws)
+        also_leaving = await room.leave(ws)
         del self._rooms[ws]
         await self._safe_send(ws, LeftRoomMessage())
         for other_ws in also_leaving:
@@ -173,11 +188,9 @@ class Matchmaker:
             await self._safe_send(other_ws, LeftRoomMessage())
 
     async def _start_seeking(self, ws: ServerConnection, message: SeekGameMessage) -> None:
-        if ws in self._waiting:
-            return  # already seeking - a second Play click while waiting is a no-op
         username = self._username_of(ws)
-        if username is None:
-            return
+        if username is None or username in self._waiting:
+            return  # not logged in, or a second Play click while waiting - both no-ops
         # Fetched fresh rather than cached from login, since a player who
         # has already finished one or more games this session has a
         # rating that's since moved in the database - a stale snapshot
@@ -185,39 +198,65 @@ class Matchmaker:
         # either player's real current rating.
         rating = accounts.get_rating(self._db_path, username)
 
-        opponent = self._find_opponent_within_elo_range(rating)
-        if opponent is not None:
-            del self._waiting[opponent.ws]
-            opponent.timeout_task.cancel()
-            room = GameRoom(
-                white_ws=opponent.ws, white_username=opponent.username,
-                black_ws=ws, black_username=username,
-                db_path=self._db_path,
-            )
-            self._rooms[opponent.ws] = room
-            self._rooms[ws] = room
-            logger.info("matched %s (white) vs %s (black)", opponent.username, username)
-            await room.start()
-            return
+        opponent_username = await self._claim_opponent_within_elo_range(rating)
+        if opponent_username is not None:
+            opponent = self._waiting.pop(opponent_username, None)
+            if opponent is not None:
+                opponent.timeout_task.cancel()
+                room = GameRoom(
+                    white_ws=opponent.ws, white_username=opponent_username,
+                    black_ws=ws, black_username=username,
+                    db_path=self._db_path,
+                )
+                self._rooms[opponent.ws] = room
+                self._rooms[ws] = room
+                logger.info("matched %s (white) vs %s (black)", opponent_username, username)
+                await room.start()
+                return
+            # Claimed them in the Redis queue, but they're already gone
+            # from local bookkeeping (disconnected/cancelled in the
+            # narrow window between the two) - either way they're no
+            # longer queued, so just fall through and treat this seeker
+            # as unmatched instead.
+            logger.info("claimed opponent %s but they'd already left - %s stays unmatched", opponent_username, username)
 
+        timeout_task = asyncio.create_task(self._timeout_waiting(username))
+        self._waiting[username] = _WaitingLocal(ws=ws, timeout_task=timeout_task)
         await ws.send(serialize_message(WaitingForOpponentMessage()))
-        timeout_task = asyncio.create_task(self._timeout_waiting(ws))
-        self._waiting[ws] = _Seeker(ws=ws, username=username, rating=rating, timeout_task=timeout_task)
+        await self._redis.zadd(self._seekers_queue_key, {username: rating})
 
     async def _cancel_seeking(self, ws: ServerConnection, message: CancelSeekMessage) -> None:
         """The Back button on the "Waiting for opponent..." screen - the
         Play-button counterpart to _cancel_room."""
-        seeker = self._waiting.pop(ws, None)
-        if seeker is None:
+        username = self._username_of(ws)
+        local = self._waiting.pop(username, None) if username is not None else None
+        if local is None:
             return  # already matched or already timed out - nothing left to cancel
-        seeker.timeout_task.cancel()
+        local.timeout_task.cancel()
+        await self._redis.zrem(self._seekers_queue_key, username)
         await ws.send(serialize_message(SeekCancelledMessage()))
 
-    def _find_opponent_within_elo_range(self, rating: int) -> Optional[_Seeker]:
-        for seeker in self._waiting.values():
-            if abs(seeker.rating - rating) <= protocol.MATCHMAKING_ELO_RANGE:
-                return seeker
-        return None
+    async def _claim_opponent_within_elo_range(self, rating: int) -> Optional[str]:
+        """Atomically claims a waiting opponent within
+        protocol.MATCHMAKING_ELO_RANGE of rating, or None if no one is
+        currently queued in range. The range query (ZRANGEBYSCORE) and
+        the claim (ZREM) are two separate awaited Redis round-trips, so
+        a concurrent seeker could see the same candidate before either
+        of us removes them - ZREM's return value (1 if it actually
+        removed something, 0 if someone else already did) tells us
+        whether we actually won that race; on a loss, look again rather
+        than assume the candidate we saw is still free."""
+        while True:
+            candidates = await self._redis.zrangebyscore(
+                self._seekers_queue_key,
+                rating - protocol.MATCHMAKING_ELO_RANGE,
+                rating + protocol.MATCHMAKING_ELO_RANGE,
+            )
+            if not candidates:
+                return None
+            candidate = candidates[0]
+            if await self._redis.zrem(self._seekers_queue_key, candidate):
+                return candidate
 
     def _username_of(self, ws: ServerConnection) -> Optional[str]:
         return next((u for u, connection in self._active_connections.items() if connection is ws), None)
@@ -227,7 +266,7 @@ class Matchmaker:
         if username is None:
             return
         try:
-            room = self._room_registry.create(username, message.room_id)
+            room = await self._room_registry.create(username, message.room_id)
         except RoomError as error:
             await ws.send(serialize_message(CreateRoomFailedMessage(reason=str(error))))
             return
@@ -240,7 +279,7 @@ class Matchmaker:
         if username is None:
             return
         try:
-            room = self._room_registry.join(message.room_id, username)
+            room = await self._room_registry.join(message.room_id, username)
         except RoomError as error:
             await ws.send(serialize_message(JoinRoomFailedMessage(reason=str(error))))
             return
@@ -281,7 +320,7 @@ class Matchmaker:
         if username is None:
             return
         try:
-            self._room_registry.cancel(username)
+            await self._room_registry.cancel(username)
         except RoomError as error:
             # race: an opponent just joined - MatchFoundMessage is already on its way instead
             logger.info("cancel room race for %s: %s", username, error)
@@ -290,8 +329,8 @@ class Matchmaker:
         logger.info("room cancelled by %s", username)
         await ws.send(serialize_message(RoomCancelledMessage()))
 
-    def _close_room(self, room_id: str) -> None:
-        self._room_registry.close(room_id)
+    async def _close_room(self, room_id: str) -> None:
+        await self._room_registry.close(room_id)
         self._room_games.pop(room_id, None)
 
     async def on_disconnect(self, ws: ServerConnection) -> None:
@@ -299,9 +338,10 @@ class Matchmaker:
         if username is not None:
             del self._active_connections[username]
 
-        seeker = self._waiting.pop(ws, None)
-        if seeker is not None:
-            seeker.timeout_task.cancel()
+        local = self._waiting.pop(username, None) if username is not None else None
+        if local is not None:
+            local.timeout_task.cancel()
+            await self._redis.zrem(self._seekers_queue_key, username)
             return
 
         pending_room_id = self._pending_room_creators.pop(ws, None)
@@ -309,7 +349,7 @@ class Matchmaker:
             # The creator vanished before anyone joined - just free the id,
             # there's no GameRoom or opponent to notify yet.
             logger.info("room %s abandoned (creator %s disconnected before anyone joined)", pending_room_id, username)
-            self._room_registry.close(pending_room_id)
+            await self._room_registry.close(pending_room_id)
             return
 
         room = self._rooms.pop(ws, None)
@@ -330,7 +370,7 @@ class Matchmaker:
             # "Back to Lobby" (see _leave_room). No reconnect/auto-resign
             # grace period applies to a game that's already decided;
             # the opponent has no one left to rematch with either.
-            for other_ws in room.leave(ws):
+            for other_ws in await room.leave(ws):
                 self._rooms.pop(other_ws, None)
                 await self._safe_send(other_ws, LeftRoomMessage())
             return
@@ -352,9 +392,10 @@ class Matchmaker:
         if pending is not None and pending[0] is room:
             del self._disconnected_players[username]
 
-    async def _timeout_waiting(self, ws: ServerConnection) -> None:
+    async def _timeout_waiting(self, username: str) -> None:
         await asyncio.sleep(protocol.MATCHMAKING_TIMEOUT_SECONDS)
-        seeker = self._waiting.pop(ws, None)
-        if seeker is None:
+        local = self._waiting.pop(username, None)
+        if local is None:
             return  # already matched or already disconnected
-        await ws.send(serialize_message(NoOpponentFoundMessage()))
+        await self._redis.zrem(self._seekers_queue_key, username)
+        await local.ws.send(serialize_message(NoOpponentFoundMessage()))

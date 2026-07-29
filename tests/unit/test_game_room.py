@@ -334,7 +334,7 @@ async def _leave_scenario(db_path):
     await room.start()
     room._engine.resign()  # the game must already be over - Matchmaker._leave_room only calls this once it is
 
-    also_leaving = room.leave(room._connections[WHITE])
+    also_leaving = await room.leave(room._connections[WHITE])
 
     assert also_leaving == {room._connections[BLACK]}
     await asyncio.sleep(0)
@@ -352,7 +352,7 @@ async def _spectator_leave_scenario(db_path):
     spectator_ws = FakeConnection("spectator")
     await room.add_spectator(spectator_ws)
 
-    also_leaving = room.leave(spectator_ws)
+    also_leaving = await room.leave(spectator_ws)
 
     assert also_leaving == set()
     assert spectator_ws not in room._spectators
@@ -514,9 +514,13 @@ async def _no_callback_at_game_over_scenario(db_path):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
     calls = []
+
+    async def on_game_over():
+        calls.append(1)
+
     room = GameRoom(
         FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
-        db_path=db_path, room_id="ABC123", on_game_over=lambda: calls.append(1),
+        db_path=db_path, room_id="ABC123", on_game_over=on_game_over,
     )
     await room.start()
 
@@ -536,14 +540,18 @@ async def _on_game_over_callback_scenario(db_path):
     accounts.register(db_path, "white_player", "pw")
     accounts.register(db_path, "black_player", "pw")
     calls = []
+
+    async def on_game_over():
+        calls.append(1)
+
     room = GameRoom(
         FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
-        db_path=db_path, room_id="ABC123", on_game_over=lambda: calls.append(1),
+        db_path=db_path, room_id="ABC123", on_game_over=on_game_over,
     )
     await room.start()
     room._engine.resign()
 
-    room.leave(room._connections[WHITE])
-    room.leave(room._connections[WHITE])  # a second call (e.g. a raced disconnect) must not fire the callback again
+    await room.leave(room._connections[WHITE])
+    await room.leave(room._connections[WHITE])  # a second call (e.g. a raced disconnect) must not fire the callback again
 
     assert calls == [1]

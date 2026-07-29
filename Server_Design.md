@@ -1,4 +1,4 @@
-# Server Design: Scaling Kung Fu Chess to Production Load
+# אוקי aling Kung Fu Chess to Production Load
 
 This document is a cloud/process-distribution design, not a class/code design - the
 same architectural principles apply, but at a very different scale than the current
@@ -93,25 +93,15 @@ crash happened. Since `GameEngine`'s `RealTimeArbiter` already computes every pi
 position and cooldown as a deterministic function of *elapsed time since each move
 started* - not some hidden mutable state - a crashed room's state is cheap to
 reconstruct from its move history, rather than lost outright or fully replicated:
+every accepted move (`MoveLoggedEvent` - already carries `elapsed_ms`) is published to
+a **NATS JetStream** stream scoped to that `room_id`, with a short, bounded retention
+(a room's stream only needs to outlive the room itself, at most ~90 seconds plus a
+small grace window - never an ever-growing dataset). On a worker crash, the **Game
+Allocator** notices (health-check plus the expiring lease), assigns a replacement
+worker, and that worker replays the JetStream stream to rebuild the board and
+in-flight/cooldown state before re-acquiring the lease and resuming ticking - see the
+full message-by-message sequence in **section 20.5**.
 
-- Every accepted move (`MoveLoggedEvent` - already carries `elapsed_ms`) is published
-  to a **NATS JetStream** stream scoped to that `room_id`, alongside the low-volume
-  control events elsewhere on NATS. Unlike that control traffic, this needs a
-  durable, ordered, replayable log - JetStream (not plain pub/sub) is built for
-  exactly that.
-- Retention is short and bounded on purpose: a room's stream only needs to live for
-  the room's lifetime (at most 90 seconds) plus a small grace window - never an
-  ever-growing dataset.
-- On a worker crash, the **Game Allocator** notices (the orchestrator's health-check,
-  plus the room lease expiring), assigns a *replacement* worker for each room that
-  worker held, and that new worker replays the room's JetStream stream: rebuild the
-  board from `STARTING_POSITION`, apply each `MoveLoggedEvent` in order, and use the
-  recorded timestamps to work out which pieces are still mid-flight or cooling down
-  *right now* - the same math `RealTimeArbiter` already does, just run forward from
-  history instead of from live ticks.
-- The new worker then acquires the room's lease (with priority, since the Game
-  Allocator specifically routed it there) and starts ticking normally; both players'
-  WS Gateways are redirected to the new worker address via the room registry.
 - This was weighed against a **paired hot-standby worker** (mirroring every room live
   onto a second process, so failover is instant with no replay at all) and rejected
   for cost: that would roughly double the entire Game-hosting fleet's footprint,
@@ -206,28 +196,22 @@ process can hold 10M sockets, and - separately - no single Python process can ru
 5M rooms' worth of tick computation on one core regardless of socket count.
 
 "Everyone can play with everyone, and anyone can join any room" works because no
-client ever needs to know which physical machine anything lives on:
-
-1. A player logs in via the nearest **API Gateway** (login/register, no game logic),
-   then opens a live connection through the nearest **WS Gateway** (also no game
-   logic - it only holds the socket and forwards traffic).
-2. **Play** -> WS Gateway forwards to the Matchmaker, which sees every waiting player
-   *globally* (the shared Redis-backed queue - section 1), not just players on this
-   one Gateway. A player on a US gateway and one on a Tokyo gateway are both visible
-   to the same queue and can be matched, unlike today's single-process
-   `Matchmaker._waiting` dict, which only ever sees seekers connected to it.
-3. Once matched, the Matchmaker hands off to the **Game Allocator** - deliberately a
-   separate service, since "who should play whom" (fairness) and "which physical
-   worker has room for this game" (capacity/placement) are different concerns. The
-   Game Allocator picks an available Game-hosting worker, acquires its
-   room-ownership lease (section 3), and publishes a low-volume `match-found`
-   control-plane event carrying `{room_id, worker_address}` back to both players' WS
-   Gateways.
-4. Each WS Gateway opens the direct, high-frequency **data-plane** stream (section 2)
-   to that specific worker. **Join Room** for an arbitrary `room_id` works
-   identically: any WS Gateway looks up the current owner in the room registry and
-   opens the same kind of stream. A spectator does the same, just without ever being
-   granted the write lease - a pure subscriber.
+client ever needs to know which physical machine anything lives on - see the full
+login -> seek -> match message sequence in **section 20.1**. The short version: any
+**API Gateway** handles login (no game logic); any **WS Gateway** holds the live
+socket and forwards a seek request to the Matchmaker, which sees every waiting player
+*globally* (the shared Redis-backed queue - section 1), not just players on this one
+Gateway - unlike today's single-process `Matchmaker._waiting` dict, which only ever
+sees seekers connected to it. Once matched, the **Game Allocator** (deliberately a
+separate service, since "who should play whom" and "which worker has room" are
+different concerns) picks an available Game-hosting worker, acquires its
+room-ownership lease (section 3), and publishes a low-volume `match-found`
+control-plane event carrying `{room_id, worker_address}` back to both players' WS
+Gateways, which each open the direct, high-frequency **data-plane** stream (section 2)
+to that specific worker. **Join Room** for an arbitrary `room_id` works identically:
+any WS Gateway looks up the current owner in the room registry and opens the same
+kind of stream (full sequence in **section 20.4**) - a spectator does the same, just
+without ever being granted the write lease.
 
 To be precise about what "who's on which server" actually means, since it's easy to
 conflate three different things: a player's **Gateway connection** is incidental and
@@ -605,6 +589,10 @@ Step by step:
 7. **Observability** reads metrics/logs from all four units throughout - never part of
    any player's request path.
 
+For the exact message-by-message sequence of each individual scenario this diagram
+summarizes (login+match, a move and game end, disconnect/reconnect, rooms, crash
+recovery), see **section 20**.
+
 ## 16. Two concrete infrastructure decisions
 
 ### 16.1 The matchmaking queue must be a Redis ZSET, not a linear scan
@@ -715,3 +703,177 @@ Suggested stages for actually building this (each stage leaves the system workin
 Verification at each stage: `python -m pytest` should keep passing, and two client
 processes (`python app.py` run twice) should still be able to connect, get matched,
 and play a game to completion - the same manual check `README.md` already describes.
+
+## 20. Scenario flows (sequence diagrams)
+
+Sections 3, 7, and 15 above establish *why* each piece exists and *what* it's
+responsible for; this section is the concrete "what actually happens, message by
+message" for every scenario a player can hit - a diagram answers that more clearly
+than prose does, so this section leans on Mermaid sequence diagrams almost
+exclusively, with only as much surrounding text as a diagram itself can't carry
+(mainly, *why* a step happens, not what it is).
+
+### 20.1 Login -> Seek -> Match found
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant API as API Service
+    participant WSG as WS Gateway
+    participant MM as Matchmaker
+    participant GA as Game Allocator
+    participant R as Redis
+    participant N as NATS
+    participant S as Game Server Shard
+
+    C->>API: POST /login {username, password}
+    API-->>C: session token, rating
+
+    C->>WSG: WebSocket connect
+    C->>WSG: SeekGameMessage
+
+    WSG->>MM: seek(user_id, rating)
+    MM->>R: ZRANGEBYSCORE seekers:queue rating±ELO_RANGE
+    alt opponent already waiting in range
+        R-->>MM: opponent user_id
+        MM->>R: ZREM seekers:queue opponent
+        MM->>GA: pair found {white, black}
+        GA->>GA: pick a Shard with capacity
+        GA->>R: SET room:{id}:owner shard NX PX 5000
+        GA->>N: publish match-found {room_id, shard_addr}
+        N-->>WSG: match-found (both players' gateways)
+        WSG->>S: open direct data-plane stream
+        WSG-->>C: MatchFoundMessage {color, room_id}
+    else no one waiting yet
+        MM->>R: ZADD seekers:queue {user_id: rating}
+        WSG-->>C: WaitingForOpponentMessage
+        Note over MM: MATCHMAKING_TIMEOUT_SECONDS later, if still<br/>unmatched -> NoOpponentFoundMessage
+    end
+```
+
+### 20.2 A move, and the end of the game
+
+```mermaid
+sequenceDiagram
+    participant C1 as Client (mover)
+    participant C2 as Client (opponent)
+    participant WSG as WS Gateway
+    participant S as Game Server Shard
+    participant API as API Service
+    participant DB as PostgreSQL
+    participant R as Redis
+
+    C1->>WSG: SelectOrMoveMessage {row, col}
+    WSG->>S: forward (direct data-plane stream)
+    S->>S: RuleEngine validates; RealTimeArbiter schedules the move
+
+    loop every BROADCAST_INTERVAL_SECONDS (~15/sec)
+        S-->>WSG: StateMessage (personalized snapshot)
+        WSG-->>C1: deliver
+        WSG-->>C2: deliver
+    end
+
+    Note over S: king captured, resign, or auto-resign
+    S->>S: GameEngine marks the game over
+    S->>API: POST /games/{room_id}/result {winner, loser}
+    API->>DB: update ELO ratings
+    API-->>S: ack
+    S->>R: release room:{id}:owner lease
+    S-->>WSG: final StateMessage {game_over: true}
+    WSG-->>C1: deliver
+    WSG-->>C2: deliver
+```
+
+### 20.3 Disconnect -> Reconnect within the grace period
+
+The "reconnects via a different gateway" branch is the concrete reason a player's
+Gateway connection has to stay stateless (section 14.2) - nothing about routing back
+to the right Shard depends on which Gateway instance the player happens to land on.
+
+```mermaid
+sequenceDiagram
+    participant C as Client (drops)
+    participant WSGa as WS Gateway A
+    participant WSGb as WS Gateway B
+    participant MM as Matchmaker
+    participant S as Game Server Shard
+    participant O as Opponent's client
+
+    C--xWSGa: connection drops mid-game
+    WSGa->>MM: on_disconnect(user_id)
+    MM->>S: handle_disconnect(color)
+    S-->>O: OpponentDisconnectedMessage
+    Note over S: DISCONNECT_GRACE_SECONDS countdown starts
+
+    alt reconnects in time - possibly via a DIFFERENT gateway
+        C->>WSGb: WebSocket connect + login (same username)
+        WSGb->>MM: on_connect(user_id)
+        MM->>S: try_reconnect(color, new_ws)
+        S-->>WSGb: MatchFoundMessage {color, room_id}
+        S-->>O: OpponentReconnectedMessage
+    else grace period expires with no reconnect
+        S->>S: auto-resign on behalf of the disconnected player
+        Note over S: same rating-update + lease-release path as 20.2
+        S-->>O: final StateMessage {game_over: true}
+    end
+```
+
+### 20.4 Room Create -> Join -> Spectate
+
+```mermaid
+sequenceDiagram
+    participant A as Client A (creator)
+    participant B as Client B (opponent)
+    participant Sp as Client C (spectator)
+    participant WSG as WS Gateway
+    participant MM as Matchmaking Service
+    participant R as Redis
+
+    A->>WSG: CreateRoomMessage {room_id}
+    WSG->>MM: create(username, room_id)
+    MM->>R: HSETNX room:{id} {creator_username}
+    MM-->>A: RoomCreatedMessage {room_id}
+
+    B->>WSG: JoinRoomMessage {room_id}
+    WSG->>MM: join(room_id, username)
+    MM->>R: HSET room:{id} opponent_username
+    Note over MM: opponent seat filled -> starts the GameRoom
+    MM-->>A: MatchFoundMessage {color: white}
+    MM-->>B: MatchFoundMessage {color: black}
+
+    Sp->>WSG: JoinRoomMessage {room_id}
+    WSG->>MM: join(room_id, username)
+    MM->>R: SADD room:{id}:spectators username
+    MM-->>Sp: SpectatingMessage {white, black, ratings}
+    Note over Sp: read-only - never granted the room's write lease
+```
+
+### 20.5 Game-hosting worker crash -> JetStream replay recovery
+
+The scenario section 3 argues for at length - this is the same recovery, as a
+sequence.
+
+```mermaid
+sequenceDiagram
+    participant S1 as Game Server Shard (crashes)
+    participant Orch as Orchestrator
+    participant GA as Game Allocator
+    participant R as Redis
+    participant J as NATS JetStream
+    participant S2 as Game Server Shard (replacement)
+    participant WSG as WS Gateway
+
+    Note over S1: process crashes mid-game
+    Note over R: room:{id}:owner lease (PX 5000) is not renewed - it expires
+    Orch->>GA: health-check failure for S1
+    GA->>R: confirms the lease has expired
+    GA->>GA: picks a replacement Shard (S2)
+
+    S2->>J: replay room.{id} move log
+    J-->>S2: STARTING_POSITION + every MoveLoggedEvent, in order, with elapsed_ms
+    S2->>S2: rebuild the board; recompute in-flight/cooldown state from those timestamps
+    S2->>R: SET room:{id}:owner S2 (acquires the lease)
+    GA->>WSG: room {id} is now owned by S2
+    WSG->>S2: reopen the direct data-plane stream
+    Note over S2,WSG: ticking resumes - the game continues, not voided
+```

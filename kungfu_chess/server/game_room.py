@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, Optional, Set, Type
+from typing import Any, Awaitable, Callable, Dict, Optional, Set, Type
 
 from websockets.asyncio.server import ServerConnection
 
@@ -52,7 +52,7 @@ class GameRoom:
         black_ws: ServerConnection, black_username: str,
         db_path: str = accounts.DEFAULT_DB_PATH,
         room_id: Optional[str] = None,
-        on_game_over: Optional[Callable[[], None]] = None,
+        on_game_over: Optional[Callable[[], Awaitable[None]]] = None,
     ) -> None:
         self._connections: Dict[str, ServerConnection] = {WHITE: white_ws, BLACK: black_ws}
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
@@ -120,7 +120,7 @@ class GameRoom:
     def remove_spectator(self, ws: ServerConnection) -> None:
         self._spectators.discard(ws)
 
-    def leave(self, ws: ServerConnection) -> Set[ServerConnection]:
+    async def leave(self, ws: ServerConnection) -> Set[ServerConnection]:
         """Called once a connection explicitly leaves this room after
         it's already finished (see Matchmaker._leave_room and
         on_disconnect, both of which only call this once
@@ -145,7 +145,7 @@ class GameRoom:
         opponent_ws = self._connections[_other_color(color)]
         self.stop()
         if self._on_game_over is not None:
-            self._on_game_over()
+            await self._on_game_over()
         return {opponent_ws}
 
     def stop(self) -> None:
