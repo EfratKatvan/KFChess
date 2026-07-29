@@ -4,6 +4,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, FrozenSet, Optional, Set, Type
 
+from kungfu_chess.client.phases import Phase, RoomAction
 from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
@@ -54,7 +55,7 @@ class ClientState:
     # waiting/room_create_entry/room_join_entry -> room_pending_ack ->
     # room_waiting/matched/spectating, or back to login_entry (a failed
     # login/register)/no_opponent/room_action_failed/disconnected
-    phase: str = "connecting"
+    phase: Phase = Phase.CONNECTING
     color: Optional[str] = None  # None while spectating - a spectator plays no side
     rating: Optional[int] = None
     login_failure_reason: Optional[str] = None
@@ -73,9 +74,9 @@ class ClientState:
     opponent_disconnect_grace_seconds: Optional[int] = None
     room_id: Optional[str] = None  # set once a room is created/joined/matched via it; None for a Play-matched game
     text_entry_value: str = ""  # the in-progress room name typed on the room_create_entry/room_join_entry screen
-    pending_room_action: Optional[str] = None  # "create"/"join" - set while phase == "room_pending_ack"
+    pending_room_action: Optional[RoomAction] = None  # set while phase == Phase.ROOM_PENDING_ACK
     room_action_failure_reason: Optional[str] = None  # a RoomError's str(), from Create or Join failing
-    room_action_failure_kind: Optional[str] = None  # "create"/"join" - which action failed, for the message text
+    room_action_failure_kind: Optional[RoomAction] = None  # which action failed, for the message text
 
 
 def _game_over_started_at(previous: Optional[float], board_game_over: bool) -> Optional[float]:
@@ -88,7 +89,7 @@ def _game_over_started_at(previous: Optional[float], board_game_over: bool) -> O
 
 
 def _on_login_ok(message: LoginOkMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="lobby", rating=message.rating)  # waits here for the player to click Play
+    return ClientState(phase=Phase.LOBBY, rating=message.rating)  # waits here for the player to click Play
 
 
 def _on_login_failed(message: LoginFailedMessage, state: ClientState) -> ClientState:
@@ -96,23 +97,23 @@ def _on_login_failed(message: LoginFailedMessage, state: ClientState) -> ClientS
     # username is kept (no need to retype it), the password is cleared
     # (never keep a rejected password sitting in memory/on screen).
     return ClientState(
-        phase="login_entry",
+        phase=Phase.LOGIN_ENTRY,
         login_failure_reason=message.reason,
         login_username_value=state.login_username_value,
     )
 
 
 def _on_waiting_for_opponent(message: WaitingForOpponentMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="waiting", rating=state.rating)
+    return ClientState(phase=Phase.WAITING, rating=state.rating)
 
 
 def _on_no_opponent_found(message: NoOpponentFoundMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="no_opponent", rating=state.rating)
+    return ClientState(phase=Phase.NO_OPPONENT, rating=state.rating)
 
 
 def _on_match_found(message: MatchFoundMessage, state: ClientState) -> ClientState:
     return ClientState(
-        phase="matched", color=message.color, matched_at=time.perf_counter(), rating=state.rating,
+        phase=Phase.MATCHED, color=message.color, matched_at=time.perf_counter(), rating=state.rating,
         white_player=PlayerInfo(username=message.white_username, rating=message.white_rating),
         black_player=PlayerInfo(username=message.black_username, rating=message.black_rating),
         room_id=message.room_id,
@@ -120,33 +121,33 @@ def _on_match_found(message: MatchFoundMessage, state: ClientState) -> ClientSta
 
 
 def _on_room_created(message: RoomCreatedMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="room_waiting", rating=state.rating, room_id=message.room_id)
+    return ClientState(phase=Phase.ROOM_WAITING, rating=state.rating, room_id=message.room_id)
 
 
 def _on_join_room_failed(message: JoinRoomFailedMessage, state: ClientState) -> ClientState:
     return ClientState(
-        phase="room_action_failed", rating=state.rating,
-        room_action_failure_reason=message.reason, room_action_failure_kind="join",
+        phase=Phase.ROOM_ACTION_FAILED, rating=state.rating,
+        room_action_failure_reason=message.reason, room_action_failure_kind=RoomAction.JOIN,
     )
 
 
 def _on_create_room_failed(message: CreateRoomFailedMessage, state: ClientState) -> ClientState:
     return ClientState(
-        phase="room_action_failed", rating=state.rating,
-        room_action_failure_reason=message.reason, room_action_failure_kind="create",
+        phase=Phase.ROOM_ACTION_FAILED, rating=state.rating,
+        room_action_failure_reason=message.reason, room_action_failure_kind=RoomAction.CREATE,
     )
 
 
 def _on_room_cancelled(message: RoomCancelledMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="lobby", rating=state.rating)
+    return ClientState(phase=Phase.LOBBY, rating=state.rating)
 
 
 def _on_seek_cancelled(message: SeekCancelledMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="lobby", rating=state.rating)
+    return ClientState(phase=Phase.LOBBY, rating=state.rating)
 
 
 def _on_left_room(message: LeftRoomMessage, state: ClientState) -> ClientState:
-    return ClientState(phase="lobby", rating=state.rating)
+    return ClientState(phase=Phase.LOBBY, rating=state.rating)
 
 
 def _on_spectating(message: SpectatingMessage, state: ClientState) -> ClientState:
@@ -155,7 +156,7 @@ def _on_spectating(message: SpectatingMessage, state: ClientState) -> ClientStat
     # real player gets and show the live board the instant it arrives
     # (see GameRoom.add_spectator's immediate snapshot).
     return ClientState(
-        phase="spectating", color=None, room_id=message.room_id,
+        phase=Phase.SPECTATING, color=None, room_id=message.room_id,
         white_player=PlayerInfo(username=message.white_username, rating=message.white_rating),
         black_player=PlayerInfo(username=message.black_username, rating=message.black_rating),
     )
@@ -174,7 +175,7 @@ def _on_opponent_reconnected(message: OpponentReconnectedMessage, state: ClientS
 
 
 def _on_state(message: StateMessage, state: ClientState) -> ClientState:
-    if state.phase not in ("matched", "spectating"):
+    if state.phase not in (Phase.MATCHED, Phase.SPECTATING):
         # A stray broadcast from a game this client has already left
         # behind (e.g. a Play-matched GameRoom's tick loop keeps
         # running - and keeps broadcasting to this same websocket -

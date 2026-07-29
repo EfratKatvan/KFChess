@@ -16,7 +16,10 @@ from kungfu_chess.realtime.real_time_arbiter import (
 )
 
 MOVE_STATE = "move"
-JUMP_STATE = "jump"
+JUMP_STATE = "jump"  # a rendering visual-state, independent of protocol.JUMP (a wire
+# message type) - they coincidentally share this literal value (both trace back to
+# the same "jump" asset/physics-config code, see realtime/motion.py's
+# _PHYSICS_REFERENCE_ASSET_CODE lookup) but are never compared against each other
 
 
 @dataclass(frozen=True)

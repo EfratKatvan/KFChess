@@ -22,6 +22,7 @@ from kungfu_chess.client.input_controller import (
     decide_message,
 )
 from kungfu_chess.client.network_transport import ClientBox, network_thread_main, send
+from kungfu_chess.client.phases import Phase
 from kungfu_chess.io.board_parser import build_board
 from kungfu_chess.server.messages import LoginMessage, RegisterMessage
 from kungfu_chess.starting_position import STARTING_POSITION
@@ -52,7 +53,7 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
     image_view._disable_windows_dpi_scaling()
     cv2.namedWindow(image_view.WINDOW_NAME)
 
-    box = ClientBox(state=ClientState(phase="skin_menu"), piece_set=piece_set)
+    box = ClientBox(state=ClientState(phase=Phase.SKIN_MENU), piece_set=piece_set)
 
     # A throwaway local board, used only so BoardMapper can bounds-check clicks - no game logic reads it.
     bounds_board = build_board(STARTING_POSITION)
@@ -104,7 +105,7 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
             # apart from "Escape should close the window", without both
             # firing on the same keystroke. The login screen deliberately
             # isn't included - see input_controller._apply_login_key_press.
-            was_text_entry = box.state.phase in ("room_create_entry", "room_join_entry")
+            was_text_entry = box.state.phase in (Phase.ROOM_CREATE_ENTRY, Phase.ROOM_JOIN_ENTRY)
             try:
                 new_state, message = apply_key_press(key, box.state)
             except Exception:
@@ -128,27 +129,27 @@ def run_client(server_uri: str, cell_size: int, piece_set: str = DEFAULT_PIECE_S
 # _HANDLERS, matchmaker.py's _lobby_handlers, game_room.py's
 # _MESSAGE_HANDLERS) - just keyed by value here instead of by type.
 def _create_room_button_clicked(box: ClientBox) -> None:
-    box.state = ClientState(phase="room_create_entry", rating=box.state.rating)
+    box.state = ClientState(phase=Phase.ROOM_CREATE_ENTRY, rating=box.state.rating)
 
 
 def _join_room_button_clicked(box: ClientBox) -> None:
-    box.state = ClientState(phase="room_join_entry", rating=box.state.rating)
+    box.state = ClientState(phase=Phase.ROOM_JOIN_ENTRY, rating=box.state.rating)
 
 
 def _text_entry_cancel_clicked(box: ClientBox) -> None:
-    box.state = ClientState(phase="lobby", rating=box.state.rating)
+    box.state = ClientState(phase=Phase.LOBBY, rating=box.state.rating)
 
 
 def _skin_pieces1_selected(box: ClientBox) -> None:
-    box.piece_set, box.state = "pieces1", ClientState(phase="login_entry")
+    box.piece_set, box.state = "pieces1", ClientState(phase=Phase.LOGIN_ENTRY)
 
 
 def _skin_pieces2_selected(box: ClientBox) -> None:
-    box.piece_set, box.state = "pieces2", ClientState(phase="login_entry")
+    box.piece_set, box.state = "pieces2", ClientState(phase=Phase.LOGIN_ENTRY)
 
 
 def _skin_pieces3_selected(box: ClientBox) -> None:
-    box.piece_set, box.state = "pieces3", ClientState(phase="login_entry")
+    box.piece_set, box.state = "pieces3", ClientState(phase=Phase.LOGIN_ENTRY)
 
 
 def _login_field_username_clicked(box: ClientBox) -> None:
@@ -187,7 +188,7 @@ def _dispatch(box: ClientBox, server_uri: str, message: object) -> None:
         handler(box)
         return
     if isinstance(message, (LoginMessage, RegisterMessage)):
-        box.state = replace(box.state, phase="connecting")
+        box.state = replace(box.state, phase=Phase.CONNECTING)
         threading.Thread(target=network_thread_main, args=(server_uri, message, box), daemon=True).start()
         return
     if message is not None:

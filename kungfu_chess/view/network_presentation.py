@@ -6,6 +6,7 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 
 from kungfu_chess.client.client_state import ClientState, PlayerInfo
+from kungfu_chess.client.phases import Phase, RoomAction
 from kungfu_chess.model.piece import WHITE
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.view.img import Img
@@ -516,7 +517,7 @@ def _render_no_opponent(state: ClientState, width: int, height: int, cell_size: 
 
 
 def _render_room_action_failed(state: ClientState, width: int, height: int, cell_size: int, piece_set: str, renderer: Renderer) -> Img:
-    verb = "create" if state.room_action_failure_kind == "create" else "join"
+    verb = "create" if state.room_action_failure_kind == RoomAction.CREATE else "join"
     return lobby_screen(width, height, state.rating, message=f"Could not {verb} room: {state.room_action_failure_reason}")
 
 
@@ -593,20 +594,20 @@ def _render_matched_or_spectating(state: ClientState, width: int, height: int, c
     return canvas
 
 
-_PHASE_SCREENS: Dict[str, Callable[[ClientState, int, int, int, str, Renderer], Img]] = {
-    "skin_menu": _render_skin_menu,
-    "login_entry": _render_login_entry,
-    "lobby": _render_lobby,
-    "no_opponent": _render_no_opponent,
-    "room_action_failed": _render_room_action_failed,
-    "room_create_entry": _render_room_create_entry,
-    "room_join_entry": _render_room_join_entry,
-    "room_pending_ack": _render_room_pending_ack,
-    "room_waiting": _render_room_waiting,
-    "waiting": _render_waiting,
-    "disconnected": _render_disconnected,
-    "matched": _render_matched_or_spectating,
-    "spectating": _render_matched_or_spectating,
+_PHASE_SCREENS: Dict[Phase, Callable[[ClientState, int, int, int, str, Renderer], Img]] = {
+    Phase.SKIN_MENU: _render_skin_menu,
+    Phase.LOGIN_ENTRY: _render_login_entry,
+    Phase.LOBBY: _render_lobby,
+    Phase.NO_OPPONENT: _render_no_opponent,
+    Phase.ROOM_ACTION_FAILED: _render_room_action_failed,
+    Phase.ROOM_CREATE_ENTRY: _render_room_create_entry,
+    Phase.ROOM_JOIN_ENTRY: _render_room_join_entry,
+    Phase.ROOM_PENDING_ACK: _render_room_pending_ack,
+    Phase.ROOM_WAITING: _render_room_waiting,
+    Phase.WAITING: _render_waiting,
+    Phase.DISCONNECTED: _render_disconnected,
+    Phase.MATCHED: _render_matched_or_spectating,
+    Phase.SPECTATING: _render_matched_or_spectating,
 }
 
 

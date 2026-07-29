@@ -17,7 +17,9 @@ SEEK_CANCELLED = "seek_cancelled"
 
 # In-game phase (client -> server)
 SELECT_OR_MOVE = "select_or_move"
-JUMP = "jump"
+JUMP = "jump"  # a wire message type, independent of engine/board_view_state.JUMP_STATE
+# (a rendering visual-state) - they coincidentally share this literal value but are
+# never compared against each other
 RESTART = "restart"
 RESIGN = "resign"  # forfeits the current game to the opponent on demand - see GameRoom's resign handling
 

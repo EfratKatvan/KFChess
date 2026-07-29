@@ -10,6 +10,7 @@ from websockets.asyncio.client import connect
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET
 from kungfu_chess.client import sound
 from kungfu_chess.client.client_state import ClientState, apply_message, events_since
+from kungfu_chess.client.phases import Phase
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
 """The client's Transport layer: owns the actual WebSocket connection
@@ -98,4 +99,4 @@ def network_thread_main(server_uri: str, initial_message: Any, box: ClientBox) -
         asyncio.run(client_main())
     except Exception as error:
         logger.warning("disconnected from server: %s", error)
-        box.state = ClientState(phase="disconnected")
+        box.state = ClientState(phase=Phase.DISCONNECTED)

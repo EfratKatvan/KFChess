@@ -5,6 +5,7 @@ from dataclasses import replace
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from kungfu_chess.client.client_state import ClientState
+from kungfu_chess.client.phases import Phase, RoomAction
 from kungfu_chess.input.board_mapper import BoardMapper
 from kungfu_chess.server import protocol
 from kungfu_chess.server.messages import (
@@ -74,7 +75,7 @@ LOGIN_FIELD_PASSWORD_CLICKED = "__login_field_password_clicked__"
 _ENTER_KEYS = (13, 10)
 _BACKSPACE_KEY = 8
 _TAB_KEY = 9
-_TEXT_ENTRY_PHASES = ("room_create_entry", "room_join_entry")
+_TEXT_ENTRY_PHASES = (Phase.ROOM_CREATE_ENTRY, Phase.ROOM_JOIN_ENTRY)
 _MAX_LOGIN_FIELD_LENGTH = 32
 
 
@@ -229,16 +230,16 @@ def _decide_matched_message(
 # Any phase with no entry here (connecting, spectating, disconnected,
 # room_pending_ack, ...) means a click means nothing right now - same
 # as the old code's final "if state.phase != matched: return None".
-_CLICK_HANDLERS: Dict[str, Callable[..., Optional[Any]]] = {
-    "skin_menu": _decide_skin_menu_message,
-    "login_entry": _decide_login_entry_message,
-    "lobby": _decide_lobby_message,
-    "no_opponent": _decide_lobby_message,
-    "room_action_failed": _decide_lobby_message,
+_CLICK_HANDLERS: Dict[Phase, Callable[..., Optional[Any]]] = {
+    Phase.SKIN_MENU: _decide_skin_menu_message,
+    Phase.LOGIN_ENTRY: _decide_login_entry_message,
+    Phase.LOBBY: _decide_lobby_message,
+    Phase.NO_OPPONENT: _decide_lobby_message,
+    Phase.ROOM_ACTION_FAILED: _decide_lobby_message,
     **{phase: _decide_text_entry_message for phase in _TEXT_ENTRY_PHASES},
-    "room_waiting": _decide_room_waiting_message,
-    "waiting": _decide_waiting_message,
-    "matched": _decide_matched_message,
+    Phase.ROOM_WAITING: _decide_room_waiting_message,
+    Phase.WAITING: _decide_waiting_message,
+    Phase.MATCHED: _decide_matched_message,
 }
 
 
@@ -303,14 +304,14 @@ def _apply_text_entry_key_press(key: int, state: ClientState) -> Tuple[ClientSta
     CreateRoomMessage/JoinRoomMessage depending on which phase this is,
     Backspace/printable characters edit state.text_entry_value."""
     if key == image_view.ESC_KEY:
-        return ClientState(phase="lobby", rating=state.rating), None
+        return ClientState(phase=Phase.LOBBY, rating=state.rating), None
     if key in _ENTER_KEYS:
         value = state.text_entry_value.strip()
         if not value:
             return state, None
-        kind = "create" if state.phase == "room_create_entry" else "join"
-        new_state = replace(state, phase="room_pending_ack", pending_room_action=kind)
-        message = CreateRoomMessage(room_id=value) if kind == "create" else JoinRoomMessage(room_id=value)
+        kind = RoomAction.CREATE if state.phase == Phase.ROOM_CREATE_ENTRY else RoomAction.JOIN
+        new_state = replace(state, phase=Phase.ROOM_PENDING_ACK, pending_room_action=kind)
+        message = CreateRoomMessage(room_id=value) if kind == RoomAction.CREATE else JoinRoomMessage(room_id=value)
         return new_state, message
     if key == _BACKSPACE_KEY:
         return replace(state, text_entry_value=state.text_entry_value[:-1]), None
@@ -319,8 +320,8 @@ def _apply_text_entry_key_press(key: int, state: ClientState) -> Tuple[ClientSta
     return state, None  # arrow/function keys, -1 (no key this frame), cap already hit, etc.
 
 
-_KEY_PRESS_HANDLERS: Dict[str, Callable[[int, ClientState], Tuple[ClientState, Optional[Any]]]] = {
-    "login_entry": _apply_login_key_press,
+_KEY_PRESS_HANDLERS: Dict[Phase, Callable[[int, ClientState], Tuple[ClientState, Optional[Any]]]] = {
+    Phase.LOGIN_ENTRY: _apply_login_key_press,
     **{phase: _apply_text_entry_key_press for phase in _TEXT_ENTRY_PHASES},
 }
 
