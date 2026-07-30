@@ -292,6 +292,43 @@ async def _auto_resign_scenario(db_path, accounts_base_url):
     room.stop()
 
 
+def test_both_players_disconnecting_before_grace_expires_fully_releases_the_room(db_path, monkeypatch, accounts_base_url):
+    monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.05)
+    asyncio.run(_both_disconnect_scenario(db_path, accounts_base_url))
+
+
+async def _both_disconnect_scenario(db_path, accounts_base_url):
+    """If the surviving color also disconnects before the grace timer
+    fires, nobody is left who could ever click New Game - unlike the
+    ordinary auto-resign case (see
+    test_on_game_over_callback_does_not_fire_at_game_over_itself),
+    the room must fully release here (tick loop stopped, on_game_over
+    fired) instead of ticking - and, since Stage 3, renewing its
+    GameAllocator lease - forever."""
+    accounts.register(db_path, "white_player", "pw")
+    accounts.register(db_path, "black_player", "pw")
+    calls = []
+
+    async def on_game_over():
+        calls.append(1)
+
+    room = GameRoom(
+        FakeConnection("white"), "white_player", FakeConnection("black"), "black_player",
+        accounts_client=AccountsClient(accounts_base_url), room_id="ABC123", on_game_over=on_game_over,
+    )
+    await room.start()
+
+    await room.handle_disconnect(WHITE)  # black is the (initial) survivor
+    await room.handle_disconnect(BLACK)  # ...but black is gone too now - nobody is left
+
+    await asyncio.sleep(0.15)  # past the (shortened) grace period
+    await asyncio.sleep(0)  # let the event loop actually process the tick task's cancellation
+
+    assert room._engine.is_game_over() is True
+    assert calls == [1]
+    assert room._tick_task.cancelled()
+
+
 def test_resign_ends_the_game_and_credits_the_opponent(db_path, accounts_base_url):
     asyncio.run(_resign_scenario(db_path, accounts_base_url))
 

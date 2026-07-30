@@ -86,6 +86,7 @@ class GameRoom:
         self._last_broadcast = time.perf_counter()
         self._rating_update_applied = False
         self._disconnected_color: Optional[str] = None
+        self._survivor_also_disconnected = False
         self._paused = False
         if self._resign_task is not None:
             self._resign_task.cancel()
@@ -167,8 +168,21 @@ class GameRoom:
         """Pauses the game clock (so the disconnected player doesn't lose
         ground to lag) and starts a grace-period countdown - the
         surviving player is notified once; the client counts down
-        locally from there (see OpponentDisconnectedMessage)."""
-        if self._disconnected_color is not None or self._engine.is_game_over():
+        locally from there (see OpponentDisconnectedMessage).
+
+        If a *second* disconnect arrives for the color that was still
+        "surviving" (nobody at all is connected anymore), that alone
+        doesn't cancel the first disconnect's own reconnect grace
+        window (see try_reconnect) - it's only recorded so
+        _auto_resign_after_grace knows, once its timer actually fires,
+        that there's no one left who could ever click "New Game" -
+        and so should fully release the room instead of leaving it
+        paused forever (see _survivor_also_disconnected below)."""
+        if self._engine.is_game_over():
+            return
+        if self._disconnected_color is not None:
+            if self._disconnected_color != color:
+                self._survivor_also_disconnected = True
             return
         self._disconnected_color = color
         self._paused = True
@@ -194,6 +208,7 @@ class GameRoom:
             self._resign_task = None
         self._connections[color] = new_ws
         self._disconnected_color = None
+        self._survivor_also_disconnected = False
         self._paused = False
         self._last_tick = time.perf_counter()  # don't count the paused duration as elapsed game time
         await self._safe_send(self._connections[_other_color(color)], OpponentReconnectedMessage())
@@ -276,6 +291,18 @@ class GameRoom:
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
         await self._apply_rating_update(view_state, winner_color=surviving_color)
         await self._broadcast()
+        if self._survivor_also_disconnected:
+            # Nobody is left connected to this room at all - unlike the
+            # ordinary auto-resign case (section tested by
+            # test_room_name_stays_reserved_after_game_over_...), where
+            # the survivor is still around and might click New Game,
+            # here there is no one left who ever could. Release it now,
+            # the same way leave() does for an explicit "Back to Lobby" -
+            # otherwise the tick loop (and, since Stage 3, the
+            # GameAllocator's lease-renewal heartbeat) would run forever.
+            self.stop()
+            if self._on_game_over is not None:
+                await self._on_game_over()
 
     async def _broadcast(self) -> None:
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
