@@ -12,6 +12,7 @@ from websockets.asyncio.server import ServerConnection
 from kungfu_chess.server import protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
+from kungfu_chess.server.game_allocator import GameAllocator
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
@@ -85,6 +86,16 @@ class Matchmaker:
         self._rooms: Dict[ServerConnection, GameRoom] = {}
         self._disconnected_players: Dict[str, Tuple[GameRoom, str]] = {}
         self._active_connections: Dict[str, ServerConnection] = {}  # username -> its one live connection
+
+        # The placement decision (Server_Design.md section 1's "Game
+        # Allocator" row, section 19's Stage 3) - deliberately separate
+        # from this class's own fairness decision above. Shares this
+        # Matchmaker's Redis client and namespace so its room leases
+        # live alongside the seeker queue/room registry below, scoped
+        # the same way for test isolation.
+        self._game_allocator = GameAllocator(
+            accounts_client=self._accounts_client, redis_client=self._redis, namespace=self._namespace
+        )
 
         # The Room dialog's Create/Join/Cancel flow - independent of, and
         # parallel to, the ELO-proximity _waiting queue above. Shares this
@@ -204,10 +215,9 @@ class Matchmaker:
             opponent = self._waiting.pop(opponent_username, None)
             if opponent is not None:
                 opponent.timeout_task.cancel()
-                room = GameRoom(
+                room = await self._game_allocator.allocate(
                     white_ws=opponent.ws, white_username=opponent_username,
                     black_ws=ws, black_username=username,
-                    accounts_client=self._accounts_client,
                 )
                 self._rooms[opponent.ws] = room
                 self._rooms[ws] = room
@@ -290,10 +300,10 @@ class Matchmaker:
             # second person to join is Black; the creator is always White.
             creator_ws = self._active_connections.get(room.creator_username)
             self._pending_room_creators.pop(creator_ws, None)
-            game_room = GameRoom(
+            game_room = await self._game_allocator.allocate(
                 white_ws=creator_ws, white_username=room.creator_username,
                 black_ws=ws, black_username=username,
-                accounts_client=self._accounts_client, room_id=room.room_id,
+                room_id=room.room_id,
                 on_game_over=lambda: self._close_room(room.room_id),
             )
             self._room_games[room.room_id] = game_room
