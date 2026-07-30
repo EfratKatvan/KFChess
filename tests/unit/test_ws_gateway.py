@@ -6,7 +6,7 @@ from kungfu_chess.server import accounts, protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.messages import LoginMessage, RegisterMessage, RestartMessage
 from kungfu_chess.server.serialization import serialize_message
-from kungfu_chess.server.server import _authenticate
+from kungfu_chess.server.ws_gateway import _authenticate
 from tests.unit.test_matchmaker import FakeConnection, _last_type
 
 

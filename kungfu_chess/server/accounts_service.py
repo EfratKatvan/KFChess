@@ -15,7 +15,7 @@ existing pure logic - no password hashing, ELO math, or sqlite3 access
 happens here, only request/response translation (section 13.2's
 ports-and-adapters split). After Stage 1 (section 19), this is the only
 process that ever calls accounts.py/accounts_db.py directly; everyone
-else (matchmaker.py, game_room.py, server.py) goes through
+else (matchmaker.py, game_room.py, ws_gateway.py) goes through
 accounts_client.AccountsClient instead, bounding the number of things
 that ever touch the DB regardless of how large the rest of the fleet
 grows (section 6)."""

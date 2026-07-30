@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from kungfu_chess.logging_config import configure_logging
-from kungfu_chess.server.server import HOST, PORT
+from kungfu_chess.server.ws_gateway import HOST, PORT
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.view import image_view, network_client_view
 

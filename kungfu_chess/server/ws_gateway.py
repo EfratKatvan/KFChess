@@ -16,9 +16,20 @@ from kungfu_chess.server.serialization import deserialize_message, serialize_mes
 
 HOST = "localhost"
 PORT = 8765
-LOG_FILE = "server.log"
+LOG_FILE = "ws_gateway.log"
 
 logger = logging.getLogger(__name__)
+
+"""The WS Gateway (Server_Design.md section 1's "WS Gateway" row,
+section 14 row 2, section 14.2): the live-connection entry point - it
+accepts the socket, drives the login/register handshake (over HTTP to
+the Accounts/Ratings API Service via AccountsClient, never sqlite3
+directly), then hands every subsequent raw message to the Matchmaker.
+No game or matchmaking logic lives here, only transport/protocol/
+routing - Stage 2 (section 19) is exactly this file existing as its
+own module, separate from Matchmaker/GameRoom, ahead of it ever running
+as its own deployable unit (still one process for now: Matchmaker is
+constructed and called in-process below, not yet over the wire)."""
 
 
 async def _try_send(ws: ServerConnection, message: Any) -> None:

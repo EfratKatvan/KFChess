@@ -21,5 +21,5 @@ def get_client(host: str = REDIS_HOST, port: int = REDIS_PORT) -> redis.Redis:
     asyncio.run() (its own fresh event loop) - a cached client created
     under one test's loop would break on the next. Production only
     ever calls this once anyway (Matchmaker is constructed a single
-    time in server.py's run()), so there's no real cost either way."""
+    time in ws_gateway.py's run()), so there's no real cost either way."""
     return redis.Redis(host=host, port=port, decode_responses=True)

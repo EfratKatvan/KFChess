@@ -9,7 +9,7 @@ from kungfu_chess.server.accounts import AuthResult
 ACCOUNTS_SERVICE_URL = "http://localhost:8766"
 
 """HTTP adapter the rest of the server talks to the Accounts/Ratings API
-Service through - matchmaker.py, game_room.py and server.py call only
+Service through - matchmaker.py, game_room.py and ws_gateway.py call only
 this, never accounts.py or a db_path directly (Server_Design.md
 section 6: the accounts DB is reachable only through one service, not
 from every ephemeral worker). accounts_service.py is the other half of
@@ -60,6 +60,6 @@ def get_client(base_url: str = ACCOUNTS_SERVICE_URL) -> AccountsClient:
     to the event loop that created it, and this server's tests each run
     their own asyncio.run() (its own fresh event loop), so a cached
     process-wide singleton would break on the next test. Production
-    only ever constructs one (server.py's run()), so there's no real
+    only ever constructs one (ws_gateway.py's run()), so there's no real
     cost either way."""
     return AccountsClient(base_url)

@@ -18,9 +18,12 @@ logger = logging.getLogger(__name__)
 
 """The accounts application layer: password hashing, the
 login-vs-register decision, and the ELO math - all business logic, none
-of it touching sqlite3 directly (see accounts_db.py for that). Callers
-across the server (server.py, matchmaker.py, game_room.py) only ever
-import this module, never accounts_db directly."""
+of it touching sqlite3 directly (see accounts_db.py for that). Since
+Stage 1 (Server_Design.md section 19), accounts_service.py is the only
+process that actually calls into this module's DB-backed functions;
+ws_gateway.py imports it only for the pure AuthResult type, and
+matchmaker.py/game_room.py reach accounts over HTTP via
+accounts_client.AccountsClient instead."""
 
 
 @dataclass(frozen=True)
