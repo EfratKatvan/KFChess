@@ -44,6 +44,40 @@ different concerns; and "does everyone reach the same place" is exactly what the
 Gateway tier (API + WS) solves - every client's first hop is one of *many*
 interchangeable gateway instances, not one fixed address.
 
+### 1.1 Auth at the edge: stateless JWT, with a Redis revocation list for the exception
+
+Today's code has no token at all - `accounts.py` checks username/password directly
+against `accounts_db.py` per call. That's fine for one process; it doesn't survive
+splitting into many Gateway instances, because it would mean **every** request from
+**every** Gateway round-trips to the Accounts service just to prove "this is still a
+logged-in user" - turning a lightweight, stateless tier into one bottlenecked by a
+service call on every single message.
+
+**The fix**: the API Service issues a **signed JWT** at login (short-lived, containing
+`user_id`, `rating`, an expiry, and a unique `jti`). Every Gateway - API or WS - holds
+the *public* verification key in RAM and checks the signature and expiry **locally**,
+with zero network call, on every request/connection. This is the same "stateless
+fleet" property section 14.2 already establishes for the WS Gateway (no Gateway
+instance holds anything that must survive its own crash) - a JWT makes *auth* stateless
+the same way Redis-backed presence makes *reconnect* stateless.
+
+The one thing a purely stateless token can't do on its own is **revocation** -
+logout, a ban, or a password change should take effect immediately, not wait out the
+token's own expiry. **Redis closes that gap**: `SADD revoked:tokens <jti>` with a TTL
+equal to the token's own remaining lifetime (so a revoked entry disappears from Redis
+at the exact moment it would have expired anyway - the blacklist can never grow
+unbounded, it only ever holds *currently still-valid-but-revoked* tokens). Each
+Gateway does one cheap `SISMEMBER revoked:tokens <jti>` alongside the local signature
+check - a single-key existence lookup, not a full account/session fetch, and against
+infrastructure (Redis) every Gateway already depends on for presence and the seeker
+queue, so this adds no new moving part to the system, only a new key namespace.
+
+| | Stateless-only JWT (no blacklist) | JWT + Redis revocation set (chosen) |
+|---|---|---|
+| Per-request cost | zero network calls | one `SISMEMBER` (cheap, same Redis already in the hot path) |
+| Logout/ban takes effect | only once the token itself expires | immediately, fleet-wide |
+| New infra required | none | none - reuses the Redis cluster from section 1 |
+
 ## 2. Two kinds of traffic need two kinds of transport
 
 Not everything above should share one pipe. Two very different traffic shapes exist:
@@ -61,6 +95,21 @@ Not everything above should share one pipe. Two very different traffic shapes ex
   this scale, before optimization) through a general-purpose broker would make the
   broker itself the bottleneck - NATS carries the low-volume control events and the
   JetStream move log (section 3), never the raw gameplay stream itself.
+
+**A client never has a socket to a Shard - only ever to a Gateway.** Worth stating
+explicitly, since it's a real isolation requirement, not just a performance detail:
+the data-plane stream above is *WS Gateway <-> Shard*, not *client <-> Shard*. The
+client's only socket is to the WS Gateway; the Gateway is the sole broker that relays
+each side's messages onward, resolving `room_id -> shard` via the Redis registry once
+and forwarding traffic itself. A Shard is never reachable from outside the cluster's
+own network - it has no public address to be reachable *at*. This already gives the
+isolation an edge reverse-proxy (e.g. Nginx) would otherwise be asked to provide; a
+proxy like Nginx (or a cloud L4/TLS load balancer) still has a place, but one layer
+further out - in front of the *Gateway fleet itself*, doing TLS termination and
+spreading incoming connections across many Gateway instances (the "Anycast Edge / LB"
+layer). The two are complementary, not redundant: the edge LB decides *which Gateway*
+a new connection lands on; the Gateway then decides *which Shard* that connection's
+room traffic goes to. Neither layer ever hands the client a direct line to a Shard.
 
 ## 3. Room ownership: the gap a registry alone doesn't close
 
@@ -506,72 +555,60 @@ anything that needs to survive that specific instance crashing.
 
 ## 15. End-to-end flow of the target architecture
 
-Plain text, box-and-arrow diagram - renders as-is in any editor, GitHub, or terminal,
-no plugin needed:
+Mermaid flowchart - renders natively on GitHub and in any Mermaid-aware viewer, no
+plugin needed:
 
-```
-                                   +--------+
-                                   | Client |
-                                   +---+----+
-                        login/rooms(HTTP)|  |WebSocket (live)
-                                         |  |
-                    +--------------------+  +--------------------+
-                    v                                             v
-          +-------------------+                         +----------------------+
-          |    API Service     |                         |      WS Gateway       |
-          | auth . rooms(REST) |                         | holds live sockets,   |
-          | . rating/history   |                         | no game logic         |
-          +---------+---------+                         +-----------+-----------+
-                    |                                                |
-                    v                                    seek / create / join room
-          +-------------------+                                     |
-          |     PostgreSQL     |                                    v
-          | users, games,      |          +-------------------------------------+
-          | rating, history    |          |            NATS Event Bus            |
-          +-------------------+          | (control-plane only: "match-found",  |
-                                          |  "allocate room", "room ready")      |
-                                          +-------------------+-------------------+
-                                                              |
-                                                              v
-                        +----------------+   +-----------------+   +--------------------------+
-                        |   Matchmaker    |-->|  Game Allocator  |-->| writes mapping into Redis |
-                        |  (ELO queue)    |   |  (picks a shard) |   |                          |
-                        +----------------+   +-----------------+   +--------------------------+
-                                                                                |
-                                                                                v
-                              +-------------------------------------------------------+
-                              |                 Redis Cluster (single store)           |
-                              |  room_id -> shard/worker (the "registry", not a        |
-                              |  service) . seeker queue (ZSET) . presence/reconnect   |
-                              +-------------------------------------------------------+
-                                        |                                    |
-                                        v                                    v
-                        +-----------------------+                +-----------------------+
-                        |  Game Server Shard A   |      ...       |  Game Server Shard N   |
-                        |  owns rooms X, Y, ...  |                |  owns rooms A, B, ...  |
-                        |  N worker processes,   |                |  N worker processes,   |
-                        |  authoritative          |                |  authoritative         |
-                        |  GameEngine per room    |                |  GameEngine per room   |
-                        +-----------------------+                +-----------------------+
-                                        |                                    |
-                                        +-----------------+------------------+
-                                                          |
-                              +---------------------------+---------------------------+
-                              |                                                         |
-                              v                                                         v
-                    +------------------------+                              +------------------------+
-                    | Redis (same cluster    |                              |     Observability      |
-                    | above - hot state)     |                              | logs, metrics, alerts,  |
-                    +------------------------+                              | load tests              |
-                                                                             +------------------------+
+```mermaid
+flowchart TD
+    Client(Client)
+
+    Client -->|"login / register, REST"| API[API Service]
+    Client -->|"WebSocket, JWT on connect - section 1.1"| WSG[WS Gateway]
+    WSG -->|"live state, over the same socket"| Client
+
+    API --> PG[("PostgreSQL: users, ratings, history")]
+
+    WSG -->|"seek / create / join room"| Bus{{"NATS Event Bus, control-plane only"}}
+
+    Bus --> MM["Matchmaker: ELO queue"]
+    MM --> GA["Game Allocator: picks a Shard"]
+    GA -->|"SET room-id-owner NX PX 5000"| Redis[("Redis Cluster: registry, seeker ZSET, presence, revoked tokens")]
+    MM -.->|"ZRANGEBYSCORE seekers queue"| Redis
+    WSG -.->|"presence / reconnect lookup"| Redis
+
+    GA -.->|"match-found event"| Bus
+    Bus -.->|"match-found event"| WSG
+
+    WSG -->|"direct data-plane stream - WS Gateway to Shard only, never client to Shard, section 2/3"| ShardA["Game Server Shard A: owns rooms X, Y, ..."]
+    ShardA -->|"state to relay onward"| WSG
+    WSG --> ShardN["Game Server Shard N: owns rooms A, B, ..."]
+    ShardN --> WSG
+
+    ShardA --> Redis
+    ShardN --> Redis
+    ShardA -.->|"move log"| JS[("NATS JetStream: per-room, about 90s retention")]
+    ShardN -.->|"move log"| JS
+    ShardA -.->|"rating update, REST"| API
+    ShardN -.->|"rating update, REST"| API
+
+    Obs["Observability: logs, metrics, alerts, load tests"]
+    API -.-> Obs
+    WSG -.-> Obs
+    MM -.-> Obs
+    GA -.-> Obs
+    ShardA -.-> Obs
+    ShardN -.-> Obs
 ```
 
 Step by step:
 
 1. **Login**: the client calls the **API Service** (REST) for login/register ->
-   reads/writes PostgreSQL, gets back a session/token.
+   reads/writes PostgreSQL, gets back a signed **JWT** (section 1.1), not a bare
+   session id.
 2. **Live connection**: the client opens a WebSocket against the **WS Gateway** (not
-   the API Service - different protocol, different scaling axis).
+   the API Service - different protocol, different scaling axis), presenting the JWT;
+   the Gateway verifies it locally (signature + expiry + Redis revocation check),
+   with no call to the API Service.
 3. **Seeking a match**: clicking "Play" -> the WS Gateway forwards a seek request to
    the **Matchmaking Service**. Its internal `Matchmaker` looks at the shared queue in
    Redis (not a local dict, as today) and finds an ELO-appropriate opponent.
@@ -580,9 +617,11 @@ Step by step:
    an available Game Server Shard, acquires its lease in Redis
    (`SET room:<id>:owner <worker> NX PX 5000`), and publishes a `match-found` event on
    NATS.
-5. **The game itself**: the WS Gateway, having heard the event, opens a direct
-   data-plane stream between the client and the specific assigned Shard - **not
-   through NATS**, since the volume is too high (sections 2 and 8). The Shard runs
+5. **The game itself**: the WS Gateway, having heard the event, opens the direct
+   data-plane stream to the specific assigned Shard on the client's behalf - **the
+   client's own socket stays pointed at the Gateway the whole time** (section 2/3);
+   this hop is **not through NATS**, since the volume is too high (sections 2 and 8).
+   The Shard runs
    `GameEngine`/`RealTimeArbiter` exactly as it does today.
 6. **Game end**: the Shard sends a rating-update request to the API Service (an
    internal HTTP call, not a direct DB write as today) and releases its Redis lease.
@@ -675,30 +714,72 @@ ReplicaSet semantics - this applies the same whether the cluster underneath is K
 full K8s, since Agones runs on both; it isn't a reason by itself to pick one over the
 other.
 
+### 18.1 Why a message broker *and* an orchestrator - they solve different problems
+
+Worth naming explicitly why this design already uses **both** NATS/JetStream
+(section 16.2) and K3s/Agones (above), rather than treating that as two unrelated
+line items: they answer two different questions, and neither substitutes for the
+other.
+
+- **The broker (NATS, or Kafka in the more general case) answers "how does a
+  message get from a writer to a reader without either knowing about the
+  other?"** - it's a queue with durability: it holds `match-found`/`game-finished`
+  events, and the per-room move log, between the process that produced them and
+  whatever process eventually consumes them, however long that takes. Queue
+  *depth* - how many messages are waiting - is a real, measurable signal of load
+  (section 1's Matchmaker/Game Allocator both scale "on queue depth").
+- **The orchestrator (K3s/Kubernetes) answers "how many copies of that consumer
+  should be running right now, and where?"** - it doesn't touch the messages
+  themselves; it watches signals like queue depth (or CPU, or active-room count)
+  and adds or removes *identical, interchangeable* worker instances in response.
+  No individual Matchmaker or Game-hosting worker instance has - or needs - an
+  identity of its own; the same way a single ant doesn't matter to an ant colony
+  but the colony's overall behavior does, no single instance matters here, only
+  the fleet's aggregate capacity.
+
+Put together: **a growing queue in NATS is the signal, and Kubernetes scaling out
+more consumer pods is the response** - the broker alone would just let unprocessed
+messages pile up forever, and the orchestrator alone would have nothing
+load-based to scale *on* without a queue-depth (or equivalent) signal to read.
+This is exactly why section 1 lists "queue depth" and "allocation rate" as the
+scaling metric for the Matchmaker and Game Allocator specifically, rather than a
+generic CPU threshold - the queue is the number Kubernetes' autoscaler actually
+watches.
+
 ## 19. Staged implementation roadmap
 
-Suggested stages for actually building this (each stage leaves the system working):
+Suggested stages for actually building this (each stage leaves the system working).
+Status reflects the actual code/git history as of this writing, not just the plan:
 
-1. **Stage 0**: add Redis as a dependency; move `Matchmaker._waiting`/`_rooms`/
-   `RoomRegistry` from in-memory dicts to Redis (as a ZSET-backed queue, section 16.1)
-   - still one process.
-2. **Stage 1**: split `accounts.py`/`accounts_db.py` into a standalone API Service
-   (HTTP); `server.py` calls it over HTTP instead of importing it directly.
-3. **Stage 2**: split socket acceptance itself (`server.py`) into a separate WS
-   Gateway that talks to the rest of the system (still one process at this stage)
-   over Redis/HTTP.
-4. **Stage 3**: actually split `matchmaker.py` into its two responsibilities
-   (Matchmaker fairness + Game Allocator placement) inside one Matchmaking Service
-   process, with lease-based room ownership in Redis.
-5. **Stage 4**: `game_room.py` becomes a standalone Game Server Shard, receiving
-   commands from and sending state to the WS Gateway rather than the client directly;
-   replace the full-snapshot broadcast (~5.6KB/tick) with the sparse-event protocol
-   (section 8).
-6. **Stage 5**: package per section 17's decision (recommended: one image, role chosen
-   via `SERVICE_ROLE`) + a local `docker-compose.yml` running everything alongside
-   Redis/NATS/Postgres.
-7. **Stage 6**: add Observability (logs/metrics/health checks/load tests) + cluster
-   manifests, starting on K3s per section 18's recommendation.
+1. **Stage 0 - Done** (`3972d75`): Redis added as a dependency; the seeker queue and
+   `RoomRegistry` moved from in-memory dicts to Redis (ZSET-backed queue, section
+   16.1) - `kungfu_chess/server/redis_client.py`.
+2. **Stage 1 - Done** (`461ea55`): `accounts.py`/`accounts_db.py` split into a
+   standalone API Service (`accounts_service.py`); the rest of the system calls it
+   over HTTP (`accounts_client.py`) instead of importing it directly. **Not yet
+   included**: JWT issuance/verification and the Redis revocation blacklist (section
+   1.1) - today this stage still returns a bare `AuthResult`, no token. Worth doing
+   as a Stage 1b before splitting the Gateway further, since every later stage's
+   Gateway-side auth check assumes a JWT exists.
+3. **Stage 2 - Done** (`ec00217`): socket acceptance itself split out of `server.py`
+   into `kungfu_chess/server/ws_gateway.py`, talking to the rest of the system over
+   Redis/HTTP (still one process at this stage).
+4. **Stage 3 - Done** (`fbed6bc`, hardened by `20d0ff3`): `matchmaker.py` split into
+   its two responsibilities - `matchmaker.py` (fairness) and
+   `kungfu_chess/server/game_allocator.py` (placement) - with lease-based room
+   ownership in Redis. `20d0ff3` closed the gap section 20.6 documents: a room whose
+   both occupants vanish before the auto-resign timer fires now fully releases
+   itself (and the Allocator's lease-renewal heartbeat), instead of running forever.
+5. **Stage 4 - Not yet started**: `game_room.py` becomes a standalone Game Server
+   Shard, receiving commands from and sending state to the WS Gateway rather than
+   the client directly; replace the full-snapshot broadcast (~5.6KB/tick) with the
+   sparse-event protocol (section 8).
+6. **Stage 5 - Not yet started**: package per section 17's decision (recommended: one
+   image, role chosen via `SERVICE_ROLE`) + a local `docker-compose.yml` running
+   everything alongside Redis/NATS/Postgres.
+7. **Stage 6 - Not yet started**: add Observability (logs/metrics/health
+   checks/load tests) + cluster manifests, starting on K3s per section 18's
+   recommendation.
 
 Verification at each stage: `python -m pytest` should keep passing, and two client
 processes (`python app.py` run twice) should still be able to connect, get matched,
@@ -818,7 +899,17 @@ sequenceDiagram
     end
 ```
 
-### 20.4 Room Create -> Join -> Spectate
+### 20.4 Room Create -> Join -> Spectate -> broadcast
+
+A spectator is anyone past the second joiner of a room - the third and every
+subsequent `JoinRoomMessage` for the same `room_id` lands in
+`room:{id}:spectators` instead of taking a player seat, and is handed a
+`SpectatingMessage` instead of a `MatchFoundMessage`: same room, no write lease.
+Once seated, a spectator receives **exactly the same `StateMessage` broadcast
+stream** as the two players (today's 15/sec full-snapshot tick, section 8) - the
+Shard does not distinguish spectators from players when broadcasting, it simply
+fans the same message out to every connection registered on the room. That is the
+simplest correct behavior and the one to build first.
 
 ```mermaid
 sequenceDiagram
@@ -828,6 +919,7 @@ sequenceDiagram
     participant WSG as WS Gateway
     participant MM as Matchmaking Service
     participant R as Redis
+    participant S as Game Server Shard
 
     A->>WSG: CreateRoomMessage {room_id}
     WSG->>MM: create(username, room_id)
@@ -846,7 +938,26 @@ sequenceDiagram
     MM->>R: SADD room:{id}:spectators username
     MM-->>Sp: SpectatingMessage {white, black, ratings}
     Note over Sp: read-only - never granted the room's write lease
+
+    loop every BROADCAST_INTERVAL_SECONDS (~15/sec)
+        S-->>WSG: StateMessage (same snapshot for every seat)
+        WSG-->>A: deliver
+        WSG-->>B: deliver
+        WSG-->>Sp: deliver
+    end
 ```
+
+**Open question, not yet a decision**: a popular room's spectator count is
+unbounded in principle (a losing side effect of "anyone can join any room" -
+section 7), while player count per room is always exactly two - so spectator
+fan-out, not player traffic, is the actual scaling risk for this scenario. The
+option considered and **deliberately deferred**: a separate, one-way, batched
+feed for spectators specifically (e.g. Server-Sent Events at a few-hundred-ms
+interval instead of the full 15Hz `StateMessage`), decoupling spectator load
+from player load entirely. Worth revisiting once (or if) a room's spectator
+count is actually measured to be large enough to matter - not before, since it
+adds a second delivery pipeline (and a second thing to keep consistent with the
+game state) for a cost that is currently only hypothetical.
 
 ### 20.5 Game-hosting worker crash -> JetStream replay recovery
 
@@ -877,3 +988,48 @@ sequenceDiagram
     WSG->>S2: reopen the direct data-plane stream
     Note over S2,WSG: ticking resumes - the game continues, not voided
 ```
+
+### 20.6 Both players disconnect before the grace timer fires
+
+`DISCONNECT_GRACE_SECONDS` (section 20.3) is "who runs the 20 seconds" made
+concrete: the **Shard itself** owns that countdown, as a plain `asyncio` task
+living inside the room (`_auto_resign_after_grace`) - there is no separate
+timer service, because the Shard is already the one long-lived process for that
+room's whole life (section 14.1). This scenario is the gap a live bug-fix closed
+(`20d0ff3`): the *ordinary* 20.3 flow assumes one player disconnects while the
+other stays around to either wait or click "New Game" - it does not, by itself,
+say what should happen if that **second** player also disappears before the
+timer fires. Before this fix, the second disconnect was silently ignored, the
+timer still auto-resigned the game for rating purposes, but never released the
+room itself - leaving the Shard's tick loop, and (since Stage 3) the Game
+Allocator's lease-renewal heartbeat for it, running forever for a room nobody
+could ever come back to.
+
+```mermaid
+sequenceDiagram
+    participant C1 as Client (color X, disconnects first)
+    participant C2 as Client (color Y, "surviving", disconnects too)
+    participant S as Game Server Shard
+    participant R as Redis
+    participant GA as Game Allocator
+
+    C1--xS: connection drops (color X)
+    S->>S: handle_disconnect(X): disconnected_color=X, paused=True
+    S->>S: starts _auto_resign_after_grace(Y) - the 20s countdown, as a task on the Shard itself
+    S-->>C2: OpponentDisconnectedMessage {grace_seconds}
+
+    C2--xS: connection also drops (color Y)
+    S->>S: handle_disconnect(Y): disconnected_color already set to X (not Y) -><br/>records _survivor_also_disconnected = True, returns immediately
+    Note over S: X's original grace window is untouched - not restarted, not shortened
+
+    Note over S: DISCONNECT_GRACE_SECONDS elapses with neither seat reconnected
+    S->>S: _auto_resign_after_grace(Y) fires: disconnected_color still X -> proceeds
+    S->>S: engine.resign() - X loses, Y wins - same rating-update path as 20.2
+    Note over S: _survivor_also_disconnected is True -> unlike the ordinary case,<br/>no one is left who could ever click "New Game"
+    S->>GA: stop() + on_game_over() - release the room fully, same as an explicit leave()
+    S->>R: release room:{id}:owner lease
+    Note over S,GA: without this, the tick loop and the lease-renewal<br/>heartbeat would run forever for a room no client can reach
+```
+
+The ordinary case (20.3) - one player still present, might reconnect or start a
+new game - is untouched by this fix; only the double-disconnect path changes.
