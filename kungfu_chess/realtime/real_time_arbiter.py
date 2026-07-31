@@ -163,11 +163,12 @@ class RealTimeArbiter:
         closest = min(cutoffs, key=lambda c: max(abs(c.row - from_pos.row), abs(c.col - from_pos.col)))
         return None if closest == from_pos else closest
 
-    def start_motion(self, piece: PieceRepresentation, to_pos: Position) -> None:
+    def start_motion(self, piece: PieceRepresentation, to_pos: Position) -> int:
         from_pos = piece.cell
         travel_time = motion_duration_ms(from_pos, to_pos)
         piece.state = MOVING
         self._motions.append(Motion(piece, to_pos, travel_time))
+        return travel_time
 
     def start_jump(self, position: Position) -> None:
         self._jumps.append(Jump(position, JUMP_DURATION_MS))

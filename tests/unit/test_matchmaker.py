@@ -1,10 +1,11 @@
 import asyncio
 import json
+from typing import Any, List, Optional, Tuple
 
 import pytest
 
 from kungfu_chess.model.piece import WHITE, BLACK
-from kungfu_chess.server import accounts, accounts_db, protocol
+from kungfu_chess.server import accounts, accounts_db, protocol, shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.matchmaker import Matchmaker
 from kungfu_chess.server.messages import (
@@ -12,7 +13,6 @@ from kungfu_chess.server.messages import (
     CancelSeekMessage,
     CreateRoomMessage,
     JoinRoomMessage,
-    LeaveRoomMessage,
     SeekGameMessage,
 )
 from kungfu_chess.server.serialization import serialize_message
@@ -20,8 +20,9 @@ from kungfu_chess.server.serialization import serialize_message
 
 class FakeConnection:
     """A stand-in for websockets.asyncio.server.ServerConnection - only
-    needs an async send() that records what was sent, since Matchmaker/
-    GameRoom never call anything else on a connection directly."""
+    needs an async send() that records what was sent, since Matchmaker
+    (Stage 4a: never a live GameRoom - see game_shard.py) is the only
+    thing that ever calls anything on a connection directly here."""
 
     def __init__(self, name: str) -> None:
         self.name = name
@@ -33,6 +34,28 @@ class FakeConnection:
 
 def _last_type(connection: FakeConnection):
     return connection.sent[-1]["type"] if connection.sent else None
+
+
+class FakeRelayOpener:
+    """Records every on_enter_relay call a Matchmaker under test fires -
+    Stage 4a's replacement for reaching into a live GameRoom to check a
+    match/join/reconnect/spectate actually happened, since Matchmaker
+    itself never constructs one anymore (see game_shard.py). Whether the
+    resulting relay session actually succeeds is exercised separately,
+    against a real Shard, in test_relay_integration.py."""
+
+    def __init__(self) -> None:
+        self.calls: List[Tuple[FakeConnection, Any]] = []
+
+    def __call__(self, ws: FakeConnection, routing: shard_protocol.RoutingMessage) -> None:
+        self.calls.append((ws, routing))
+
+    def last_for(self, ws: FakeConnection) -> Optional[shard_protocol.RoutingMessage]:
+        return next((routing for w, routing in reversed(self.calls) if w is ws), None)
+
+
+def _make_matchmaker(accounts_base_url: str, relay_opener: Optional[FakeRelayOpener] = None) -> Matchmaker:
+    return Matchmaker(accounts_client=AccountsClient(accounts_base_url), on_enter_relay=relay_opener)
 
 
 async def _connect(matchmaker: Matchmaker, db_path: str, ws: FakeConnection, username: str, rating: int) -> bool:
@@ -70,10 +93,6 @@ async def _cancel_seek(matchmaker: Matchmaker, ws: FakeConnection) -> None:
     await matchmaker.on_message(ws, serialize_message(CancelSeekMessage()))
 
 
-async def _leave_room(matchmaker: Matchmaker, ws: FakeConnection) -> None:
-    await matchmaker.on_message(ws, serialize_message(LeaveRoomMessage()))
-
-
 @pytest.fixture
 def db_path(tmp_path):
     path = str(tmp_path / "test_users.db")
@@ -86,7 +105,7 @@ def test_logging_in_lands_in_the_lobby_without_entering_matchmaking(db_path, acc
 
 
 async def _login_lands_in_lobby(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -100,7 +119,7 @@ def test_clicking_play_with_no_one_else_seeking_waits_for_an_opponent(db_path, a
 
 
 async def _lone_seeker_waits(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -115,7 +134,8 @@ def test_second_seeker_within_elo_range_pairs_as_white_and_black(db_path, accoun
 
 
 async def _second_seeker_pairs(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
 
@@ -124,93 +144,20 @@ async def _second_seeker_pairs(db_path, accounts_base_url):
     await _seek(matchmaker, alice)
     await _seek(matchmaker, bob)
 
-    assert _last_type(alice) == protocol.MATCH_FOUND
-    assert _last_type(bob) == protocol.MATCH_FOUND
-    assert alice.sent[-1]["color"] == WHITE
-    assert bob.sent[-1]["color"] == BLACK
-
-    await matchmaker.on_disconnect(alice)
-    await matchmaker.on_disconnect(bob)
-
-
-def test_room_name_stays_reserved_after_game_over_until_someone_leaves(db_path, accounts_base_url):
-    """The room name must not be up for grabs while its two players
-    might still click New Game and keep playing in it - only actually
-    leaving frees it (see GameRoom.leave, matchmaker.py's own
-    docstring update, and the equivalent test in test_game_room.py)."""
-    asyncio.run(_room_name_reservation_scenario(db_path, accounts_base_url))
-
-
-async def _room_name_reservation_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
-    alice, bob, carol = FakeConnection("alice"), FakeConnection("bob"), FakeConnection("carol")
-    await _connect(matchmaker, db_path, alice, "alice", 1200)
-    await _connect(matchmaker, db_path, bob, "bob", 1200)
-    await _connect(matchmaker, db_path, carol, "carol", 1200)
-    await _create_room(matchmaker, alice, room_id="efrat-room")
-    await _join_room(matchmaker, bob, "efrat-room")  # game starts
-    matchmaker._rooms[alice]._engine.resign()  # the game ends, but neither player has left yet
-
-    await _create_room(matchmaker, carol, room_id="efrat-room")
-    assert _last_type(carol) == protocol.CREATE_ROOM_FAILED
-    assert carol.sent[-1]["reason"] == "room_name_taken"
-
-    await _leave_room(matchmaker, alice)  # alice finally leaves - now it's really free
-    await _create_room(matchmaker, carol, room_id="efrat-room")
-    assert _last_type(carol) == protocol.ROOM_CREATED
-
-    await matchmaker.on_disconnect(carol)
-
-
-def test_leave_room_before_game_over_is_a_no_op(db_path, accounts_base_url):
-    asyncio.run(_leave_room_before_game_over_scenario(db_path, accounts_base_url))
-
-
-async def _leave_room_before_game_over_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
-    alice, bob = FakeConnection("alice"), FakeConnection("bob")
-    await _connect(matchmaker, db_path, alice, "alice", 1200)
-    await _connect(matchmaker, db_path, bob, "bob", 1200)
-    await _seek(matchmaker, alice)
-    await _seek(matchmaker, bob)  # matches them into a live GameRoom
-
-    await _leave_room(matchmaker, alice)
-
-    assert _last_type(alice) == protocol.MATCH_FOUND  # unchanged - LeaveRoomMessage before game_over does nothing
-    assert alice in matchmaker._rooms  # still bound to the room, not freed back to the lobby
-
-    await matchmaker.on_disconnect(alice)
-    await matchmaker.on_disconnect(bob)
-
-
-def test_leave_room_after_game_over_frees_the_connection_for_the_lobby(db_path, accounts_base_url):
-    asyncio.run(_leave_room_after_game_over_scenario(db_path, accounts_base_url))
-
-
-async def _leave_room_after_game_over_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
-    alice, bob = FakeConnection("alice"), FakeConnection("bob")
-    await _connect(matchmaker, db_path, alice, "alice", 1200)
-    await _connect(matchmaker, db_path, bob, "bob", 1200)
-    await _seek(matchmaker, alice)
-    await _seek(matchmaker, bob)
-    room = matchmaker._rooms[alice]
-    room._engine.resign()  # force the match to have ended, same trick test_game_room.py uses
-
-    await _leave_room(matchmaker, alice)
-
-    assert _last_type(alice) == protocol.LEFT_ROOM
-    assert alice not in matchmaker._rooms
-
-    # bob has no one left to rematch with either - kicked to the lobby too
-    assert _last_type(bob) == protocol.LEFT_ROOM
-    assert bob not in matchmaker._rooms
-    await asyncio.sleep(0)  # let the event loop actually process the cancellation below
-    assert room._tick_task.cancelled()
-
-    # freed connections re-enter the lobby's own dispatch, e.g. can seek again
-    await _seek(matchmaker, alice)
-    assert _last_type(alice) == protocol.WAITING_FOR_OPPONENT
+    # Stage 4a: Matchmaker never sends MatchFoundMessage itself anymore -
+    # that's the Shard-hosted GameRoom's job, once the relay session it's
+    # signaled here actually reaches it (see test_relay_integration.py).
+    # What Matchmaker owns and can be asserted here is the *decision*:
+    # who's paired with whom, as which color, into which room.
+    alice_routing = relay_opener.last_for(alice)
+    bob_routing = relay_opener.last_for(bob)
+    assert isinstance(alice_routing, shard_protocol.HostSeatMessage)
+    assert isinstance(bob_routing, shard_protocol.HostSeatMessage)
+    assert alice_routing.color == WHITE
+    assert bob_routing.color == BLACK
+    assert alice_routing.room_id == bob_routing.room_id
+    assert alice_routing.opponent_username == "bob"
+    assert bob_routing.opponent_username == "alice"
 
     await matchmaker.on_disconnect(alice)
     await matchmaker.on_disconnect(bob)
@@ -221,7 +168,7 @@ def test_seeker_outside_elo_range_is_not_paired(db_path, accounts_base_url):
 
 
 async def _out_of_range_seeker_not_paired(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
 
@@ -248,7 +195,7 @@ def test_seeking_uses_the_players_current_rating_not_their_rating_at_login(db_pa
 
 
 async def _seeking_uses_current_rating_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -273,7 +220,8 @@ def test_seeker_pairs_with_an_in_range_seeker_while_an_out_of_range_seeker_keeps
 
 
 async def _paired_with_in_range_seeker(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice = FakeConnection("alice")  # 1000 - out of range of dave (diff 300)
     carol = FakeConnection("carol")  # 1250 - in range of dave (diff 50)
     dave = FakeConnection("dave")  # 1300
@@ -286,8 +234,8 @@ async def _paired_with_in_range_seeker(db_path, accounts_base_url):
     await _seek(matchmaker, dave)
 
     assert _last_type(alice) == protocol.WAITING_FOR_OPPONENT
-    assert _last_type(carol) == protocol.MATCH_FOUND
-    assert _last_type(dave) == protocol.MATCH_FOUND
+    assert isinstance(relay_opener.last_for(carol), shard_protocol.HostSeatMessage)
+    assert isinstance(relay_opener.last_for(dave), shard_protocol.HostSeatMessage)
 
     await matchmaker.on_disconnect(alice)
     await matchmaker.on_disconnect(carol)
@@ -299,7 +247,8 @@ def test_matchmaker_pairs_a_third_and_fourth_seeker_independently(db_path, accou
 
 
 async def _third_and_fourth_pair(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice, bob, carol, dave = (FakeConnection(name) for name in "abcd")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -313,8 +262,13 @@ async def _third_and_fourth_pair(db_path, accounts_base_url):
     assert _last_type(carol) == protocol.WAITING_FOR_OPPONENT
     await _seek(matchmaker, dave)
 
-    assert carol.sent[-1]["color"] == WHITE
-    assert dave.sent[-1]["color"] == BLACK
+    carol_routing = relay_opener.last_for(carol)
+    dave_routing = relay_opener.last_for(dave)
+    assert carol_routing.color == WHITE
+    assert dave_routing.color == BLACK
+    # a genuinely separate room from alice/bob's
+    assert carol_routing.room_id == dave_routing.room_id
+    assert carol_routing.room_id != relay_opener.last_for(alice).room_id
 
     for connection in (alice, bob, carol, dave):
         await matchmaker.on_disconnect(connection)
@@ -326,7 +280,7 @@ def test_waiting_seeker_gets_no_opponent_found_after_timeout(monkeypatch, db_pat
 
 
 async def _timeout_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
 
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -341,7 +295,7 @@ def test_cancel_seek_returns_the_waiting_seeker_to_the_lobby(db_path, accounts_b
 
 
 async def _cancel_seek_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _seek(matchmaker, alice)
@@ -361,7 +315,7 @@ def test_cancel_seek_with_nothing_pending_is_a_no_op(db_path, accounts_base_url)
 
 
 async def _cancel_seek_no_op_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
 
@@ -375,7 +329,7 @@ def test_disconnecting_a_waiting_seeker_frees_the_matchmaker(db_path, accounts_b
 
 
 async def _disconnect_while_waiting(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _seek(matchmaker, alice)
@@ -387,41 +341,12 @@ async def _disconnect_while_waiting(db_path, accounts_base_url):
     assert _last_type(bob) == protocol.WAITING_FOR_OPPONENT  # not silently paired with the departed alice
 
 
-def test_reconnecting_with_the_same_username_rejoins_the_same_room_instead_of_the_lobby(db_path, accounts_base_url):
-    asyncio.run(_reconnect_rejoins_room(db_path, accounts_base_url))
-
-
-async def _reconnect_rejoins_room(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
-    alice = FakeConnection("alice")
-    bob = FakeConnection("bob")
-    await _connect(matchmaker, db_path, alice, "alice", 1200)
-    await _connect(matchmaker, db_path, bob, "bob", 1200)
-    await _seek(matchmaker, alice)
-    await _seek(matchmaker, bob)  # alice=white, bob=black
-
-    await matchmaker.on_disconnect(alice)
-    assert _last_type(bob) == protocol.OPPONENT_DISCONNECTED
-
-    alice_new = FakeConnection("alice-reconnected")
-    await _connect(matchmaker, db_path, alice_new, "alice", 1200)
-
-    # reattached to the same room, not requeued - gets match_found again (so it re-learns its own color),
-    # never waiting_for_opponent (that would mean it landed back in the lobby instead)
-    assert _last_type(alice_new) == protocol.MATCH_FOUND
-    assert alice_new.sent[-1]["color"] == WHITE
-    assert _last_type(bob) == protocol.OPPONENT_RECONNECTED
-
-    await matchmaker.on_disconnect(alice_new)
-    await matchmaker.on_disconnect(bob)
-
-
 def test_second_login_with_the_same_username_while_the_first_is_waiting_is_rejected(db_path, accounts_base_url):
     asyncio.run(_duplicate_login_while_waiting(db_path, accounts_base_url))
 
 
 async def _duplicate_login_while_waiting(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     alice_again = FakeConnection("alice-again")
 
@@ -442,7 +367,8 @@ def test_second_login_with_the_same_username_while_the_first_is_in_a_match_is_re
 
 
 async def _duplicate_login_while_matched(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -455,67 +381,75 @@ async def _duplicate_login_while_matched(db_path, accounts_base_url):
 
     assert accepted is False
     assert _last_type(alice_again) == protocol.LOGIN_FAILED
-    assert _last_type(alice) == protocol.MATCH_FOUND  # the real session's match is unaffected
+    assert isinstance(relay_opener.last_for(alice), shard_protocol.HostSeatMessage)  # the real session's match is unaffected
 
     await matchmaker.on_disconnect(alice)
     await matchmaker.on_disconnect(bob)
 
 
-def test_reconnecting_with_the_same_username_is_allowed_after_the_original_disconnects(db_path, accounts_base_url):
-    """The duplicate-login rejection must not block a genuine
-    reconnect - only a *simultaneous* second session is rejected."""
-    asyncio.run(_reconnect_not_blocked_by_duplicate_check(db_path, accounts_base_url))
+def test_reconnecting_signals_the_shard_with_the_remembered_room_and_color(db_path, accounts_base_url):
+    """Whether the Shard actually *accepts* this reconnect (grace period
+    not yet expired) is exercised end-to-end, against a real Shard, in
+    test_relay_integration.py - Matchmaker's own job is just remembering
+    which room/color to signal and firing that signal (see on_connect,
+    on_disconnect)."""
+    asyncio.run(_reconnect_signal_scenario(db_path, accounts_base_url))
 
 
-async def _reconnect_not_blocked_by_duplicate_check(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+async def _reconnect_signal_scenario(db_path, accounts_base_url):
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _connect(matchmaker, db_path, bob, "bob", 1200)
     await _seek(matchmaker, alice)
-    await _seek(matchmaker, bob)
+    await _seek(matchmaker, bob)  # alice=white, bob=black
+    room_id = relay_opener.last_for(alice).room_id
 
-    await matchmaker.on_disconnect(alice)  # alice's connection is now gone
+    await matchmaker.on_disconnect(alice)
+    assert "alice" in matchmaker._disconnected_players
+    assert matchmaker._disconnected_players["alice"] == (room_id, WHITE)
 
     alice_new = FakeConnection("alice-reconnected")
-    accepted = await _connect(matchmaker, db_path, alice_new, "alice", 1200)
+    await _connect(matchmaker, db_path, alice_new, "alice", 1200)
 
-    assert accepted is True
-    assert _last_type(alice_new) == protocol.MATCH_FOUND
+    reconnect_routing = relay_opener.last_for(alice_new)
+    assert isinstance(reconnect_routing, shard_protocol.ReconnectMessage)
+    assert reconnect_routing.room_id == room_id
+    assert reconnect_routing.color == WHITE
+    assert "alice" not in matchmaker._disconnected_players  # consumed by the reconnect attempt
 
     await matchmaker.on_disconnect(alice_new)
     await matchmaker.on_disconnect(bob)
 
 
-def test_reconnecting_after_the_grace_period_falls_back_to_the_lobby(db_path, monkeypatch, accounts_base_url):
-    monkeypatch.setattr(protocol, "DISCONNECT_GRACE_SECONDS", 0.05)
-    asyncio.run(_reconnect_after_grace_expired(db_path, accounts_base_url))
+def test_on_leave_relay_clears_room_membership_so_a_later_disconnect_is_ordinary(db_path, accounts_base_url):
+    """Stage 4a: once a relay session ends without the real socket
+    closing (a rejected reconnect, or "Back to Lobby" - see
+    ws_gateway.py's mode-switching loop), the Gateway calls
+    on_leave_relay so Matchmaker doesn't mistake a later, genuine lobby
+    disconnect for a mid-game one."""
+    asyncio.run(_leave_relay_scenario(db_path, accounts_base_url))
 
 
-async def _reconnect_after_grace_expired(db_path, accounts_base_url):
-    accounts.register(db_path, "alice", "pw")
-    accounts.register(db_path, "bob", "pw")
-
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+async def _leave_relay_scenario(db_path, accounts_base_url):
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _connect(matchmaker, db_path, bob, "bob", 1200)
     await _seek(matchmaker, alice)
     await _seek(matchmaker, bob)
+    assert alice in matchmaker._room_of
 
-    await matchmaker.on_disconnect(alice)
-    await asyncio.sleep(0.15)  # past the (shortened) grace period - room has already auto-resigned
+    await matchmaker.on_leave_relay(alice)
+    assert alice not in matchmaker._room_of
 
-    alice_new = FakeConnection("alice-too-late")
-    await _connect(matchmaker, db_path, alice_new, "alice", 1200)
-    assert alice_new.sent == []  # lands in the lobby, same as a fresh login - no auto-matchmaking
+    await matchmaker.on_disconnect(alice)  # now an ordinary lobby disconnect
+    assert "alice" not in matchmaker._disconnected_players
 
-    await _seek(matchmaker, alice_new)
-    assert _last_type(alice_new) == protocol.WAITING_FOR_OPPONENT  # treated as a fresh matchmaking candidate
-
-    await matchmaker.on_disconnect(alice_new)
     await matchmaker.on_disconnect(bob)
 
 
@@ -528,7 +462,7 @@ def test_create_room_sends_room_created_with_an_id(db_path, accounts_base_url):
 
 
 async def _create_room_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
 
@@ -545,7 +479,8 @@ def test_joining_a_pending_room_starts_a_game_with_creator_as_white(db_path, acc
 
 
 async def _join_as_opponent_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -555,12 +490,14 @@ async def _join_as_opponent_scenario(db_path, accounts_base_url):
 
     await _join_room(matchmaker, bob, room_id)
 
-    assert _last_type(alice) == protocol.MATCH_FOUND
-    assert alice.sent[-1]["color"] == WHITE
-    assert alice.sent[-1]["room_id"] == room_id
-    assert _last_type(bob) == protocol.MATCH_FOUND
-    assert bob.sent[-1]["color"] == BLACK
-    assert bob.sent[-1]["room_id"] == room_id
+    alice_routing = relay_opener.last_for(alice)
+    bob_routing = relay_opener.last_for(bob)
+    assert isinstance(alice_routing, shard_protocol.HostSeatMessage)
+    assert alice_routing.color == WHITE
+    assert alice_routing.room_id == room_id
+    assert isinstance(bob_routing, shard_protocol.HostSeatMessage)
+    assert bob_routing.color == BLACK
+    assert bob_routing.room_id == room_id
 
     await matchmaker.on_disconnect(alice)
     await matchmaker.on_disconnect(bob)
@@ -571,7 +508,7 @@ def test_joining_a_started_room_sends_spectating_instead_of_match_found(db_path,
 
 
 async def _join_as_spectator_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     carol = FakeConnection("carol")
@@ -599,7 +536,7 @@ def test_joining_an_unknown_room_id_sends_join_room_failed(db_path, accounts_bas
 
 
 async def _join_unknown_room_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, bob, "bob", 1200)
 
@@ -616,7 +553,7 @@ def test_cancel_room_returns_the_creator_to_the_lobby(db_path, accounts_base_url
 
 
 async def _cancel_room_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _create_room(matchmaker, alice)
@@ -639,7 +576,8 @@ def test_spectator_disconnect_does_not_pause_the_room(db_path, accounts_base_url
 
 
 async def _spectator_disconnect_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     carol = FakeConnection("carol")
@@ -650,46 +588,18 @@ async def _spectator_disconnect_scenario(db_path, accounts_base_url):
     room_id = alice.sent[-1]["room_id"]
     await _join_room(matchmaker, bob, room_id)
     await _join_room(matchmaker, carol, room_id)
+    calls_before = len(relay_opener.calls)
 
     await matchmaker.on_disconnect(carol)
 
-    # Neither real player was ever told the opponent disconnected -
-    # a spectator leaving is a plain no-op, not a game-pausing event.
+    # Neither real player was ever told the opponent disconnected, and no
+    # further relay request was fired - a spectator leaving is a plain
+    # no-op, not a game-pausing event.
+    assert len(relay_opener.calls) == calls_before
     assert all(entry["type"] != protocol.OPPONENT_DISCONNECTED for entry in alice.sent)
     assert all(entry["type"] != protocol.OPPONENT_DISCONNECTED for entry in bob.sent)
 
     await matchmaker.on_disconnect(alice)
-    await matchmaker.on_disconnect(bob)
-
-
-def test_disconnecting_after_game_over_kicks_the_opponent_to_the_lobby_too(db_path, accounts_base_url):
-    asyncio.run(_disconnect_after_game_over_scenario(db_path, accounts_base_url))
-
-
-async def _disconnect_after_game_over_scenario(db_path, accounts_base_url):
-    """Closing the window after the game already ended must behave
-    like clicking "Back to Lobby" (see test_leave_room_after_game_over_
-    frees_the_connection_for_the_lobby) - not like a mid-game
-    disconnect, which would otherwise start a pointless reconnect-grace
-    countdown for a game that's already decided."""
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
-    alice, bob = FakeConnection("alice"), FakeConnection("bob")
-    await _connect(matchmaker, db_path, alice, "alice", 1200)
-    await _connect(matchmaker, db_path, bob, "bob", 1200)
-    await _seek(matchmaker, alice)
-    await _seek(matchmaker, bob)
-    room = matchmaker._rooms[alice]
-    room._engine.resign()
-
-    await matchmaker.on_disconnect(alice)
-
-    assert alice not in matchmaker._rooms
-    assert bob not in matchmaker._rooms
-    assert _last_type(bob) == protocol.LEFT_ROOM
-    assert "alice" not in matchmaker._disconnected_players  # no reconnect-grace bookkeeping for a finished game
-    await asyncio.sleep(0)
-    assert room._tick_task.cancelled()
-
     await matchmaker.on_disconnect(bob)
 
 
@@ -698,7 +608,7 @@ def test_room_creator_disconnecting_before_anyone_joins_frees_the_room_id(db_pat
 
 
 async def _pending_creator_disconnect_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _create_room(matchmaker, alice)
@@ -719,7 +629,7 @@ def test_create_room_uses_the_players_typed_name(db_path, accounts_base_url):
 
 
 async def _create_room_typed_name_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
 
@@ -735,7 +645,7 @@ def test_create_room_with_an_already_taken_name_sends_create_room_failed(db_path
 
 
 async def _create_room_name_taken_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     bob = FakeConnection("bob")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
@@ -756,7 +666,7 @@ def test_create_room_while_already_in_a_room_sends_create_room_failed(db_path, a
 
 
 async def _create_room_while_already_in_one_scenario(db_path, accounts_base_url):
-    matchmaker = Matchmaker(accounts_client=AccountsClient(accounts_base_url))
+    matchmaker = _make_matchmaker(accounts_base_url)
     alice = FakeConnection("alice")
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _create_room(matchmaker, alice, room_id="room-one")

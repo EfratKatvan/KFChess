@@ -234,6 +234,77 @@ async def _physics_unaffected_scenario(db_path, accounts_base_url):
     room.stop()
 
 
+# ==========================================
+# Sparse motion events (Server_Design.md section 8) and the click-
+# responsiveness fix the slower broadcast interval requires
+# ==========================================
+
+def test_a_move_broadcasts_an_immediate_piece_motion_started_before_any_tick(db_path, accounts_base_url):
+    asyncio.run(_move_broadcasts_motion_scenario(db_path, accounts_base_url))
+
+
+async def _move_broadcasts_motion_scenario(db_path, accounts_base_url):
+    white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", accounts_client=AccountsClient(accounts_base_url))
+    await room.start()
+    spectator_ws = FakeConnection("spectator")
+    await room.add_spectator(spectator_ws)
+
+    # Never advance the tick loop - the motion-started push must reach
+    # everyone immediately, not wait for _broadcast()'s own throttle.
+    await room.handle_message(WHITE, SelectOrMoveMessage(row=6, col=0))  # select
+    await room.handle_message(WHITE, SelectOrMoveMessage(row=5, col=0))  # move
+
+    for ws in (white_ws, black_ws, spectator_ws):
+        assert _last_type(ws) == protocol.PIECE_MOTION_STARTED
+        motion = ws.sent[-1]
+        assert motion["from_position"] == [6, 0]
+        assert motion["to_position"] == [5, 0]
+        assert motion["duration_ms"] > 0
+
+    room.stop()
+
+
+def test_a_bare_select_sends_an_immediate_personalized_state_to_only_that_player(db_path, accounts_base_url):
+    asyncio.run(_select_responsiveness_scenario(db_path, accounts_base_url))
+
+
+async def _select_responsiveness_scenario(db_path, accounts_base_url):
+    white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", accounts_client=AccountsClient(accounts_base_url))
+    await room.start()
+    sent_count_black = len(black_ws.sent)
+
+    await room.handle_message(WHITE, SelectOrMoveMessage(row=6, col=0))  # selects only - no move yet
+
+    assert _last_type(white_ws) == protocol.STATE
+    assert white_ws.sent[-1]["your_selected_pos"] == [6, 0]
+    assert len(black_ws.sent) == sent_count_black  # the opponent's view didn't change - no send to them
+
+    room.stop()
+
+
+def test_re_selecting_the_same_cell_sends_nothing_new(db_path, accounts_base_url):
+    """The click-responsiveness send is diffed against the controller's
+    own before/after state, not sent unconditionally on every message -
+    a stray duplicate click shouldn't spam an identical StateMessage."""
+    asyncio.run(_no_op_select_scenario(db_path, accounts_base_url))
+
+
+async def _no_op_select_scenario(db_path, accounts_base_url):
+    white_ws, black_ws = FakeConnection("white"), FakeConnection("black")
+    room = GameRoom(white_ws, "white_player", black_ws, "black_player", accounts_client=AccountsClient(accounts_base_url))
+    await room.start()
+    await room.handle_message(WHITE, SelectOrMoveMessage(row=6, col=0))
+    sent_count = len(white_ws.sent)
+
+    await room.handle_message(WHITE, SelectOrMoveMessage(row=6, col=0))  # selecting the already-selected cell again
+
+    assert len(white_ws.sent) == sent_count
+
+    room.stop()
+
+
 def test_try_reconnect_resumes_the_clock_and_notifies_the_survivor(db_path, accounts_base_url):
     asyncio.run(_reconnect_scenario(db_path, accounts_base_url))
 
@@ -251,8 +322,11 @@ async def _reconnect_scenario(db_path, accounts_base_url):
     assert room._paused is False
     assert room.color_of(new_white_ws) == WHITE
     assert _last_type(black_ws) == protocol.OPPONENT_RECONNECTED
-    assert _last_type(new_white_ws) == protocol.MATCH_FOUND  # re-learns its own color/username/rating
-    assert new_white_ws.sent[-1]["color"] == WHITE
+    sent_types = [message["type"] for message in new_white_ws.sent]
+    assert protocol.MATCH_FOUND in sent_types  # re-learns its own color/username/rating
+    match_found = next(message for message in new_white_ws.sent if message["type"] == protocol.MATCH_FOUND)
+    assert match_found["color"] == WHITE
+    assert _last_type(new_white_ws) == protocol.STATE  # an immediate board snapshot, not just MatchFoundMessage
 
     room.stop()
 

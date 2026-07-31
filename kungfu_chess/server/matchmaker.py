@@ -9,11 +9,10 @@ from typing import Awaitable, Callable, Dict, Optional, Tuple, Type
 from redis.asyncio import Redis
 from websockets.asyncio.server import ServerConnection
 
-from kungfu_chess.server import protocol
+from kungfu_chess.model.piece import BLACK, WHITE
+from kungfu_chess.server import protocol, shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
-from kungfu_chess.server.game_allocator import GameAllocator
-from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
     CancelSeekMessage,
@@ -21,8 +20,6 @@ from kungfu_chess.server.messages import (
     CreateRoomMessage,
     JoinRoomFailedMessage,
     JoinRoomMessage,
-    LeaveRoomMessage,
-    LeftRoomMessage,
     LoginFailedMessage,
     NoOpponentFoundMessage,
     RoomCancelledMessage,
@@ -57,57 +54,71 @@ class Matchmaker:
     button). Any number of players can be seeking at once; a new
     seeker is paired with the first already-waiting seeker whose
     rating is within protocol.MATCHMAKING_ELO_RANGE, first-come =
-    White, second = Black, into their own independent GameRoom. A
-    seeker who isn't matched within protocol.MATCHMAKING_TIMEOUT_SECONDS
-    gets a "no opponent found" message instead of waiting forever.
+    White, second = Black.
+
+    Server_Design.md Stage 4a: this class no longer hosts a GameRoom
+    itself - that lives in a separate game_shard.py process. A match
+    (or a Room-dialog opponent seat, or a spectator join) is signaled
+    to the caller via on_enter_relay, which the WS Gateway uses to
+    open a relay connection to the Shard for that seat (see
+    ws_gateway.py) - this class only ever fires that signal, it never
+    waits to learn whether the Shard-side session actually succeeds
+    (see on_connect's reconnect branch, and on_leave_relay below).
 
     Also routes reconnections: if a username that just disconnected
-    from a live GameRoom logs back in within the room's grace period,
-    it's reattached to that same room/color instead of landing back in
-    the lobby - see GameRoom.handle_disconnect/try_reconnect.
+    mid-game logs back in within the room's grace period, it's routed
+    back toward that same room/color instead of landing in the lobby.
 
     A username can only ever have one *live* connection at a time - a
     second simultaneous login (before the first disconnects) is
     rejected outright, rather than silently entering the lobby and
     potentially seeking against itself."""
 
-    def __init__(self, accounts_client: Optional[AccountsClient] = None, redis_client: Optional[Redis] = None) -> None:
+    def __init__(
+        self,
+        accounts_client: Optional[AccountsClient] = None,
+        redis_client: Optional[Redis] = None,
+        on_enter_relay: Optional[Callable[[ServerConnection, shard_protocol.RoutingMessage], None]] = None,
+        namespace: Optional[str] = None,
+    ) -> None:
         self._accounts_client = accounts_client or get_accounts_client()
         self._redis = redis_client or get_redis_client()
-        # A per-instance namespace, not a fixed key: production only ever
-        # constructs one Matchmaker, so this changes nothing there - it
-        # exists so that separate Matchmaker instances (chiefly separate
-        # tests) never see each other's entries in the one shared Redis
-        # server, without needing any explicit flush/teardown (an empty
-        # ZSET or an explicitly-deleted key just disappears on its own).
-        self._namespace = uuid.uuid4().hex
+        # Fired, never awaited - Matchmaker doesn't know or care who's
+        # listening (the WS Gateway, in production), the same
+        # publisher-doesn't-know-the-subscriber shape events/bus.py
+        # already uses (Server_Design.md section 0). Defaults to a
+        # no-op so every existing test that doesn't care about relay
+        # routing keeps constructing a Matchmaker exactly as before.
+        self._on_enter_relay = on_enter_relay or (lambda ws, routing: None)
+        # A per-instance namespace, not a fixed key by default: production
+        # now passes one explicitly (must match the Shard's own
+        # RoomRegistry/GameAllocator namespace - see game_shard.py), but
+        # every existing test that omits it gets the old per-instance
+        # random isolation unchanged.
+        self._namespace = namespace if namespace is not None else uuid.uuid4().hex
         self._seekers_queue_key = f"seekers:queue:{self._namespace}"
         self._waiting: Dict[str, _WaitingLocal] = {}  # username -> its local (non-Redis) bookkeeping
-        self._rooms: Dict[ServerConnection, GameRoom] = {}
-        self._disconnected_players: Dict[str, Tuple[GameRoom, str]] = {}
+        # ws -> (room_id, color) once matched/joined - color is None for a
+        # spectator. Replaces the old ws -> GameRoom map now that the room
+        # itself lives in a different process (Stage 4a) - just enough to
+        # route a reconnect or record a mid-game disconnect.
+        self._room_of: Dict[ServerConnection, Tuple[str, Optional[str]]] = {}
+        self._disconnected_players: Dict[str, Tuple[str, str]] = {}  # username -> (room_id, color)
         self._active_connections: Dict[str, ServerConnection] = {}  # username -> its one live connection
-
-        # The placement decision (Server_Design.md section 1's "Game
-        # Allocator" row, section 19's Stage 3) - deliberately separate
-        # from this class's own fairness decision above. Shares this
-        # Matchmaker's Redis client and namespace so its room leases
-        # live alongside the seeker queue/room registry below, scoped
-        # the same way for test isolation.
-        self._game_allocator = GameAllocator(
-            accounts_client=self._accounts_client, redis_client=self._redis, namespace=self._namespace
-        )
 
         # The Room dialog's Create/Join/Cancel flow - independent of, and
         # parallel to, the ELO-proximity _waiting queue above. Shares this
         # Matchmaker's Redis client and per-instance namespace, same as
-        # the seekers queue.
+        # the seekers queue - and the same namespace the Shard's own
+        # second RoomRegistry instance must be constructed with.
         self._room_registry = RoomRegistry(redis_client=self._redis, namespace=self._namespace)
-        self._room_games: Dict[str, GameRoom] = {}  # room_id -> its started GameRoom
         self._pending_room_creators: Dict[ServerConnection, str] = {}  # ws -> room_id, only while no opponent has joined yet
 
-        # Dispatch table for messages from a connection that isn't in a
-        # GameRoom yet (still in the lobby) - one handler per message
-        # kind, in place of a growing if/elif isinstance chain.
+        # Dispatch table for lobby messages - one handler per message
+        # kind, in place of a growing if/elif isinstance chain. Once a
+        # connection enters relay mode (Stage 4a), its traffic never
+        # reaches on_message/this table again until it's back in the
+        # lobby (see on_leave_relay).
         self._lobby_handlers: Dict[Type[object], Callable[[ServerConnection, object], Awaitable[None]]] = {
             SeekGameMessage: self._start_seeking,
             CancelSeekMessage: self._cancel_seeking,
@@ -116,29 +127,15 @@ class Matchmaker:
             CancelRoomMessage: self._cancel_room,
         }
 
-        # Checked before room-routing in on_message, since a connection
-        # still in self._rooms would otherwise always go straight to
-        # room.handle_message and never reach here - the "Back to
-        # Lobby" button on the game-over overlay is the only message a
-        # room-bound connection can send that isn't gameplay.
-        self._room_exit_handlers: Dict[Type[object], Callable[[ServerConnection, object], Awaitable[None]]] = {
-            LeaveRoomMessage: self._leave_room,
-        }
-
-    async def _safe_send(self, ws: ServerConnection, message: object) -> None:
-        try:
-            await ws.send(serialize_message(message))
-        except Exception as error:
-            # the connection this was meant for may itself be mid-disconnect
-            # (e.g. both players of a finished game leaving around the same
-            # time) - never let that take down the caller's own cleanup.
-            logger.debug("send failed on a closed/broken socket: %s", error)
-
     async def on_connect(self, ws: ServerConnection, username: str) -> bool:
         """Returns False (and sends LoginFailedMessage itself) if this
         username already has a live connection elsewhere - the caller
         should close the socket without entering the lobby/message
-        handling for it."""
+        handling for it. Otherwise always returns True - if this is a
+        reconnect, whether the Shard actually accepts it (grace period
+        not yet expired) is discovered later, once the relay session
+        the caller opens resolves; a rejected one lands back in the
+        lobby exactly like a fresh login (see on_leave_relay)."""
         if username in self._active_connections:
             await ws.send(serialize_message(
                 LoginFailedMessage(reason="this account is already connected from another window")
@@ -148,56 +145,33 @@ class Matchmaker:
 
         pending = self._disconnected_players.pop(username, None)
         if pending is not None:
-            room, color = pending
-            if await room.try_reconnect(color, ws):
-                self._rooms[ws] = room
-                logger.info("%s reconnected as %s", username, color)
-                return True
-            # grace period already expired (race) - fall through, lands in the lobby like a fresh login
+            room_id, color = pending
+            self._room_of[ws] = (room_id, color)
+            self._on_enter_relay(ws, shard_protocol.ReconnectMessage(room_id=room_id, color=color, username=username))
+            logger.info("%s attempting to reconnect as %s to room %s", username, color, room_id)
 
         return True
 
+    async def on_leave_relay(self, ws: ServerConnection) -> None:
+        """Called by the caller (the WS Gateway) once a relay session
+        ends *without* the underlying connection itself closing - a
+        rejected reconnect/spectate, or an ordinary "Back to Lobby"
+        after game-over (Stage 4a: game_shard.py's GameRoom.leave
+        closes the relay socket for exactly this purpose). Clears the
+        room-membership bookkeeping so a later on_disconnect treats
+        this connection as an ordinary lobby disconnect, not a
+        mid-game one."""
+        self._room_of.pop(ws, None)
+
     async def on_message(self, ws: ServerConnection, raw: str) -> None:
-        room = self._rooms.get(ws)
         try:
             message = deserialize_message(raw)
         except (ValueError, KeyError, TypeError) as error:
             logger.warning("dropping malformed message from %s: %s", self._username_of(ws), error)
-            return  # malformed/unrecognized message from a client - ignore, don't crash the room
-        if room is not None:
-            exit_handler = self._room_exit_handlers.get(type(message))
-            if exit_handler is not None:
-                await exit_handler(ws, message)
-                return
-            color = room.color_of(ws)
-            if color is not None:
-                await room.handle_message(color, message)
-            return
+            return  # malformed/unrecognized lobby message - ignore, don't crash the connection
         handler = self._lobby_handlers.get(type(message))
         if handler is not None:
             await handler(ws, message)
-
-    async def _leave_room(self, ws: ServerConnection, message: LeaveRoomMessage) -> None:
-        """The "Back to Lobby" button on the game-over overlay - only
-        takes effect once the game has actually ended; a stray/raced
-        click before that is just ignored, since gameplay messages are
-        still routed to the room as normal. Room registry/rating
-        cleanup already happened at game-over time (see GameRoom's
-        on_game_over callback) - this frees the leaving connection to
-        go through self._lobby_handlers again, and - if it was a real
-        player, not a spectator - does the same for their now-partnerless
-        opponent too (see GameRoom.leave, which also stops the room's
-        tick loop for good, so it can never broadcast a stale board to
-        either connection again after they've moved on)."""
-        room = self._rooms.get(ws)
-        if room is None or not room.is_game_over():
-            return
-        also_leaving = await room.leave(ws)
-        del self._rooms[ws]
-        await self._safe_send(ws, LeftRoomMessage())
-        for other_ws in also_leaving:
-            self._rooms.pop(other_ws, None)
-            await self._safe_send(other_ws, LeftRoomMessage())
 
     async def _start_seeking(self, ws: ServerConnection, message: SeekGameMessage) -> None:
         username = self._username_of(ws)
@@ -210,31 +184,47 @@ class Matchmaker:
         # either player's real current rating.
         rating = await self._accounts_client.get_rating(username)
 
-        opponent_username = await self._claim_opponent_within_elo_range(rating)
+        timeout_task = asyncio.create_task(self._timeout_waiting(username))
+        self._waiting[username] = _WaitingLocal(ws=ws, timeout_task=timeout_task)
+        # Joins the shared queue *before* checking for an opponent - not
+        # after. Two genuinely concurrent seekers (real, separate
+        # connections - a single in-process test driving both seeks
+        # sequentially never exposed this) could otherwise both check the
+        # queue in the narrow window before either has actually joined
+        # it, both conclude "no one's here in range," and both end up
+        # waiting instead of matched with each other.
+        await self._redis.zadd(self._seekers_queue_key, {username: rating})
+
+        opponent_username = await self._claim_opponent_within_elo_range(rating, exclude=username)
         if opponent_username is not None:
+            timeout_task.cancel()
+            del self._waiting[username]
+            await self._redis.zrem(self._seekers_queue_key, username)  # not staying queued after all
             opponent = self._waiting.pop(opponent_username, None)
             if opponent is not None:
                 opponent.timeout_task.cancel()
-                room = await self._game_allocator.allocate(
-                    white_ws=opponent.ws, white_username=opponent_username,
-                    black_ws=ws, black_username=username,
-                )
-                self._rooms[opponent.ws] = room
-                self._rooms[ws] = room
+                room_id = uuid.uuid4().hex
+                self._room_of[opponent.ws] = (room_id, WHITE)
+                self._room_of[ws] = (room_id, BLACK)
+                self._on_enter_relay(opponent.ws, shard_protocol.HostSeatMessage(
+                    room_id=room_id, color=WHITE, username=opponent_username, opponent_username=username,
+                ))
+                self._on_enter_relay(ws, shard_protocol.HostSeatMessage(
+                    room_id=room_id, color=BLACK, username=username, opponent_username=opponent_username,
+                ))
                 logger.info("matched %s (white) vs %s (black)", opponent_username, username)
-                await room.start()
                 return
             # Claimed them in the Redis queue, but they're already gone
             # from local bookkeeping (disconnected/cancelled in the
             # narrow window between the two) - either way they're no
-            # longer queued, so just fall through and treat this seeker
-            # as unmatched instead.
+            # longer queued, so re-join the queue as an ordinary
+            # unmatched seeker instead.
             logger.info("claimed opponent %s but they'd already left - %s stays unmatched", opponent_username, username)
+            timeout_task = asyncio.create_task(self._timeout_waiting(username))
+            self._waiting[username] = _WaitingLocal(ws=ws, timeout_task=timeout_task)
+            await self._redis.zadd(self._seekers_queue_key, {username: rating})
 
-        timeout_task = asyncio.create_task(self._timeout_waiting(username))
-        self._waiting[username] = _WaitingLocal(ws=ws, timeout_task=timeout_task)
         await ws.send(serialize_message(WaitingForOpponentMessage()))
-        await self._redis.zadd(self._seekers_queue_key, {username: rating})
 
     async def _cancel_seeking(self, ws: ServerConnection, message: CancelSeekMessage) -> None:
         """The Back button on the "Waiting for opponent..." screen - the
@@ -247,22 +237,26 @@ class Matchmaker:
         await self._redis.zrem(self._seekers_queue_key, username)
         await ws.send(serialize_message(SeekCancelledMessage()))
 
-    async def _claim_opponent_within_elo_range(self, rating: int) -> Optional[str]:
+    async def _claim_opponent_within_elo_range(self, rating: int, exclude: str) -> Optional[str]:
         """Atomically claims a waiting opponent within
-        protocol.MATCHMAKING_ELO_RANGE of rating, or None if no one is
-        currently queued in range. The range query (ZRANGEBYSCORE) and
-        the claim (ZREM) are two separate awaited Redis round-trips, so
-        a concurrent seeker could see the same candidate before either
-        of us removes them - ZREM's return value (1 if it actually
-        removed something, 0 if someone else already did) tells us
-        whether we actually won that race; on a loss, look again rather
-        than assume the candidate we saw is still free."""
+        protocol.MATCHMAKING_ELO_RANGE of rating, or None if no one else
+        is currently queued in range. `exclude` is the calling seeker's
+        own username - now already in the queue itself by the time this
+        runs (see _start_seeking), so it must never claim itself as its
+        own opponent. The range query (ZRANGEBYSCORE) and the claim
+        (ZREM) are two separate awaited Redis round-trips, so a
+        concurrent seeker could see the same candidate before either of
+        us removes them - ZREM's return value (1 if it actually removed
+        something, 0 if someone else already did) tells us whether we
+        actually won that race; on a loss, look again rather than assume
+        the candidate we saw is still free."""
         while True:
             candidates = await self._redis.zrangebyscore(
                 self._seekers_queue_key,
                 rating - protocol.MATCHMAKING_ELO_RANGE,
                 rating + protocol.MATCHMAKING_ELO_RANGE,
             )
+            candidates = [candidate for candidate in candidates if candidate != exclude]
             if not candidates:
                 return None
             candidate = candidates[0]
@@ -300,24 +294,28 @@ class Matchmaker:
             # second person to join is Black; the creator is always White.
             creator_ws = self._active_connections.get(room.creator_username)
             self._pending_room_creators.pop(creator_ws, None)
-            game_room = await self._game_allocator.allocate(
-                white_ws=creator_ws, white_username=room.creator_username,
-                black_ws=ws, black_username=username,
-                room_id=room.room_id,
-                on_game_over=lambda: self._close_room(room.room_id),
-            )
-            self._room_games[room.room_id] = game_room
-            self._rooms[creator_ws] = game_room
-            self._rooms[ws] = game_room
+            self._room_of[creator_ws] = (room.room_id, WHITE)
+            self._room_of[ws] = (room.room_id, BLACK)
+            self._on_enter_relay(creator_ws, shard_protocol.HostSeatMessage(
+                room_id=room.room_id, color=WHITE, username=room.creator_username, opponent_username=username,
+            ))
+            self._on_enter_relay(ws, shard_protocol.HostSeatMessage(
+                room_id=room.room_id, color=BLACK, username=username, opponent_username=room.creator_username,
+            ))
             logger.info("room %s: %s joined as black - game starting", room.room_id, username)
-            await game_room.start()
             return
 
         # The room already had an opponent - this join is a spectator.
-        game_room = self._room_games[room.room_id]
-        self._rooms[ws] = game_room
+        # on_enter_relay fires last, deliberately: it's the current
+        # connection's own ws, and firing it before this handler's own
+        # remaining awaits (the rating lookups, the direct send below)
+        # would let the Gateway's mode-switching loop (ws_gateway.py)
+        # race ahead and cancel this coroutine mid-flight the instant
+        # the relay request lands in its queue - same reasoning as
+        # _start_seeking/_join_room's opponent-seat branch, which
+        # already fire the current connection's own relay request last.
+        self._room_of[ws] = (room.room_id, None)
         logger.info("room %s: %s joined as a spectator", room.room_id, username)
-        await game_room.add_spectator(ws)
         white_rating = await self._accounts_client.get_rating(room.creator_username)
         black_rating = await self._accounts_client.get_rating(room.opponent_username)
         await ws.send(serialize_message(SpectatingMessage(
@@ -327,6 +325,7 @@ class Matchmaker:
             black_username=room.opponent_username,
             black_rating=black_rating,
         )))
+        self._on_enter_relay(ws, shard_protocol.SpectateMessage(room_id=room.room_id, username=username))
 
     async def _cancel_room(self, ws: ServerConnection, message: CancelRoomMessage) -> None:
         username = self._username_of(ws)
@@ -335,16 +334,12 @@ class Matchmaker:
         try:
             await self._room_registry.cancel(username)
         except RoomError as error:
-            # race: an opponent just joined - MatchFoundMessage is already on its way instead
+            # race: an opponent just joined - a HostSeatMessage relay is already on its way instead
             logger.info("cancel room race for %s: %s", username, error)
             return
         self._pending_room_creators.pop(ws, None)
         logger.info("room cancelled by %s", username)
         await ws.send(serialize_message(RoomCancelledMessage()))
-
-    async def _close_room(self, room_id: str) -> None:
-        await self._room_registry.close(room_id)
-        self._room_games.pop(room_id, None)
 
     async def on_disconnect(self, ws: ServerConnection) -> None:
         username = self._username_of(ws)
@@ -360,49 +355,38 @@ class Matchmaker:
         pending_room_id = self._pending_room_creators.pop(ws, None)
         if pending_room_id is not None:
             # The creator vanished before anyone joined - just free the id,
-            # there's no GameRoom or opponent to notify yet.
+            # there's no room or opponent to notify yet.
             logger.info("room %s abandoned (creator %s disconnected before anyone joined)", pending_room_id, username)
             await self._room_registry.close(pending_room_id)
             return
 
-        room = self._rooms.pop(ws, None)
-        if room is None:
-            return
-        color = room.color_of(ws)
+        membership = self._room_of.pop(ws, None)
+        if membership is None:
+            return  # was in the lobby (or its relay session already ended - see on_leave_relay), nothing to do
+        room_id, color = membership
         if color is None:
-            # A spectator's disconnect is a plain no-op cleanup - it must
-            # never enter the pause/reconnect-grace path below, which is
-            # reserved for the two real players.
-            room.remove_spectator(ws)
             logger.info("%s left as a spectator", username)
             return
 
-        if room.is_game_over():
-            # The game already ended before this connection dropped -
-            # equivalent to closing the window instead of clicking
-            # "Back to Lobby" (see _leave_room). No reconnect/auto-resign
-            # grace period applies to a game that's already decided;
-            # the opponent has no one left to rematch with either.
-            for other_ws in await room.leave(ws):
-                self._rooms.pop(other_ws, None)
-                await self._safe_send(other_ws, LeftRoomMessage())
-            return
+        # Whether this was genuinely mid-game (vs. the game having already
+        # ended a moment before the socket dropped) is no longer decided
+        # here - the Shard has the live GameRoom and decides that itself
+        # (game_shard.py's _run_seat_messages). A reconnect attempt for an
+        # already-finished/released room simply finds no room Shard-side
+        # and falls back to the lobby, the same end result either way.
+        logger.info("%s disconnected (room %s)", username, room_id)
+        self._disconnected_players[username] = (room_id, color)
+        asyncio.create_task(self._forget_if_still_pending(username, (room_id, color)))
 
-        room_username = room.username_of(color)
-        logger.info("%s disconnected mid-game", room_username)
-        self._disconnected_players[room_username] = (room, color)
-        await room.handle_disconnect(color)
-        asyncio.create_task(self._forget_if_still_pending(room_username, room))
-
-    async def _forget_if_still_pending(self, username: str, room: GameRoom) -> None:
+    async def _forget_if_still_pending(self, username: str, membership: Tuple[str, str]) -> None:
         """Cleans up the reconnect-routing entry once the grace period
         (plus a small buffer) has passed - if the player never came
-        back, GameRoom has already auto-resigned by then, so this entry
-        would otherwise just linger forever pointing at a finished
-        game."""
+        back, the Shard has already auto-resigned by then, so this
+        entry would otherwise just linger forever pointing at a
+        finished game."""
         await asyncio.sleep(protocol.DISCONNECT_GRACE_SECONDS + 1)
         pending = self._disconnected_players.get(username)
-        if pending is not None and pending[0] is room:
+        if pending is not None and pending == membership:
             del self._disconnected_players[username]
 
     async def _timeout_waiting(self, username: str) -> None:

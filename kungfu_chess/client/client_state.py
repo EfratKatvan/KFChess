@@ -17,6 +17,7 @@ from kungfu_chess.server.messages import (
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    PieceMotionStartedMessage,
     RoomCancelledMessage,
     RoomCreatedMessage,
     SeekCancelledMessage,
@@ -31,6 +32,30 @@ here touches the network, a window, or drawing - see
 client/network_transport.py (transport), client/input_controller.py
 (turns clicks into outgoing messages), and view/network_presentation.py
 (turns this state into pixels)."""
+
+
+@dataclass(frozen=True)
+class PendingMotion:
+    """A piece the server just told us started moving (Server_Design.md
+    section 8) - tracked so the render loop can compute its on-screen
+    progress from local elapsed time instead of waiting for the next
+    (now much less frequent) full StateMessage. Keyed by from_position
+    in ClientState.pending_motions - a piece can't have two concurrent
+    motions, so that's already a unique key, same reasoning as
+    PieceMotionStartedMessage itself."""
+
+    from_position: Position
+    to_position: Position
+    duration_ms: int
+    started_at: float  # time.perf_counter() at the moment this client received the message
+
+
+def _prune_expired_motions(pending: Dict[Position, "PendingMotion"], now: float) -> Dict[Position, "PendingMotion"]:
+    """Drops any motion whose declared duration has already elapsed -
+    called every time _on_state rebuilds ClientState, so a finished
+    motion doesn't linger forever waiting for some other event to
+    clear it."""
+    return {pos: motion for pos, motion in pending.items() if (now - motion.started_at) * 1000 < motion.duration_ms}
 
 
 @dataclass(frozen=True)
@@ -65,6 +90,7 @@ class ClientState:
     white_player: Optional[PlayerInfo] = None
     black_player: Optional[PlayerInfo] = None
     view_state: Optional[BoardViewState] = None
+    pending_motions: Dict[Position, PendingMotion] = field(default_factory=dict)
     selected_pos: Optional[Position] = None
     legal_destinations: Set[Position] = field(default_factory=set)
     invalid_target: Optional[Position] = None
@@ -174,6 +200,18 @@ def _on_opponent_reconnected(message: OpponentReconnectedMessage, state: ClientS
     return replace(state, opponent_disconnected_at=None, opponent_disconnect_grace_seconds=None)
 
 
+def _on_piece_motion_started(message: PieceMotionStartedMessage, state: ClientState) -> ClientState:
+    return replace(state, pending_motions={
+        **state.pending_motions,
+        message.from_position: PendingMotion(
+            from_position=message.from_position,
+            to_position=message.to_position,
+            duration_ms=message.duration_ms,
+            started_at=time.perf_counter(),
+        ),
+    })
+
+
 def _on_state(message: StateMessage, state: ClientState) -> ClientState:
     if state.phase not in (Phase.MATCHED, Phase.SPECTATING):
         # A stray broadcast from a game this client has already left
@@ -196,6 +234,7 @@ def _on_state(message: StateMessage, state: ClientState) -> ClientState:
         phase=state.phase,
         color=state.color,
         view_state=message.board,
+        pending_motions=_prune_expired_motions(state.pending_motions, time.perf_counter()),
         selected_pos=message.your_selected_pos,
         legal_destinations=message.your_legal_destinations,
         invalid_target=message.your_invalid_target,
@@ -225,6 +264,7 @@ _HANDLERS: Dict[Type[Any], Callable[[Any, ClientState], ClientState]] = {
     OpponentDisconnectedMessage: _on_opponent_disconnected,
     OpponentReconnectedMessage: _on_opponent_reconnected,
     StateMessage: _on_state,
+    PieceMotionStartedMessage: _on_piece_motion_started,
 }
 
 

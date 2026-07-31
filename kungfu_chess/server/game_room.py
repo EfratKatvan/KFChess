@@ -22,6 +22,7 @@ from kungfu_chess.server.messages import (
     MatchFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    PieceMotionStartedMessage,
     ResignMessage,
     RestartMessage,
     SelectOrMoveMessage,
@@ -29,10 +30,12 @@ from kungfu_chess.server.messages import (
 )
 from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.starting_position import STARTING_POSITION
-from kungfu_chess.events.observers import MoveLogObserver, ScoreObserver
+from kungfu_chess.events.observers import MotionCollector, MoveLogObserver, ScoreObserver
 
 TICK_SECONDS = 0.016  # physics granularity - engine.wait() runs at this rate regardless of broadcast rate
-BROADCAST_INTERVAL_SECONDS = 1 / 15  # how often a full state snapshot actually goes out over the network
+BROADCAST_INTERVAL_SECONDS = 0.2  # periodic full-snapshot resync rate (section 8) - piece motion itself
+# is pushed immediately, unthrottled, as a sparse PieceMotionStartedMessage (see _broadcast_pending_motions);
+# this interval now only needs to be fast enough to keep cooldown overlays/scores/move-log reasonably fresh
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +44,11 @@ class GameRoom:
     """Owns one authoritative game (board/rules/arbiter/engine) shared by
     exactly two connections, one per color - the server-side counterpart
     of what app.py's build_game() + image_view.run()'s loop do locally
-    for a single-process game. Runs its own real-time tick loop and
-    broadcasts a personalized snapshot to each connection every tick.
+    for a single-process game. Runs its own real-time tick loop; a
+    piece starting to move is pushed immediately as a sparse
+    PieceMotionStartedMessage (_broadcast_pending_motions), while a full
+    personalized snapshot of everything else still goes out periodically
+    (_broadcast, BROADCAST_INTERVAL_SECONDS - section 8).
     Also applies one ELO rating update (see server/accounts.py) the
     instant a game actually ends - including by auto-resign, if a
     disconnected player doesn't return within the grace period."""
@@ -82,6 +88,8 @@ class GameRoom:
         self._engine.add_observer(self._move_log)
         self._score = ScoreObserver()
         self._engine.add_observer(self._score)
+        self._motion_collector = MotionCollector()
+        self._engine.add_observer(self._motion_collector)
         self._last_tick = time.perf_counter()
         self._last_broadcast = time.perf_counter()
         self._rating_update_applied = False
@@ -115,8 +123,8 @@ class GameRoom:
 
     async def add_spectator(self, ws: ServerConnection) -> None:
         """Sends one immediate snapshot rather than waiting for the next
-        ~66ms broadcast tick, so a spectator joining mid-game doesn't
-        stare at a blank screen for up to one broadcast interval."""
+        broadcast tick, so a spectator joining mid-game doesn't stare
+        at a blank screen for up to one broadcast interval."""
         self._spectators.add(ws)
         view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
         await self._safe_send(ws, self._spectator_state_message(view_state))
@@ -213,10 +221,25 @@ class GameRoom:
         self._last_tick = time.perf_counter()  # don't count the paused duration as elapsed game time
         await self._safe_send(self._connections[_other_color(color)], OpponentReconnectedMessage())
         await self._safe_send(new_ws, await self._match_found_message(color))  # so the reconnecting client re-learns its own color/username/rating
+        view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
+        await self._safe_send(new_ws, self._personalized_message(color, view_state))  # an immediate board snapshot - the next periodic broadcast is now up to BROADCAST_INTERVAL_SECONDS away, too long to leave a reconnecting client staring at "please wait"
         return True
 
     async def _handle_select_or_move(self, controller: Controller, message: SelectOrMoveMessage) -> None:
+        """Selection feedback (as opposed to an actual move - see
+        _broadcast_pending_motions) needs its own immediate, personal
+        send: now that BROADCAST_INTERVAL_SECONDS is slow enough to
+        matter (section 8), waiting for the next periodic broadcast
+        would make a player's own click feel laggy, even though
+        nothing about the opponent's view changed."""
+        before = (controller.selected_pos, controller.invalid_target)
         controller.handle_cell(Position(message.row, message.col))
+        if (controller.selected_pos, controller.invalid_target) != before:
+            view_state = self._engine.snapshot(move_log=self._move_log.as_dict(), scores=self._score.as_dict())
+            await self._safe_send(
+                self._connections[controller.owner_color],
+                self._personalized_message(controller.owner_color, view_state),
+            )
 
     async def _handle_jump(self, controller: Controller, message: JumpMessage) -> None:
         controller.handle_jump_cell(Position(message.row, message.col))
@@ -229,8 +252,8 @@ class GameRoom:
         """Voluntary forfeit, on demand - the player-triggered
         counterpart to _auto_resign_after_grace's disconnect-timeout
         one. No immediate broadcast - the result shows up on the next
-        regular tick, at most ~66ms later (BROADCAST_INTERVAL_SECONDS),
-        same as an ordinary move."""
+        regular tick, at most BROADCAST_INTERVAL_SECONDS later, same
+        as an ordinary cooldown/score change."""
         if self._engine.is_game_over():
             return  # already ended - nothing left to resign from
         resigning_color = controller.owner_color
@@ -252,12 +275,27 @@ class GameRoom:
     }
 
     async def handle_message(self, color: str, message: Any) -> None:
-        # No reply is sent from here - the effect (a piece selected/moved,
-        # or a fresh game) just shows up in everyone's next _broadcast.
         controller = self._controllers[color]
         handler = self._MESSAGE_HANDLERS.get(type(message))
         if handler is not None:
             await handler(self, controller, message)
+        await self._broadcast_pending_motions()
+
+    async def _broadcast_pending_motions(self) -> None:
+        """Drains whatever MoveLoggedEvents the engine fired while
+        handling that one message (usually zero or one) and pushes each
+        as an immediate, unthrottled PieceMotionStartedMessage - the
+        sparse-event half of section 8's protocol change. Everything
+        else an accepted move affects (cooldowns, scores, move log)
+        still rides the slower periodic _broadcast; only the moving
+        piece itself needs to animate smoothly before that next tick."""
+        events, self._motion_collector.events = self._motion_collector.events, []
+        if not events:
+            return
+        recipients = [*self._connections.values(), *self._spectators]
+        for event in events:
+            message = PieceMotionStartedMessage(event.from_pos, event.to_pos, event.duration_ms)
+            await asyncio.gather(*(self._safe_send(ws, message) for ws in recipients))
 
     async def _run(self) -> None:
         while True:

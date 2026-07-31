@@ -6,7 +6,9 @@ from kungfu_chess.client.client_state import (
     MOVE_EVENT,
     SELECT_EVENT,
     ClientState,
+    PendingMotion,
     _game_over_started_at,
+    _prune_expired_motions,
     apply_message,
     events_since,
 )
@@ -23,6 +25,7 @@ from kungfu_chess.server.messages import (
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
     LeftRoomMessage,
+    PieceMotionStartedMessage,
     RoomCancelledMessage,
     RoomCreatedMessage,
     SeekCancelledMessage,
@@ -51,6 +54,29 @@ def test_game_over_started_at_is_set_once_the_game_ends():
 
 def test_game_over_started_at_keeps_the_original_timestamp_across_later_ticks():
     assert _game_over_started_at(previous=42.0, board_game_over=True) == 42.0
+
+
+def _pending_motion(started_at, duration_ms=500):
+    return PendingMotion(
+        from_position=Position(6, 0), to_position=Position(5, 0), duration_ms=duration_ms, started_at=started_at,
+    )
+
+
+def test_prune_expired_motions_drops_a_motion_whose_duration_has_elapsed():
+    pending = {Position(6, 0): _pending_motion(started_at=0.0, duration_ms=500)}
+
+    result = _prune_expired_motions(pending, now=1.0)  # 1000ms later, well past the 500ms duration
+
+    assert result == {}
+
+
+def test_prune_expired_motions_keeps_a_motion_still_in_flight():
+    motion = _pending_motion(started_at=0.0, duration_ms=500)
+    pending = {Position(6, 0): motion}
+
+    result = _prune_expired_motions(pending, now=0.1)  # 100ms later, still short of the 500ms duration
+
+    assert result == {Position(6, 0): motion}
 
 
 def test_apply_message_login_ok_stores_the_rating_and_moves_to_the_lobby():
@@ -146,6 +172,45 @@ def test_apply_message_state_carries_forward_color_and_matched_at():
     assert state.matched_at == matched_at_before
     assert state.view_state == board
     assert state.game_over_started_at is None
+
+
+def test_apply_message_piece_motion_started_records_a_pending_motion():
+    state = apply_message(_match_found(WHITE), ClientState())
+
+    state = apply_message(
+        PieceMotionStartedMessage(from_position=Position(6, 0), to_position=Position(5, 0), duration_ms=500), state
+    )
+
+    motion = state.pending_motions[Position(6, 0)]
+    assert motion.to_position == Position(5, 0)
+    assert motion.duration_ms == 500
+
+
+def test_apply_message_state_carries_forward_an_active_pending_motion():
+    state = apply_message(_match_found(WHITE), ClientState())
+    state = apply_message(
+        PieceMotionStartedMessage(from_position=Position(6, 0), to_position=Position(5, 0), duration_ms=60_000), state
+    )
+
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state_message = StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)
+    state = apply_message(state_message, state)
+
+    assert Position(6, 0) in state.pending_motions  # a 60s duration can't have elapsed yet
+
+
+def test_apply_message_state_drops_a_pending_motion_once_it_expires():
+    state = apply_message(_match_found(WHITE), ClientState())
+    # duration_ms=0 - already "expired" the instant it's recorded, well before the next StateMessage arrives
+    state = apply_message(
+        PieceMotionStartedMessage(from_position=Position(6, 0), to_position=Position(5, 0), duration_ms=0), state
+    )
+
+    board = BoardViewState(width=8, height=8, game_over=False, pieces=())
+    state_message = StateMessage(board=board, your_selected_pos=None, your_legal_destinations=set(), your_invalid_target=None)
+    state = apply_message(state_message, state)
+
+    assert state.pending_motions == {}
 
 
 def test_apply_message_state_sets_game_over_started_at_once_the_game_ends():

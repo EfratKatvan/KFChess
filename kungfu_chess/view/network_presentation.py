@@ -6,6 +6,7 @@ from typing import Callable, Dict, Optional, Tuple
 import numpy as np
 
 from kungfu_chess.client.client_state import ClientState, PlayerInfo
+from kungfu_chess.client.motion_tracker import apply_pending_motions
 from kungfu_chess.client.phases import Phase, RoomAction
 from kungfu_chess.model.piece import WHITE
 from kungfu_chess.starting_position import STARTING_POSITION
@@ -573,8 +574,9 @@ def _render_matched_or_spectating(state: ClientState, width: int, height: int, c
     if state.game_over_started_at is not None:
         elapsed_s = time.perf_counter() - state.game_over_started_at
         game_over_progress = min(1.0, elapsed_s / GAME_OVER_FADE_DURATION_S)
+    effective_view_state = apply_pending_motions(state.view_state, state.pending_motions, time.perf_counter())
     board_canvas = renderer.draw(
-        state.view_state, cell_size, piece_set,
+        effective_view_state, cell_size, piece_set,
         selected_position=state.selected_pos,
         legal_destinations=state.legal_destinations,
         invalid_target=state.invalid_target,

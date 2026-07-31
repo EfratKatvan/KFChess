@@ -25,6 +25,7 @@ RESIGN = "resign"  # forfeits the current game to the opponent on demand - see G
 
 # In-game phase (server -> client)
 STATE = "state"
+PIECE_MOTION_STARTED = "piece_motion_started"  # sparse, unthrottled - one per accepted move, see Server_Design.md section 8
 OPPONENT_DISCONNECTED = "opponent_disconnected"
 OPPONENT_RECONNECTED = "opponent_reconnected"
 

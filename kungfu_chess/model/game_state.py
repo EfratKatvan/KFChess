@@ -32,6 +32,7 @@ class MoveLoggedEvent:
     kind: str
     is_capture: bool
     elapsed_ms: int
+    duration_ms: int = 0  # the motion's own travel time - see RealTimeArbiter.start_motion
 
 
 @dataclass(frozen=True)

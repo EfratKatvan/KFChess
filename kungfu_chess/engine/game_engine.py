@@ -129,9 +129,10 @@ class GameEngine:
             return MoveResult(is_accepted=False, reason=REASON_DESTINATION_RESERVED)
 
         is_capture = self._state.board.piece_at(actual_to) is not None
-        self._arbiter.start_motion(piece, actual_to)
+        travel_time = self._arbiter.start_motion(piece, actual_to)
         event = MoveLoggedEvent(
-            piece.color, from_pos, actual_to, piece.kind, is_capture, self._total_elapsed_ms
+            piece.color, from_pos, actual_to, piece.kind, is_capture, self._total_elapsed_ms,
+            duration_ms=travel_time,
         )
         self._bus.publish(event)
         return MoveResult(is_accepted=True, reason=REASON_OK)

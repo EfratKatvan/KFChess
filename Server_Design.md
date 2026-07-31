@@ -328,13 +328,19 @@ infrastructure absorbs several terabits of egress from one logical service, for 
 game whose actual information content is one integer move roughly every two seconds.
 More Dockers alone would not fix this - it would just spread 6.7 Tbps across more
 machines, not shrink it. The fix has to be a protocol change: send a sparse event only
-when a piece starts moving (piece id, `from`, `to`, start time, duration - matching
-the `progress`/`target_position`/`remaining_fraction` fields `PieceView` already
-carries) and let the client animate between events itself. This isn't a new
-technique for this codebase - `renderer.py`'s `BoardView.lerp_pixel` already
-interpolates a piece's on-screen position between `position` and `target_position`
-using `progress` on the *client* side; the only change is *how often the server needs
-to resend the inputs to that interpolation* - once per move instead of once per tick.
+when a piece starts moving (`from`, `to`, `duration_ms` - a piece can't have two
+concurrent motions, so `from` alone is already a unique key, no separate piece id
+needed) and let the client animate between events itself, the same way
+`renderer.py`'s `BoardView.lerp_pixel` already interpolates a piece's on-screen
+position between `position` and `target_position` given a `progress` value - the
+change is *where `progress` gets computed*: from local elapsed time on the client
+(new), not resent by the server on every tick (the old behavior; correcting an
+earlier draft of this section, which claimed the client-side computation already
+existed - it didn't, until this stage was actually built). **Status: implemented**
+(section 19's Stage 4b) - `kungfu_chess/client/motion_tracker.py`'s
+`apply_pending_motions` is exactly this client-side computation, and
+`BROADCAST_INTERVAL_SECONDS` (`game_room.py`) now covers only the slower periodic
+resync (cooldowns, scores, move log), not piece motion itself.
 
 **A second, smaller stream**: section 3's JetStream move log adds its own write
 volume, separate from all of the player-facing traffic above - since it's written
@@ -770,10 +776,20 @@ Status reflects the actual code/git history as of this writing, not just the pla
    ownership in Redis. `20d0ff3` closed the gap section 20.6 documents: a room whose
    both occupants vanish before the auto-resign timer fires now fully releases
    itself (and the Allocator's lease-renewal heartbeat), instead of running forever.
-5. **Stage 4 - Not yet started**: `game_room.py` becomes a standalone Game Server
-   Shard, receiving commands from and sending state to the WS Gateway rather than
-   the client directly; replace the full-snapshot broadcast (~5.6KB/tick) with the
-   sparse-event protocol (section 8).
+5. **Stage 4** splits into two parts, done in this order deliberately (the leaner
+   wire protocol from 4b simplifies whatever transport 4a's process-split needs):
+   - **Stage 4b - Done**: replaced the full-snapshot broadcast (~5.6KB @ 15/sec)
+     with the sparse-event protocol (section 8) - `PieceMotionStartedMessage`
+     pushed immediately on move-start, `BROADCAST_INTERVAL_SECONDS` slowed to a
+     periodic resync for everything else, plus two latency fixes the slowdown
+     otherwise would have caused (an immediate personalized send on selection,
+     and an immediate full snapshot on reconnect - `game_room.py`,
+     `client/motion_tracker.py`).
+   - **Stage 4a - Not yet started**: `game_room.py` becomes a standalone Game
+     Server Shard process, receiving commands from and sending state to the WS
+     Gateway over an actual transport - not the client directly, and not
+     shared in-process `ServerConnection` objects the way today's single
+     process still does.
 6. **Stage 5 - Not yet started**: package per section 17's decision (recommended: one
    image, role chosen via `SERVICE_ROLE`) + a local `docker-compose.yml` running
    everything alongside Redis/NATS/Postgres.

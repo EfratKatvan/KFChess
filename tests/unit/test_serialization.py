@@ -18,6 +18,7 @@ from kungfu_chess.server.messages import (
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    PieceMotionStartedMessage,
     RegisterMessage,
     ResignMessage,
     RestartMessage,
@@ -241,6 +242,13 @@ def test_state_message_round_trips_board_selection_and_highlights():
         your_selected_pos=Position(1, 1),
         your_legal_destinations={Position(2, 1), Position(3, 1)},
         your_invalid_target=None,
+    )
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_piece_motion_started_message_round_trips():
+    original = PieceMotionStartedMessage(
+        from_position=Position(6, 0), to_position=Position(5, 0), duration_ms=667,
     )
     assert message_from_wire(message_to_wire(original)) == original
 

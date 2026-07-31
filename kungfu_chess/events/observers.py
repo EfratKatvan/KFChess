@@ -6,6 +6,23 @@ from kungfu_chess.engine.board_view_state import MoveLogEntry
 from kungfu_chess.model.game_state import GameObserver, MoveLoggedEvent, PieceCapturedEvent
 from kungfu_chess.model.piece import WHITE, BLACK
 
+
+class MotionCollector(GameObserver):
+    """Collects MoveLoggedEvents for GameRoom to drain and broadcast as
+    immediate PieceMotionStartedMessages (Server_Design.md section 8) -
+    a plain queue, not a running accumulation like MoveLogObserver's,
+    since GameRoom empties it every time a message is handled. A
+    separate collector from MoveLogObserver because the two serve
+    different consumers on different cadences (move-log history vs.
+    once-per-move wire pushes) even though both react to the same
+    event."""
+
+    def __init__(self) -> None:
+        self.events: List[MoveLoggedEvent] = []
+
+    def on_move_logged(self, event: MoveLoggedEvent) -> None:
+        self.events.append(event)
+
 """Concrete GameObserver listeners - lives in its own neutral package,
 not under server/ or view/, since both a server GameRoom and (in the
 old local single-player path) a view can register these against the

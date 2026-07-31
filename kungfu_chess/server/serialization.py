@@ -24,6 +24,7 @@ from kungfu_chess.server.messages import (
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
     OpponentReconnectedMessage,
+    PieceMotionStartedMessage,
     RegisterMessage,
     ResignMessage,
     RestartMessage,
@@ -190,6 +191,13 @@ def message_to_wire(message: Any) -> Dict[str, Any]:
         }
     if isinstance(message, (SelectOrMoveMessage, JumpMessage)):
         return {"type": message.type, "row": message.row, "col": message.col}
+    if isinstance(message, PieceMotionStartedMessage):
+        return {
+            "type": message.type,
+            "from_position": position_to_wire(message.from_position),
+            "to_position": position_to_wire(message.to_position),
+            "duration_ms": message.duration_ms,
+        }
     raise TypeError(f"don't know how to serialize {message!r}")
 
 
@@ -267,15 +275,23 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
         return RestartMessage()
     if message_type == protocol.RESIGN:
         return ResignMessage()
+    if message_type == protocol.PIECE_MOTION_STARTED:
+        return PieceMotionStartedMessage(
+            from_position=position_from_wire(data["from_position"]),
+            to_position=position_from_wire(data["to_position"]),
+            duration_ms=data["duration_ms"],
+        )
     raise ValueError(f"unknown message type: {message_type!r}")
 
 
 logger = logging.getLogger(__name__)
 
-# The up-to-15/sec board-state broadcast (see game_room.py's
+# The periodic board-state broadcast (see game_room.py's
 # BROADCAST_INTERVAL_SECONDS) - noisy enough to flood a normal log at
 # the same level as everything else, so it's logged at DEBUG (file
 # only, by default) while every other message type logs at INFO.
+# PIECE_MOTION_STARTED is deliberately NOT in here - it fires once per
+# move, not once per tick, so INFO is appropriate for it.
 _HIGH_FREQUENCY_TYPES = {protocol.STATE}
 
 

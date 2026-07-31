@@ -96,6 +96,8 @@ def test_request_move_notifies_registered_observers_of_the_move():
     assert event.to_pos == Position(0, 2)
     assert event.kind == "rook"
     assert event.is_capture is False
+    from kungfu_chess.realtime.motion import motion_duration_ms
+    assert event.duration_ms == motion_duration_ms(Position(0, 0), Position(0, 2))
 
 
 def test_request_move_does_not_notify_observers_when_the_move_is_rejected():

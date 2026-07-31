@@ -23,6 +23,18 @@ def test_piece_does_not_move_before_arrival_time():
     assert board.piece_at(Position(0, 2)) is None
 
 
+def test_start_motion_returns_the_travel_time_it_computed():
+    from kungfu_chess.realtime.motion import motion_duration_ms
+
+    board = Board(width=3, height=1)
+    rook = add(board, "wR", WHITE, ROOK, 0, 0)
+    arbiter = RealTimeArbiter(board)
+
+    travel_time = arbiter.start_motion(rook, Position(0, 2))
+
+    assert travel_time == motion_duration_ms(Position(0, 0), Position(0, 2))
+
+
 def test_piece_arrives_after_full_travel_time():
     board = Board(width=3, height=1)
     rook = add(board, "wR", WHITE, ROOK, 0, 0)

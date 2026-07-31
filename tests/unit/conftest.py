@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Iterator
+from typing import Any, Callable, Dict, Iterator, Tuple
 
 import pytest
 from aiohttp.test_utils import TestServer
+from websockets.asyncio.server import Server, ServerConnection, serve
 
+from kungfu_chess.server import ws_gateway
+from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_service import create_app
+from kungfu_chess.server.game_shard import GameShard
+from kungfu_chess.server.matchmaker import Matchmaker
+from kungfu_chess.server.redis_client import get_client as get_redis_client
 
 """Shared test infrastructure for the Accounts/Ratings API Service
 (Stage 1, Server_Design.md section 19): a real aiohttp server, not a
@@ -59,3 +65,77 @@ def accounts_base_url(db_path) -> Iterator[str]:
     server = _background.run(_start())
     yield str(server.make_url("/")).rstrip("/")
     _background.run(_stop(server))
+
+
+@pytest.fixture
+def shard_address(accounts_base_url) -> Iterator[Callable[[str], Tuple[str, int]]]:
+    """A factory: shard_address(namespace) starts a real GameShard (Stage
+    4a, Server_Design.md sections 2/3/15) on the same shared background
+    loop as accounts_base_url, bound to a free localhost port, and
+    returns (host, port). `namespace` must match the Redis namespace of
+    whatever Matchmaker the test is also driving, the same way
+    test_game_allocator.py's `_make_allocator` shares a namespace with
+    its own caller - a real running service over a real OS socket, not
+    a mock, same standard as accounts_base_url above."""
+    started: list[Server] = []
+
+    async def _start(namespace: str) -> Server:
+        shard = GameShard(
+            accounts_client=AccountsClient(accounts_base_url), redis_client=get_redis_client(), namespace=namespace
+        )
+        return await serve(shard.handle_connection, "localhost", 0)
+
+    def _factory(namespace: str) -> Tuple[str, int]:
+        server = _background.run(_start(namespace))
+        started.append(server)
+        return "localhost", server.sockets[0].getsockname()[1]
+
+    yield _factory
+
+    async def _stop_all() -> None:
+        for server in started:
+            server.close()
+            await server.wait_closed()
+
+    _background.run(_stop_all())
+
+
+@pytest.fixture
+def gateway_address(accounts_base_url) -> Iterator[Callable[[str, str, int], Tuple[str, int]]]:
+    """A factory: gateway_address(namespace, shard_host, shard_port)
+    starts a real WS Gateway (Stage 4a) on the shared background loop,
+    wired to the given Shard address and Redis namespace (must match
+    whatever shard_address(namespace) the test also started). The third
+    real-socket leg alongside accounts_base_url/shard_address - together
+    they let a test drive a genuine client all the way through
+    login -> match/room -> relay -> Shard-hosted GameRoom, over actual
+    OS sockets, proving the process boundary Stage 4a introduces."""
+    started: list[Server] = []
+
+    async def _start(namespace: str, shard_host: str, shard_port: int) -> Server:
+        accounts_client = AccountsClient(accounts_base_url)
+        relay_queues: Dict[ServerConnection, "asyncio.Queue[Any]"] = {}
+        matchmaker = Matchmaker(
+            accounts_client=accounts_client,
+            on_enter_relay=lambda ws, routing: relay_queues[ws].put_nowait(routing),
+            namespace=namespace,
+        )
+
+        async def handler(ws: ServerConnection) -> None:
+            await ws_gateway._handle_connection(matchmaker, accounts_client, ws, relay_queues, shard_host, shard_port)
+
+        return await serve(handler, "localhost", 0)
+
+    def _factory(namespace: str, shard_host: str, shard_port: int) -> Tuple[str, int]:
+        server = _background.run(_start(namespace, shard_host, shard_port))
+        started.append(server)
+        return "localhost", server.sockets[0].getsockname()[1]
+
+    yield _factory
+
+    async def _stop_all() -> None:
+        for server in started:
+            server.close()
+            await server.wait_closed()
+
+    _background.run(_stop_all())

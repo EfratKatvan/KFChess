@@ -115,6 +115,22 @@ class StateMessage:
 
 
 @dataclass(frozen=True)
+class PieceMotionStartedMessage:
+    """Sparse, unthrottled push sent the instant a move is accepted -
+    Server_Design.md section 8. from_position doubles as the motion's
+    id: a piece can't have two concurrent motions, so no piece has more
+    than one pending motion keyed by its own starting cell at a time.
+    The client already knows the piece's color/kind from the last full
+    StateMessage at that position - only the timing/destination is new
+    here."""
+
+    from_position: Position
+    to_position: Position
+    duration_ms: int
+    type: str = protocol.PIECE_MOTION_STARTED
+
+
+@dataclass(frozen=True)
 class SelectOrMoveMessage:
     row: int
     col: int

@@ -10,23 +10,53 @@ text-command mode for scripted test boards.
 ## Requirements
 
 - Python 3.11+
-- `pip install -r requirements.txt` (installs `opencv-python` and `websockets`)
+- `pip install -r requirements.txt` (installs `opencv-python`, `websockets`, `redis`, `aiohttp`)
+- Redis running on `localhost:6379` - `docker-compose up -d` (starts just
+  Redis; everything else below is a plain Python process, not a container)
 
 ## Running a two-player game locally
 
-Three separate processes, each in its own terminal, from the project root:
+Today's server is split into four processes (Server_Design.md's Stages
+0-4a), each in its own terminal, started in this order from the project
+root:
 
-**1. Start the server** (once):
+**1. Redis** (once):
+
+```
+docker-compose up -d
+```
+
+**2. Accounts/Ratings API Service** (once):
+
+```
+python -m kungfu_chess.server.accounts_service
+```
+
+Listens on `http://localhost:8766`. Creates `kfchess_users.db` (SQLite,
+usernames/password hashes/ratings) in the working directory on first
+run - the only process that ever touches it directly.
+
+**3. Game Shard** (once):
+
+```
+python shard.py
+```
+
+Listens on `ws://localhost:8767` - reached only by the WS Gateway below
+(a relay connection per seat), never directly by a client. This is
+where `GameRoom`s actually live and tick (Server_Design.md Stage 4a).
+
+**4. WS Gateway** (once):
 
 ```
 python server.py
 ```
 
-Listens on `ws://localhost:8765`. Creates `kfchess_users.db` (SQLite,
-usernames/password hashes/ratings) in the working directory on first
-run.
+Listens on `ws://localhost:8765` - the one address a client ever
+connects to. Handles login/matchmaking directly, and relays gameplay
+traffic to/from the Game Shard once a match/room is underway.
 
-**2. Start a client, once per player** (run this command again in a
+**5. Start a client, once per player** (run this command again in a
 second terminal for the second player):
 
 ```
@@ -61,6 +91,11 @@ python main.py < path/to/script.txt
 ```
 
 ## Running the tests
+
+Requires Redis running on `localhost:6379` (`docker-compose up -d`) -
+the server-side test suite talks to a real Redis instance, not a mock
+(same for the real Accounts Service/Game Shard/WS Gateway instances
+several tests spin up on background threads - see `tests/unit/conftest.py`).
 
 ```
 pip install pytest pytest-cov   # if not already installed
