@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Any, Callable, Dict, Iterator, Tuple
+from typing import Callable, Iterator, Tuple
 
 import pytest
 from aiohttp.test_utils import TestServer
 from websockets.asyncio.server import Server, ServerConnection, serve
 
-from kungfu_chess.server import ws_gateway
+from kungfu_chess.server import matchmaking_service, ws_gateway
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_service import create_app
 from kungfu_chess.server.game_shard import GameShard
-from kungfu_chess.server.matchmaker import Matchmaker
+from kungfu_chess.server.matchmaking_client import MatchmakingClient
 from kungfu_chess.server.redis_client import get_client as get_redis_client
 
 """Shared test infrastructure for the Accounts/Ratings API Service
@@ -103,29 +103,35 @@ def shard_address(accounts_base_url) -> Iterator[Callable[[str], Tuple[str, int]
 @pytest.fixture
 def gateway_address(accounts_base_url) -> Iterator[Callable[[str, str, int], Tuple[str, int]]]:
     """A factory: gateway_address(namespace, shard_host, shard_port)
-    starts a real WS Gateway (Stage 4a) on the shared background loop,
-    wired to the given Shard address and Redis namespace (must match
-    whatever shard_address(namespace) the test also started). The third
-    real-socket leg alongside accounts_base_url/shard_address - together
-    they let a test drive a genuine client all the way through
-    login -> match/room -> relay -> Shard-hosted GameRoom, over actual
-    OS sockets, proving the process boundary Stage 4a introduces."""
+    starts a real WS Gateway (Stage 4a) *and* a real Matchmaking Service
+    (the process-split this fixture's own docstring below used to lack -
+    see Server_Design.md section 19's Stage 5 note) on the shared
+    background loop, wired to the given Shard address and sharing one
+    Redis namespace with it (must match whatever shard_address(namespace)
+    the test also started). The third real-socket leg alongside
+    accounts_base_url/shard_address - together they let a test drive a
+    genuine client all the way through login -> match/room -> relay ->
+    Shard-hosted GameRoom, over actual OS sockets and a real HTTP+Pub/Sub
+    round trip to the Matchmaking Service, proving every process
+    boundary this design introduces, not just the Shard's."""
     started: list[Server] = []
+    matchmaking_servers: list[TestServer] = []
 
     async def _start(namespace: str, shard_host: str, shard_port: int) -> Server:
         accounts_client = AccountsClient(accounts_base_url)
-        relay_queues: Dict[ServerConnection, "asyncio.Queue[Any]"] = {}
-        matchmaker = Matchmaker(
-            accounts_client=accounts_client,
-            on_enter_relay=lambda ws, routing: relay_queues[ws].put_nowait(routing),
-            namespace=namespace,
+        matchmaking_app = matchmaking_service.create_app(
+            accounts_client=AccountsClient(accounts_base_url), redis_client=get_redis_client(), namespace=namespace
         )
+        matchmaking_server = TestServer(matchmaking_app)
+        await matchmaking_server.start_server()
+        matchmaking_servers.append(matchmaking_server)
+        matchmaking_client = MatchmakingClient(str(matchmaking_server.make_url("/")).rstrip("/"))
 
         redis_client = get_redis_client()
 
         async def handler(ws: ServerConnection) -> None:
             await ws_gateway._handle_connection(
-                matchmaker, accounts_client, ws, relay_queues, shard_host, shard_port, redis_client
+                matchmaking_client, accounts_client, ws, shard_host, shard_port, redis_client
             )
 
         return await serve(handler, "localhost", 0)
@@ -141,5 +147,7 @@ def gateway_address(accounts_base_url) -> Iterator[Callable[[str, str, int], Tup
         for server in started:
             server.close()
             await server.wait_closed()
+        for matchmaking_server in matchmaking_servers:
+            await matchmaking_server.close()
 
     _background.run(_stop_all())

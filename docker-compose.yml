@@ -18,6 +18,7 @@ services:
       ACCOUNTS_SERVICE_URL: http://api:8766
       SHARD_HOST: game-shard
       SHARD_PORT: 8767
+      MATCHMAKING_SERVICE_URL: http://matchmaking:8768
       REDIS_HOST: redis
     ports:
       - "8765:8765"  # the client's socket - the only container a player ever reaches directly (section 2)
@@ -25,6 +26,7 @@ services:
       - redis
       - api
       - game-shard
+      - matchmaking
 
   game-shard:
     build: .
@@ -36,6 +38,19 @@ services:
     # Deliberately no `ports:` here (Server_Design.md section 2): a Shard
     # is reachable only from the WS Gateway, over the compose network -
     # never from outside the cluster, and never directly by a client.
+    depends_on:
+      - redis
+      - api
+
+  matchmaking:
+    build: .
+    environment:
+      SERVICE_ROLE: matchmaking
+      HOST: 0.0.0.0
+      ACCOUNTS_SERVICE_URL: http://api:8766
+      REDIS_HOST: redis
+    # Also no `ports:` - reachable only from the WS Gateway over the
+    # compose network, same isolation reasoning as game-shard above.
     depends_on:
       - redis
       - api

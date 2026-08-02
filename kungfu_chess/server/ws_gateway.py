@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+import uuid
 from typing import Any, Dict, Optional, Tuple, Union
 
 from redis.asyncio import Redis
@@ -16,7 +18,8 @@ from kungfu_chess.server.accounts_client import ACCOUNTS_SERVICE_URL, AccountsCl
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
 from kungfu_chess.server.auth_token import TokenClaims
 from kungfu_chess.server.game_shard import SHARD_HOST, SHARD_PORT
-from kungfu_chess.server.matchmaker import Matchmaker
+from kungfu_chess.server.matchmaking_client import MATCHMAKING_SERVICE_URL, MatchmakingClient
+from kungfu_chess.server.matchmaking_client import get_client as get_matchmaking_client
 from kungfu_chess.server.messages import (
     LoginFailedMessage,
     LoginMessage,
@@ -40,15 +43,36 @@ logger = logging.getLogger(__name__)
 section 14 row 2, section 14.2): the live-connection entry point - it
 accepts the socket, drives the login/register handshake (over HTTP to
 the Accounts/Ratings API Service via AccountsClient, never sqlite3
-directly), then hands every subsequent raw message to the Matchmaker
-while the connection is in "lobby mode". Stage 4a (section 19): once
-Matchmaker signals a match/room-join/reconnect/spectate via
-on_enter_relay, this module opens its own outbound connection to the
-Game Shard and switches that connection into "relay mode" - pumping
-raw bytes both directions between the real client socket and the
-Shard - until the Shard ends that session, at which point the
-connection goes back to lobby mode. No game or matchmaking logic
-lives here, only transport/protocol/routing."""
+directly), then forwards every subsequent raw lobby message to the
+Matchmaking Service (matchmaking_service.py) over HTTP while the
+connection is in "lobby mode" - a separate process since the stage
+after this file's own note below, no longer sharing Matchmaker's
+memory directly. Whatever the Matchmaking Service needs to push back -
+an ordinary reply, a match/room/reconnect/spectate routing signal, or a
+forced close (Stage 1b's Logout) - arrives over a Redis Pub/Sub channel
+scoped to this one connection (see _drain_pubsub), the same role
+`relay_queues` played back when Matchmaker lived in this same process.
+Stage 4a (section 19): a routing signal makes this module open its own
+outbound connection to the Game Shard and switch into "relay mode" -
+pumping raw bytes both directions between the real client socket and
+the Shard - until the Shard ends that session, at which point the
+connection goes back to lobby mode. No game or matchmaking logic lives
+here, only transport/protocol/routing."""
+
+
+async def _drain_pubsub(pubsub: Any, queue: "asyncio.Queue[Dict[str, Any]]") -> None:
+    """Runs for a connection's whole lobby lifetime (across any number
+    of lobby<->relay switches, same as `relay_queues` used to): reads
+    everything the Matchmaking Service publishes on this connection's
+    channel and funnels it into a local queue, so the rest of this
+    module can keep racing "the client's next message" against "the
+    Matchmaking Service's next push" exactly the way it already did
+    when that push came from an in-process callback instead of the
+    network (see _handle_connection)."""
+    async for message in pubsub.listen():
+        if message["type"] != "message":
+            continue  # the subscribe-confirmation message, not a real push
+        queue.put_nowait(json.loads(message["data"]))
 
 
 async def _try_send(ws: ServerConnection, message: Any) -> None:
@@ -153,17 +177,34 @@ async def _authenticate(
     return message.username, result.rating, claims
 
 
-async def _pump_lobby_message(matchmaker: Matchmaker, ws: ServerConnection) -> bool:
-    """Reads and dispatches exactly one lobby message. Returns False if
-    the real client socket itself closed while waiting for it (a
-    genuine disconnect) - True otherwise, so the caller keeps racing
-    lobby-vs-relay (see _handle_connection)."""
+async def _pump_lobby_message(matchmaking_client: MatchmakingClient, connection_id: str, ws: ServerConnection) -> bool:
+    """Reads exactly one lobby message and forwards it to the
+    Matchmaking Service. Returns False if the real client socket itself
+    closed while waiting for it (a genuine disconnect) - True otherwise,
+    so the caller keeps racing lobby-vs-push (see _handle_connection).
+    Fire-and-forget: whatever this message produces (an ordinary reply,
+    a routing signal, or nothing at all) arrives later over this
+    connection's Pub/Sub channel, never as this call's own return
+    value - matchmaking_service.py's /message endpoint never sends a
+    meaningful body back for exactly that reason."""
     try:
         raw = await ws.recv()
     except ConnectionClosed:
         return False
-    await matchmaker.on_message(ws, raw)
+    await matchmaking_client.send_message(connection_id, raw)
     return True
+
+
+async def _try_send_raw(ws: ServerConnection, raw: str) -> None:
+    """Transport: forwards an already-serialized wire message straight
+    to the real client socket - used for anything the Matchmaking
+    Service published (it already ran serialize_message() itself
+    before publishing, see matchmaking_service.py's _RemoteConnection),
+    so there's nothing left to encode here, only to relay."""
+    try:
+        await ws.send(raw)
+    except Exception as error:
+        logger.debug("send failed on %s: %s", ws.remote_address, error)
 
 
 async def _pump(src: Any, dst: Any) -> None:
@@ -202,10 +243,9 @@ async def _run_relay_session(
 
 
 async def _handle_connection(
-    matchmaker: Matchmaker,
+    matchmaking_client: MatchmakingClient,
     accounts_client: AccountsClient,
     ws: ServerConnection,
-    relay_queues: Dict[ServerConnection, "asyncio.Queue[shard_protocol.RoutingMessage]"],
     shard_host: str,
     shard_port: int,
     redis_client: Redis,
@@ -215,44 +255,68 @@ async def _handle_connection(
         return  # never enters the lobby - bad login or the connection dropped before completing it
     username, _, claims = auth
 
-    relay_queues[ws] = asyncio.Queue()
-    accepted = await matchmaker.on_connect(ws, username, claims)
-    if not accepted:
-        del relay_queues[ws]
-        return  # already connected from another window - matchmaker sent LoginFailedMessage itself
+    # A fresh id per connection, known only to this Gateway and the
+    # Matchmaking Service it tells - the two ends of the Redis Pub/Sub
+    # channel replacing the in-memory relay_queues this Gateway used
+    # when it shared a process with Matchmaker directly.
+    connection_id = uuid.uuid4().hex
+    pubsub = redis_client.pubsub()
+    await pubsub.subscribe(f"mm:{connection_id}")
+    queue: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue()
+    drain_task = asyncio.create_task(_drain_pubsub(pubsub, queue))
 
     try:
+        # Subscribed *before* this call (above), so nothing on_connect
+        # publishes synchronously (a rejection's LoginFailedMessage, or a
+        # reconnect's routing signal) can be missed - Redis Pub/Sub never
+        # replays a message to a subscriber that joined after it was sent.
+        accepted = await matchmaking_client.connect(connection_id, username, claims)
+        if not accepted:
+            # already connected from another window - the Matchmaking
+            # Service already published the LoginFailedMessage reply.
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=5.0)
+                if item["kind"] == "reply":
+                    await _try_send_raw(ws, item["raw"])
+            except asyncio.TimeoutError:
+                logger.warning("connect was rejected but no reply arrived for %s", username)
+            return
+
         while True:
-            lobby_task = asyncio.create_task(_pump_lobby_message(matchmaker, ws))
-            relay_task = asyncio.create_task(relay_queues[ws].get())
-            done, pending = await asyncio.wait({lobby_task, relay_task}, return_when=asyncio.FIRST_COMPLETED)
+            lobby_task = asyncio.create_task(_pump_lobby_message(matchmaking_client, connection_id, ws))
+            push_task = asyncio.create_task(queue.get())
+            done, pending = await asyncio.wait({lobby_task, push_task}, return_when=asyncio.FIRST_COMPLETED)
             for task in pending:
                 task.cancel()
 
-            # Checked in this order deliberately: a connection's own
+            # Checked in this order deliberately, same reasoning as
+            # before this moved to a network queue: a connection's own
             # SeekGameMessage/JoinRoomMessage can trigger its *own* match
-            # synchronously, inside the very call that also handles that
-            # lobby message (see Matchmaker._start_seeking/_join_room) -
-            # so both tasks can resolve in the same wait() cycle. Handling
-            # lobby_task first would silently discard that relay request
-            # (already popped off the queue by relay_task, never acted
-            # on). lobby_task's own result needs no such care if skipped
-            # here - matchmaker.on_message already fully handled the
-            # message before returning; the boolean result is just
-            # "did the socket stay open," safe to pick up again next loop.
-            if relay_task in done:
-                routing = relay_task.result()
-                still_open = await _run_relay_session(ws, routing, shard_host, shard_port)
-                if not still_open:
+            # synchronously inside the very HTTP call lobby_task is
+            # awaiting, so both tasks can resolve in the same wait()
+            # cycle - handling lobby_task first would risk processing a
+            # push meant for *this* iteration one loop late.
+            if push_task in done:
+                item = push_task.result()
+                if item["kind"] == "routing":
+                    routing = shard_protocol.deserialize_routing(item["routing"])
+                    still_open = await _run_relay_session(ws, routing, shard_host, shard_port)
+                    if not still_open:
+                        break
+                    await matchmaking_client.leave_relay(connection_id)
+                    continue
+                if item["kind"] == "close":
+                    await ws.close()
                     break
-                await matchmaker.on_leave_relay(ws)
+                await _try_send_raw(ws, item["raw"])  # kind == "reply"
                 continue
 
             if not lobby_task.result():
                 break  # the real client socket closed
     finally:
-        del relay_queues[ws]
-        await matchmaker.on_disconnect(ws)
+        drain_task.cancel()
+        await pubsub.aclose()
+        await matchmaking_client.disconnect(connection_id)
 
 
 async def run(
@@ -261,27 +325,17 @@ async def run(
     accounts_service_url: str = ACCOUNTS_SERVICE_URL,
     shard_host: str = SHARD_HOST,
     shard_port: int = SHARD_PORT,
-    namespace: str = "",
+    matchmaking_service_url: str = MATCHMAKING_SERVICE_URL,
 ) -> None:
-    # namespace must match the Shard's own GameAllocator/RoomRegistry
-    # namespace (game_shard.py's GameShard, default "") - both processes
-    # share one Redis. Production leaves this at the shared "" default;
-    # tests pass a unique value to isolate themselves on one Redis server
-    # (see tests/unit/conftest.py's shard_address fixture).
     accounts_client = get_accounts_client(accounts_service_url)
-    # A second, independent Redis client from Matchmaker's own (see
-    # redis_client.py's own non-singleton rationale) - used only for the
-    # revocation-existence check on a TokenLoginMessage (Stage 1b).
+    matchmaking_client = get_matchmaking_client(matchmaking_service_url)
+    # A second, independent Redis client from the Matchmaking Service's
+    # own (see redis_client.py's own non-singleton rationale) - used for
+    # the Stage 1b revocation check and this connection's Pub/Sub channel.
     redis_client = get_redis_client()
-    relay_queues: Dict[ServerConnection, "asyncio.Queue[shard_protocol.RoutingMessage]"] = {}
-    matchmaker = Matchmaker(
-        accounts_client=accounts_client,
-        on_enter_relay=lambda ws, routing: relay_queues[ws].put_nowait(routing),
-        namespace=namespace,
-    )
 
     async def handler(ws: ServerConnection) -> None:
-        await _handle_connection(matchmaker, accounts_client, ws, relay_queues, shard_host, shard_port, redis_client)
+        await _handle_connection(matchmaking_client, accounts_client, ws, shard_host, shard_port, redis_client)
 
     async with serve(handler, host, port):
         logger.info("Kung Fu Chess server listening on ws://%s:%s", host, port)

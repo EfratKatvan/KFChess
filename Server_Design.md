@@ -801,27 +801,37 @@ Status reflects the actual code/git history as of this writing, not just the pla
      Shard, covering ELO matching, Room Create/Join, spectators, and
      cross-process reconnect (verified end-to-end over real sockets in
      `tests/unit/test_relay_integration.py`).
-6. **Stage 5 - Partially done**: one image, role chosen via `SERVICE_ROLE`
-   (`Dockerfile`, `docker_entrypoint.py`), plus a `docker-compose.yml` running it
-   alongside Redis. Deliberately packages only the **3 roles that are actually
-   separate processes today** - `api` (`accounts_service.py`), `ws-gateway`
-   (`ws_gateway.py`), `game-shard` (`game_shard.py`), each with its own
-   `main()`/root launcher script (`api.py`/`server.py`/`shard.py`) - not the 4
-   the target architecture (section 1) calls for. **Still missing, and a
-   prerequisite for a true 4th unit**: `Matchmaker` (`matchmaker.py`) has no
-   standalone process of its own - `ws_gateway.py`'s `run()` still constructs
-   it directly and calls it via plain Python method calls, not over a network
-   transport, so there is nothing yet to give its own `SERVICE_ROLE`. Turning
-   it into a real Matchmaking Service means picking a transport (HTTP, mirroring
-   the API Service, or NATS per section 16.2) and moving `GameAllocator` out of
-   `game_shard.py` (where it actually lives today - Stage 3 relocated it there,
-   not into a Matchmaker-adjacent process) to sit alongside it - genuinely new
-   architecture, not packaging, so it's scoped as its own follow-up rather than
-   folded into this stage. NATS and Postgres are likewise not yet in
-   `docker-compose.yml`: neither is used by any code path yet (control-plane
-   events and JetStream replay - section 3 - and the Postgres migration -
-   section 6 - are both still just design), and standing up unused containers
-   nothing connects to would misrepresent what's actually running.
+6. **Stage 5 - Done**: one image, role chosen via `SERVICE_ROLE` (`Dockerfile`,
+   `docker_entrypoint.py`), plus a `docker-compose.yml` running all **4** roles
+   alongside Redis - `api` (`accounts_service.py`), `ws-gateway` (`ws_gateway.py`),
+   `game-shard` (`game_shard.py`), and now `matchmaking` (`matchmaking_service.py`),
+   each with its own `main()`/root launcher script. The 4th unit closes the gap
+   an earlier draft of this entry flagged: `matchmaker.py` itself needed **zero**
+   logic changes to become network-reachable - it already only ever calls
+   `.send()`/`.close()` on whatever connection-like object it's handed (proven by
+   `test_matchmaker.py`'s own `FakeConnection`, which needed no changes either),
+   so `matchmaking_service.py`'s `_RemoteConnection` is simply a second
+   implementation of that same informal port, publishing over Redis instead of
+   writing to a live socket. Transport (section 16.2): **HTTP** for anything that
+   is a direct reply to the request that triggered it, and **Redis Pub/Sub - not
+   NATS** - for the two things that are never a reply to the caller's own request
+   (signaling a match/room-seat to the *other*, already-waiting player; the
+   seek-timeout's `NO_OPPONENT_FOUND`, fired by an internal timer with no request
+   to reply to at all). NATS is deliberately still not introduced - it would add
+   new infra for zero durability payoff before JetStream/crash-recovery (section 3)
+   is actually built, and Redis is already deployed everywhere else in this stack;
+   `ws_gateway.py`'s per-connection `relay_queues` dict is gone, replaced by a
+   Redis Pub/Sub channel scoped to a per-connection id it generates itself.
+   One documented deviation from section 14's mapping table survives this stage
+   unresolved: `GameAllocator` still lives inside `game_shard.py`, not alongside
+   `Matchmaker` in the Matchmaking Service - a Stage 4a decision (placement
+   physically follows the room it allocates, not the fairness decision that
+   preceded it), left as-is rather than re-litigated as a side effect of this
+   stage. NATS and Postgres are still not in `docker-compose.yml`: neither is
+   used by any code path yet (control-plane events/JetStream replay - section 3 -
+   and the Postgres migration - section 6 - are both still just design), and
+   standing up unused containers nothing connects to would misrepresent what's
+   actually running.
 7. **Stage 6 - Not yet started**: add Observability (logs/metrics/health
    checks/load tests) + cluster manifests, starting on K3s per section 18's
    recommendation.
