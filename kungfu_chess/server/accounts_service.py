@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import os
+
 from aiohttp import web
 
 from kungfu_chess.logging_config import configure_logging
 from kungfu_chess.server import accounts
 
-HOST = "localhost"
-PORT = 8766
+# Env-overridable (Stage 5, section 17): docker-compose binds this to
+# 0.0.0.0 so the container accepts connections from other containers,
+# not just itself - "localhost" remains the default for local runs.
+HOST = os.environ.get("HOST", "localhost")
+PORT = int(os.environ.get("PORT", "8766"))
 LOG_FILE = "accounts_service.log"
 
 """The Accounts/Ratings API Service (Server_Design.md section 1's "API

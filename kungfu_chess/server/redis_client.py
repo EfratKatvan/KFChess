@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import redis.asyncio as redis
 
 """Thin wrapper around redis.asyncio - the rest of the server talks to
@@ -9,8 +11,13 @@ between its own logic and its storage (see Server_Design.md section
 13.2). Keeps the storage backend a single, swappable seam - the point
 Server_Design.md's Stage 0 (section 19) is actually about."""
 
-REDIS_HOST = "localhost"
-REDIS_PORT = 6379
+# Env-overridable (Stage 5, section 17): in docker-compose every process
+# is its own container, so "localhost" no longer means "the Redis
+# container" - compose sets REDIS_HOST=redis (the service name) for
+# every role that needs it. Left at "localhost" for local/test runs,
+# unchanged from before this override existed.
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", "6379"))
 
 
 def get_client(host: str = REDIS_HOST, port: int = REDIS_PORT) -> redis.Redis:

@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import os
 from typing import Optional, Tuple
 
 import aiohttp
 
 from kungfu_chess.server.accounts import AuthResult
 
-ACCOUNTS_SERVICE_URL = "http://localhost:8766"
+# Env-overridable (Stage 5, section 17): in docker-compose ws_gateway.py
+# and game_shard.py each run in their own container, reaching the API
+# Service container by its compose service name, not "localhost".
+ACCOUNTS_SERVICE_URL = os.environ.get("ACCOUNTS_SERVICE_URL", "http://localhost:8766")
 
 """HTTP adapter the rest of the server talks to the Accounts/Ratings API
 Service through - matchmaker.py, game_room.py and ws_gateway.py call only

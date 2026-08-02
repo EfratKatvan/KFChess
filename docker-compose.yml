@@ -3,3 +3,39 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+
+  api:
+    build: .
+    environment:
+      SERVICE_ROLE: api
+      HOST: 0.0.0.0
+
+  ws-gateway:
+    build: .
+    environment:
+      SERVICE_ROLE: ws-gateway
+      HOST: 0.0.0.0
+      ACCOUNTS_SERVICE_URL: http://api:8766
+      SHARD_HOST: game-shard
+      SHARD_PORT: 8767
+      REDIS_HOST: redis
+    ports:
+      - "8765:8765"  # the client's socket - the only container a player ever reaches directly (section 2)
+    depends_on:
+      - redis
+      - api
+      - game-shard
+
+  game-shard:
+    build: .
+    environment:
+      SERVICE_ROLE: game-shard
+      SHARD_HOST: 0.0.0.0  # this container's own bind, not the address others dial - see game_shard.py's comment
+      ACCOUNTS_SERVICE_URL: http://api:8766
+      REDIS_HOST: redis
+    # Deliberately no `ports:` here (Server_Design.md section 2): a Shard
+    # is reachable only from the WS Gateway, over the compose network -
+    # never from outside the cluster, and never directly by a client.
+    depends_on:
+      - redis
+      - api

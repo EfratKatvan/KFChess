@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, Optional, Tuple, Union
 
 from redis.asyncio import Redis
@@ -26,8 +27,11 @@ from kungfu_chess.server.messages import (
 from kungfu_chess.server.redis_client import get_client as get_redis_client
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
-HOST = "localhost"
-PORT = 8765
+# Env-overridable (Stage 5, section 17): docker-compose binds this to
+# 0.0.0.0 so the container accepts the real client's connection from
+# outside - "localhost" remains the default for local runs.
+HOST = os.environ.get("HOST", "localhost")
+PORT = int(os.environ.get("PORT", "8765"))
 LOG_FILE = "ws_gateway.log"
 
 logger = logging.getLogger(__name__)

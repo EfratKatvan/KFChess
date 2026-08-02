@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -20,8 +21,19 @@ from kungfu_chess.server.redis_client import get_client as get_redis_client
 from kungfu_chess.server.rooms import RoomRegistry
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
-SHARD_HOST = "localhost"
-SHARD_PORT = 8767
+# Env-overridable (Stage 5, section 17) - and deliberately double-duty:
+# this module's own run()/main() use it as the address to *bind*, while
+# ws_gateway.py imports the very same constant as the address it
+# *dials* to reach the Shard. That only works today because both live
+# in one process on "localhost"; in docker-compose the two processes
+# are different containers reading their own environment, so each sets
+# SHARD_HOST independently - the game-shard container sets it to
+# "0.0.0.0" (bind every interface), the ws-gateway container sets it to
+# "game-shard" (the compose service's DNS name) - no code conflict,
+# since os.environ.get() runs at import time inside whichever
+# container's process imports this module.
+SHARD_HOST = os.environ.get("SHARD_HOST", "localhost")
+SHARD_PORT = int(os.environ.get("SHARD_PORT", "8767"))
 LOG_FILE = "game_shard.log"
 PENDING_ROOM_TIMEOUT_SECONDS = 10  # bounds how long the first seat of a brand-new room waits for the second
 
