@@ -16,21 +16,25 @@ from kungfu_chess.server.messages import (
     JumpMessage,
     LeaveRoomMessage,
     LoginMessage,
+    LogoutMessage,
     RegisterMessage,
     ResignMessage,
     RestartMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
+    TokenLoginMessage,
 )
 from kungfu_chess.view import image_view
 from kungfu_chess.view.network_presentation import (
     STARTING_DURATION_S,
     TOP_BANNER_HEIGHT,
+    continue_button_rect,
     create_room_button_rect,
     join_room_button_rect,
     login_button_rect,
     login_password_field_rect,
     login_username_field_rect,
+    logout_button_rect,
     play_button_rect,
     register_button_rect,
     resign_button_rect,
@@ -134,6 +138,8 @@ def _decide_login_entry_message(
         return _build_login_message(state, LoginMessage)
     if _point_in_rect(x, y, register_button_rect(screen_width, screen_height)):
         return _build_login_message(state, RegisterMessage)
+    if state.saved_username is not None and _point_in_rect(x, y, continue_button_rect(screen_width, screen_height)):
+        return TokenLoginMessage(token=state.saved_token, username=state.saved_username)
     return None
 
 
@@ -152,6 +158,8 @@ def _decide_lobby_message(
         return CREATE_ROOM_BUTTON_CLICKED
     if _point_in_rect(x, y, join_room_button_rect(screen_width, screen_height)):
         return JOIN_ROOM_BUTTON_CLICKED
+    if _point_in_rect(x, y, logout_button_rect(screen_width, screen_height)):
+        return LogoutMessage()
     return None
 
 

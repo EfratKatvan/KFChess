@@ -8,6 +8,7 @@ from typing import Callable, Dict
 import cv2
 
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET
+from kungfu_chess.client import token_store
 from kungfu_chess.client.client_state import ClientState
 from kungfu_chess.client.input_controller import (
     CREATE_ROOM_BUTTON_CLICKED,
@@ -24,7 +25,7 @@ from kungfu_chess.client.input_controller import (
 from kungfu_chess.client.network_transport import ClientBox, network_thread_main, send
 from kungfu_chess.client.phases import Phase
 from kungfu_chess.io.board_parser import build_board
-from kungfu_chess.server.messages import LoginMessage, RegisterMessage
+from kungfu_chess.server.messages import LoginMessage, RegisterMessage, TokenLoginMessage
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.view import image_view
 from kungfu_chess.view.network_presentation import TOP_BANNER_HEIGHT, render_frame, screen_size, text_screen
@@ -140,16 +141,28 @@ def _text_entry_cancel_clicked(box: ClientBox) -> None:
     box.state = ClientState(phase=Phase.LOBBY, rating=box.state.rating)
 
 
+def _fresh_login_entry_state() -> ClientState:
+    """A saved session (client/token_store.py, Stage 1b) found on disk
+    drives the login screen's "Continue as X" button - checked fresh
+    each time the login screen is (re)entered, not carried in box.state
+    beforehand, since nothing before this point has any use for it."""
+    saved = token_store.load_token()
+    if saved is None:
+        return ClientState(phase=Phase.LOGIN_ENTRY)
+    saved_username, saved_token = saved
+    return ClientState(phase=Phase.LOGIN_ENTRY, saved_username=saved_username, saved_token=saved_token)
+
+
 def _skin_pieces1_selected(box: ClientBox) -> None:
-    box.piece_set, box.state = "pieces1", ClientState(phase=Phase.LOGIN_ENTRY)
+    box.piece_set, box.state = "pieces1", _fresh_login_entry_state()
 
 
 def _skin_pieces2_selected(box: ClientBox) -> None:
-    box.piece_set, box.state = "pieces2", ClientState(phase=Phase.LOGIN_ENTRY)
+    box.piece_set, box.state = "pieces2", _fresh_login_entry_state()
 
 
 def _skin_pieces3_selected(box: ClientBox) -> None:
-    box.piece_set, box.state = "pieces3", ClientState(phase=Phase.LOGIN_ENTRY)
+    box.piece_set, box.state = "pieces3", _fresh_login_entry_state()
 
 
 def _login_field_username_clicked(box: ClientBox) -> None:
@@ -175,19 +188,22 @@ _SENTINEL_HANDLERS: Dict[str, Callable[[ClientBox], None]] = {
 def _dispatch(box: ClientBox, server_uri: str, message: object) -> None:
     """Shared by on_mouse and the key-press handling above - a local
     sentinel gets a direct ClientState transition (via
-    _SENTINEL_HANDLERS); a LoginMessage/RegisterMessage (only ever
-    produced while phase == "login_entry", see input_controller.py)
-    starts the network thread instead of being sent, since no
+    _SENTINEL_HANDLERS); a LoginMessage/RegisterMessage/TokenLoginMessage
+    (only ever produced while phase == "login_entry", see
+    input_controller.py - the last one Stage 1b's "Continue as X"
+    button) starts the network thread instead of being sent, since no
     connection exists yet at that point; anything else is sent over
-    the connection network_transport.py already owns. Every protocol
-    message is a frozen (hashable) dataclass - see server/messages.py -
-    so looking one up in _SENTINEL_HANDLERS (which never matches, since
-    only the local string sentinels are keys in it) is always safe."""
+    the connection network_transport.py already owns (this is also how
+    a lobby LogoutMessage reaches the server - the connection is
+    already open by then). Every protocol message is a frozen (hashable)
+    dataclass - see server/messages.py - so looking one up in
+    _SENTINEL_HANDLERS (which never matches, since only the local string
+    sentinels are keys in it) is always safe."""
     handler = _SENTINEL_HANDLERS.get(message)
     if handler is not None:
         handler(box)
         return
-    if isinstance(message, (LoginMessage, RegisterMessage)):
+    if isinstance(message, (LoginMessage, RegisterMessage, TokenLoginMessage)):
         box.state = replace(box.state, phase=Phase.CONNECTING)
         threading.Thread(target=network_thread_main, args=(server_uri, message, box), daemon=True).start()
         return

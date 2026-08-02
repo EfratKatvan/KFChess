@@ -4,8 +4,15 @@ envelope shape is defined in exactly one place."""
 # Login phase (first thing sent/received on a new connection, before matchmaking)
 LOGIN = "login"
 REGISTER = "register"  # same shape as LOGIN, but only succeeds for a brand-new username - see accounts.register
+TOKEN_LOGIN = "token_login"  # an alternative first message - a saved session token instead of a password (Stage 1b)
 LOGIN_OK = "login_ok"
 LOGIN_FAILED = "login_failed"
+
+# Lobby phase (client -> server / server -> client) - Stage 1b: revokes the
+# current session token, same "grace period" idea section 3 uses for a
+# room lease, just for a login session instead
+LOGOUT = "logout"
+LOGGED_OUT = "logged_out"
 
 # Matchmaking phase (before a player is paired into a GameRoom)
 SEEK_GAME = "seek_game"

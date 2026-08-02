@@ -8,9 +8,10 @@ from typing import Any, Optional
 from websockets.asyncio.client import connect
 
 from kungfu_chess.assets_config import DEFAULT_PIECE_SET
-from kungfu_chess.client import sound
+from kungfu_chess.client import sound, token_store
 from kungfu_chess.client.client_state import ClientState, apply_message, events_since
 from kungfu_chess.client.phases import Phase
+from kungfu_chess.server.messages import LoggedOutMessage, LoginFailedMessage, LoginOkMessage, TokenLoginMessage
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
 """The client's Transport layer: owns the actual WebSocket connection
@@ -71,13 +72,32 @@ def _play_sound_safely(events: Any) -> None:
         logger.debug("sound playback failed (%s) - continuing without it", error)
 
 
+def _handle_session_persistence(message: Any, initial_message: Any) -> None:
+    """The other side effect that lives here (Stage 1b), alongside sound
+    playback - saving/clearing the locally-stored session (client/
+    token_store.py) so a later run can offer "Continue as X" instead of
+    retyping a password. A rejected TokenLoginMessage also clears
+    whatever was saved (it's no good anymore); an *ordinary* wrong-
+    password LoginMessage/RegisterMessage failure must not touch an
+    unrelated saved session, which is exactly what checking
+    initial_message's own type (not just the response) distinguishes."""
+    if isinstance(message, LoginOkMessage):
+        token_store.save_token(message.username, message.token)
+    elif isinstance(message, LoggedOutMessage):
+        token_store.clear_token()
+    elif isinstance(message, LoginFailedMessage) and isinstance(initial_message, TokenLoginMessage):
+        token_store.clear_token()
+
+
 def network_thread_main(server_uri: str, initial_message: Any, box: ClientBox) -> None:
-    """initial_message is a LoginMessage or RegisterMessage, already
-    built by network_client_view.py from whatever was typed into the
-    in-canvas login screen (see its login_entry phase) - this layer
-    just sends whichever one it's handed, without needing to know the
-    difference itself. Only started once that's actually submitted -
-    no connection exists before then."""
+    """initial_message is a LoginMessage, RegisterMessage, or (Stage 1b)
+    TokenLoginMessage, already built by network_client_view.py from
+    whatever was typed into (or, for a saved session, already sitting
+    on) the in-canvas login screen (see its login_entry phase) - this
+    layer just sends whichever one it's handed, without needing to know
+    the difference itself beyond _handle_session_persistence above.
+    Only started once that's actually submitted - no connection exists
+    before then."""
     async def client_main() -> None:
         async with connect(server_uri) as ws:
             box.ws = ws
@@ -85,13 +105,15 @@ def network_thread_main(server_uri: str, initial_message: Any, box: ClientBox) -
             logger.info("connected to %s as %s", server_uri, initial_message.username)
             await ws.send(serialize_message(initial_message))
             async for raw in ws:
-                new_state = apply_message(deserialize_message(raw), box.state)
+                message = deserialize_message(raw)
+                new_state = apply_message(message, box.state)
                 events = events_since(box.state, new_state)
                 # box.state is read next by the main thread's render loop
                 # (network_client_view.py) - no lock needed, see ClientBox.
                 # Updated before the sound dispatch below, so a slow/stuck
                 # executor thread can never delay this.
                 box.state = new_state
+                _handle_session_persistence(message, initial_message)
                 if events:
                     box.loop.run_in_executor(None, _play_sound_safely, events)
 

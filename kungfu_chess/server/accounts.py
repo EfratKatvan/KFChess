@@ -7,7 +7,7 @@ import secrets
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from kungfu_chess.server import accounts_db
+from kungfu_chess.server import accounts_db, auth_token
 from kungfu_chess.server.accounts_db import DEFAULT_DB_PATH
 
 STARTING_RATING = 1200
@@ -28,12 +28,14 @@ accounts_client.AccountsClient instead."""
 
 @dataclass(frozen=True)
 class AuthResult:
-    """success + rating on a good login/registration; reason set only on
-    failure (wrong password for an existing username)."""
+    """success + rating + a signed session token on a good
+    login/registration (Server_Design.md section 1.1, Stage 1b) - reason
+    set only on failure (wrong password for an existing username)."""
 
     success: bool
     rating: Optional[int] = None
     reason: Optional[str] = None
+    token: Optional[str] = None
 
 
 def _hash_password(password: str, salt: str) -> str:
@@ -69,7 +71,7 @@ def login(db_path: str, username: str, password: str) -> AuthResult:
         logger.info("login failed: %s (wrong password)", username)
         return AuthResult(success=False, reason="wrong password")
     logger.info("login ok: %s", username)
-    return AuthResult(success=True, rating=rating)
+    return AuthResult(success=True, rating=rating, token=auth_token.issue_token(username, rating))
 
 
 def register(db_path: str, username: str, password: str) -> AuthResult:
@@ -84,7 +86,7 @@ def register(db_path: str, username: str, password: str) -> AuthResult:
     salt = secrets.token_hex(16)
     accounts_db.insert_user(db_path, username, salt, _hash_password(password, salt), STARTING_RATING)
     logger.info("register ok: %s (new account)", username)
-    return AuthResult(success=True, rating=STARTING_RATING)
+    return AuthResult(success=True, rating=STARTING_RATING, token=auth_token.issue_token(username, STARTING_RATING))
 
 
 def get_rating(db_path: str, username: str) -> Optional[int]:

@@ -33,6 +33,7 @@ PIECES3_BUTTON_TEXT = "Pieces 3"
 LOGIN_TITLE_TEXT = "Login or Register"
 LOGIN_BUTTON_TEXT = "LOGIN"
 REGISTER_BUTTON_TEXT = "REGISTER"
+CONTINUE_BUTTON_GAP_Y = 20  # Stage 1b - below LOGIN/REGISTER, only drawn when a saved session exists
 LOGIN_USERNAME_LABEL = "Username"
 LOGIN_PASSWORD_LABEL = "Password"
 LOGIN_FIELD_WIDTH = 320
@@ -58,6 +59,7 @@ PLAY_BUTTON_TEXT_THICKNESS = 2
 
 CREATE_ROOM_BUTTON_TEXT = "CREATE ROOM"
 JOIN_ROOM_BUTTON_TEXT = "JOIN ROOM"
+LOGOUT_BUTTON_TEXT = "LOGOUT"
 CANCEL_BUTTON_TEXT = "CANCEL"
 BACK_BUTTON_TEXT = "BACK"
 LOBBY_BUTTON_GAP_Y = 16  # vertical gap between each stacked lobby button
@@ -202,6 +204,19 @@ def register_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
     return (x + w + LOGIN_BUTTON_GAP_X, y, w, h)
 
 
+def continue_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    """Stage 1b's "Continue as X" button - sits below the LOGIN/REGISTER
+    row, centered the same way login_button_rect's own pair is."""
+    _, login_y, _, login_h = login_button_rect(width, height)
+    total_width = LOGIN_BUTTON_WIDTH * 2 + LOGIN_BUTTON_GAP_X
+    return (
+        width // 2 - total_width // 2,
+        login_y + login_h + CONTINUE_BUTTON_GAP_Y,
+        total_width,
+        PLAY_BUTTON_HEIGHT,
+    )
+
+
 def _draw_login_field(canvas: Img, rect: Tuple[int, int, int, int], label: str, value: str, is_active: bool, mask: bool) -> None:
     x, y, w, h = rect
     canvas.put_text(label, x, y - 10, 0.5, _TEXT_COLOR_BGRA, 1)
@@ -237,6 +252,9 @@ def login_entry_screen(width: int, height: int, state: ClientState) -> Img:
 
     _draw_button(canvas, *login_button_rect(width, height), LOGIN_BUTTON_TEXT)
     _draw_button(canvas, *register_button_rect(width, height), REGISTER_BUTTON_TEXT)
+
+    if state.saved_username is not None:
+        _draw_button(canvas, *continue_button_rect(width, height), f"CONTINUE AS {state.saved_username.upper()}")
 
     if state.login_failure_reason is not None:
         error_text = f"Login failed: {state.login_failure_reason}"
@@ -297,14 +315,30 @@ def join_room_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
     )
 
 
+def logout_button_rect(width: int, height: int) -> Tuple[int, int, int, int]:
+    """Stage 1b - sits directly below Join Room, the same stacking
+    pattern every lobby button above already follows."""
+    join_x, join_y, join_w, join_h = join_room_button_rect(width, height)
+    return (
+        width // 2 - PLAY_BUTTON_WIDTH // 2,
+        join_y + join_h + LOBBY_BUTTON_GAP_Y,
+        PLAY_BUTTON_WIDTH,
+        PLAY_BUTTON_HEIGHT,
+    )
+
+
 def lobby_screen(width: int, height: int, rating: Optional[int], message: Optional[str] = None) -> Img:
-    """The pre-matchmaking screen: shows the player's rating and three
+    """The pre-matchmaking screen: shows the player's rating and four
     separate buttons - Play (ELO-ranged matchmaking, see
     Matchmaker._start_seeking), Create Room and Join Room (each opens
     its own in-canvas text-entry screen, see
-    client/input_controller.py's apply_key_press). Also reused for the
-    "no opponent found"/"room action failed" screens (with message
-    set) so the player can retry without restarting the app."""
+    client/input_controller.py's apply_key_press), and Logout (Stage
+    1b - revokes the current session token, see
+    Matchmaker._handle_logout). Also reused for the "no opponent
+    found"/"room action failed" screens (with message set) so the
+    player can retry without restarting the app - Logout is reachable
+    from those too, which is a correct consequence of sharing this
+    screen, not a bug."""
     canvas = Img()
     canvas.img = np.full((height, width, 4), _BACKGROUND_COLOR_BGRA, dtype=np.uint8)
     title = f"Rating: {rating}" if rating is not None else "Ready to play"
@@ -314,6 +348,7 @@ def lobby_screen(width: int, height: int, rating: Optional[int], message: Option
     _draw_button(canvas, *play_button_rect(width, height), PLAY_BUTTON_TEXT)
     _draw_button(canvas, *create_room_button_rect(width, height), CREATE_ROOM_BUTTON_TEXT)
     _draw_button(canvas, *join_room_button_rect(width, height), JOIN_ROOM_BUTTON_TEXT)
+    _draw_button(canvas, *logout_button_rect(width, height), LOGOUT_BUTTON_TEXT)
     return canvas
 
 

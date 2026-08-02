@@ -40,8 +40,29 @@ class RegisterMessage:
 
 
 @dataclass(frozen=True)
+class TokenLoginMessage:
+    """An alternative first message to LoginMessage/RegisterMessage - a
+    previously-issued session token instead of a password (Stage 1b,
+    Server_Design.md section 1.1), letting the client skip retyping
+    credentials on a later run. `username` exists only for display/
+    logging on the client side (see network_transport.py's connection
+    log line) - the server must never treat it as authoritative, since
+    identity comes only from the verified token's own claims."""
+
+    token: str
+    username: str
+    type: str = protocol.TOKEN_LOGIN
+
+
+@dataclass(frozen=True)
 class LoginOkMessage:
+    """Sent for a successful LoginMessage, RegisterMessage, or
+    TokenLoginMessage alike - username/token let the client save a
+    session to reuse next time (see client/token_store.py)."""
+
     rating: int
+    username: str
+    token: str
     type: str = protocol.LOGIN_OK
 
 
@@ -49,6 +70,21 @@ class LoginOkMessage:
 class LoginFailedMessage:
     reason: str
     type: str = protocol.LOGIN_FAILED
+
+
+@dataclass(frozen=True)
+class LogoutMessage:
+    """The lobby's "Logout" button - revokes the connection's current
+    session token (Stage 1b) so it can never be reused via
+    TokenLoginMessage again, then ends the connection (see
+    matchmaker.py's _handle_logout)."""
+
+    type: str = protocol.LOGOUT
+
+
+@dataclass(frozen=True)
+class LoggedOutMessage:
+    type: str = protocol.LOGGED_OUT
 
 
 @dataclass(frozen=True)

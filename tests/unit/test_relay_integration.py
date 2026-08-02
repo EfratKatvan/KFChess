@@ -6,6 +6,8 @@ import uuid
 import pytest
 from websockets.asyncio.client import connect
 
+from websockets.exceptions import ConnectionClosedOK
+
 from kungfu_chess.model.piece import BLACK, WHITE
 from kungfu_chess.server import accounts, protocol
 from kungfu_chess.server.messages import (
@@ -13,10 +15,12 @@ from kungfu_chess.server.messages import (
     JoinRoomMessage,
     LeaveRoomMessage,
     LoginMessage,
+    LogoutMessage,
     RegisterMessage,
     ResignMessage,
     SeekGameMessage,
     SelectOrMoveMessage,
+    TokenLoginMessage,
 )
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
@@ -51,10 +55,13 @@ class RealClient:
     recv_type skips past unrelated messages (chiefly the periodic
     STATE broadcast) while waiting for a specific one - the same
     "doesn't matter what else arrives first" pattern a real client's
-    own dispatch table already tolerates."""
+    own dispatch table already tolerates. `token` is stashed by _login
+    (Stage 1b) so a test can drive a second connection's
+    TokenLoginMessage without re-deriving it."""
 
     def __init__(self, ws) -> None:
         self.ws = ws
+        self.token: str = ""
 
     async def send(self, message) -> None:
         await self.ws.send(serialize_message(message))
@@ -79,7 +86,15 @@ async def _login(host: str, port: int, username: str, register: bool = True) -> 
         await client.send(RegisterMessage(username=username, password="pw"))
     else:
         await client.send(LoginMessage(username=username, password="pw"))
-    await client.recv_type(protocol.LOGIN_OK)
+    login_ok = await client.recv_type(protocol.LOGIN_OK)
+    client.token = login_ok.token
+    return client
+
+
+async def _login_with_token(host: str, port: int, username: str, token: str) -> RealClient:
+    ws = await connect(f"ws://{host}:{port}")
+    client = RealClient(ws)
+    await client.send(TokenLoginMessage(token=token, username=username))
     return client
 
 
@@ -223,3 +238,63 @@ async def _room_and_spectate_scenario(servers):
     await alice.ws.close()
     await bob.ws.close()
     await carol.ws.close()
+
+
+def test_logout_revokes_the_token_so_it_can_no_longer_log_back_in(db_path, accounts_base_url, servers):
+    asyncio.run(_logout_revocation_scenario(servers))
+
+
+async def _logout_revocation_scenario(servers):
+    host, port = servers
+    alice = await _login(host, port, "alice")
+    token = alice.token
+
+    await alice.send(LogoutMessage())
+    await alice.recv_type(protocol.LOGGED_OUT)
+    # matchmaker.py's _handle_logout closes with a normal code (1000) -
+    # a clean close, not an error, is the whole point (see
+    # network_transport.py: this is what lets the real client return to
+    # the login screen instead of flashing "Disconnected").
+    with pytest.raises(ConnectionClosedOK):
+        await alice.ws.recv()
+
+    alice_again = await _login_with_token(host, port, "alice", token)
+    failed = await alice_again.recv_type(protocol.LOGIN_FAILED)
+    assert "logged out" in failed.reason
+
+    await alice_again.ws.close()
+
+
+def test_a_valid_unrevoked_token_can_reconnect_with_the_current_rating(db_path, accounts_base_url, servers):
+    asyncio.run(_token_login_positive_scenario(servers))
+
+
+async def _token_login_positive_scenario(servers):
+    host, port = servers
+    alice = await _login(host, port, "alice")
+    bob = await _login(host, port, "bob")
+    token = alice.token
+
+    # Play a game so alice's rating actually moves before she reconnects.
+    await alice.send(SeekGameMessage())
+    await bob.send(SeekGameMessage())
+    alice_matched = await alice.recv_type(protocol.MATCH_FOUND)
+    bob_matched = await bob.recv_type(protocol.MATCH_FOUND)
+    white, black = (alice, bob) if alice_matched.color == WHITE else (bob, alice)
+    await white.send(ResignMessage())
+    state = await black.recv_type(protocol.STATE)
+    while not state.board.game_over:
+        state = await black.recv_type(protocol.STATE)
+    await bob.ws.close()
+
+    await alice.ws.close()  # not a logout - the token itself is still perfectly valid
+    alice_new = await _login_with_token(host, port, "alice", token)
+    login_ok = await alice_new.recv_type(protocol.LOGIN_OK)
+
+    assert login_ok.username == "alice"
+    # alice was white and resigned (or was black and won) - either way,
+    # the returned rating must reflect that game, not the value from
+    # when the token was first issued (see ws_gateway.py's _authenticate).
+    assert login_ok.rating != accounts.STARTING_RATING
+
+    await alice_new.ws.close()

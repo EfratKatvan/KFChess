@@ -17,9 +17,11 @@ from kungfu_chess.server.messages import (
     JumpMessage,
     LeaveRoomMessage,
     LeftRoomMessage,
+    LoggedOutMessage,
     LoginFailedMessage,
     LoginMessage,
     LoginOkMessage,
+    LogoutMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
@@ -35,6 +37,7 @@ from kungfu_chess.server.messages import (
     SelectOrMoveMessage,
     SpectatingMessage,
     StateMessage,
+    TokenLoginMessage,
     WaitingForOpponentMessage,
 )
 
@@ -147,13 +150,15 @@ def message_to_wire(message: Any) -> Dict[str, Any]:
     if isinstance(message, (
         WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage,
         SeekGameMessage, CancelRoomMessage, RoomCancelledMessage, CancelSeekMessage, SeekCancelledMessage,
-        LeaveRoomMessage, LeftRoomMessage, ResignMessage,
+        LeaveRoomMessage, LeftRoomMessage, ResignMessage, LogoutMessage, LoggedOutMessage,
     )):
         return {"type": message.type}
     if isinstance(message, (LoginMessage, RegisterMessage)):
         return {"type": message.type, "username": message.username, "password": message.password}
+    if isinstance(message, TokenLoginMessage):
+        return {"type": message.type, "token": message.token, "username": message.username}
     if isinstance(message, LoginOkMessage):
-        return {"type": message.type, "rating": message.rating}
+        return {"type": message.type, "rating": message.rating, "username": message.username, "token": message.token}
     if isinstance(message, LoginFailedMessage):
         return {"type": message.type, "reason": message.reason}
     if isinstance(message, OpponentDisconnectedMessage):
@@ -207,10 +212,16 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
         return LoginMessage(username=data["username"], password=data["password"])
     if message_type == protocol.REGISTER:
         return RegisterMessage(username=data["username"], password=data["password"])
+    if message_type == protocol.TOKEN_LOGIN:
+        return TokenLoginMessage(token=data["token"], username=data["username"])
     if message_type == protocol.LOGIN_OK:
-        return LoginOkMessage(rating=data["rating"])
+        return LoginOkMessage(rating=data["rating"], username=data["username"], token=data["token"])
     if message_type == protocol.LOGIN_FAILED:
         return LoginFailedMessage(reason=data["reason"])
+    if message_type == protocol.LOGOUT:
+        return LogoutMessage()
+    if message_type == protocol.LOGGED_OUT:
+        return LoggedOutMessage()
     if message_type == protocol.SEEK_GAME:
         return SeekGameMessage()
     if message_type == protocol.WAITING_FOR_OPPONENT:

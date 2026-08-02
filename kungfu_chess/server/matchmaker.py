@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, Optional, Tuple, Type
@@ -13,6 +14,7 @@ from kungfu_chess.model.piece import BLACK, WHITE
 from kungfu_chess.server import protocol, shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
+from kungfu_chess.server.auth_token import TokenClaims
 from kungfu_chess.server.messages import (
     CancelRoomMessage,
     CancelSeekMessage,
@@ -20,7 +22,9 @@ from kungfu_chess.server.messages import (
     CreateRoomMessage,
     JoinRoomFailedMessage,
     JoinRoomMessage,
+    LoggedOutMessage,
     LoginFailedMessage,
+    LogoutMessage,
     NoOpponentFoundMessage,
     RoomCancelledMessage,
     RoomCreatedMessage,
@@ -105,6 +109,7 @@ class Matchmaker:
         self._room_of: Dict[ServerConnection, Tuple[str, Optional[str]]] = {}
         self._disconnected_players: Dict[str, Tuple[str, str]] = {}  # username -> (room_id, color)
         self._active_connections: Dict[str, ServerConnection] = {}  # username -> its one live connection
+        self._token_of: Dict[ServerConnection, TokenClaims] = {}  # ws -> its session's verified token claims (Stage 1b)
 
         # The Room dialog's Create/Join/Cancel flow - independent of, and
         # parallel to, the ELO-proximity _waiting queue above. Shares this
@@ -125,9 +130,12 @@ class Matchmaker:
             CreateRoomMessage: self._create_room,
             JoinRoomMessage: self._join_room,
             CancelRoomMessage: self._cancel_room,
+            LogoutMessage: self._handle_logout,
         }
 
-    async def on_connect(self, ws: ServerConnection, username: str) -> bool:
+    async def on_connect(
+        self, ws: ServerConnection, username: str, claims: Optional[TokenClaims] = None
+    ) -> bool:
         """Returns False (and sends LoginFailedMessage itself) if this
         username already has a live connection elsewhere - the caller
         should close the socket without entering the lobby/message
@@ -135,13 +143,20 @@ class Matchmaker:
         reconnect, whether the Shard actually accepts it (grace period
         not yet expired) is discovered later, once the relay session
         the caller opens resolves; a rejected one lands back in the
-        lobby exactly like a fresh login (see on_leave_relay)."""
+        lobby exactly like a fresh login (see on_leave_relay).
+
+        `claims` (Stage 1b) is this connection's verified session token,
+        tracked so a later LogoutMessage knows exactly which token to
+        revoke - defaults to None so every existing test that doesn't
+        care about logout/tokens keeps constructing calls unchanged."""
         if username in self._active_connections:
             await ws.send(serialize_message(
                 LoginFailedMessage(reason="this account is already connected from another window")
             ))
             return False
         self._active_connections[username] = ws
+        if claims is not None:
+            self._token_of[ws] = claims
 
         pending = self._disconnected_players.pop(username, None)
         if pending is not None:
@@ -341,10 +356,30 @@ class Matchmaker:
         logger.info("room cancelled by %s", username)
         await ws.send(serialize_message(RoomCancelledMessage()))
 
+    async def _handle_logout(self, ws: ServerConnection, message: LogoutMessage) -> None:
+        """The lobby's "Logout" button (Stage 1b, Server_Design.md
+        section 1.1): revokes this connection's session token - a
+        Redis key per jti with a TTL equal to the token's own remaining
+        lifetime (never longer - a revoked entry can't outlive what the
+        token would have expired to on its own anyway), so a later
+        TokenLoginMessage with the same token is rejected fleet-wide,
+        not just on this one Gateway. Then closes the connection with a
+        normal close code - the client re-enters the login screen once
+        it processes LoggedOutMessage, and this same username can log
+        back in immediately since _active_connections is freed exactly
+        the same way any other disconnect frees it (see on_disconnect)."""
+        claims = self._token_of.pop(ws, None)
+        if claims is not None:
+            remaining_seconds = max(1, claims.expires_at - int(time.time()))
+            await self._redis.set(f"revoked:token:{claims.jti}", "1", ex=remaining_seconds)
+        await ws.send(serialize_message(LoggedOutMessage()))
+        await ws.close()
+
     async def on_disconnect(self, ws: ServerConnection) -> None:
         username = self._username_of(ws)
         if username is not None:
             del self._active_connections[username]
+        self._token_of.pop(ws, None)
 
         local = self._waiting.pop(username, None) if username is not None else None
         if local is not None:

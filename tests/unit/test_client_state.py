@@ -18,6 +18,7 @@ from kungfu_chess.model.position import Position
 from kungfu_chess.server.messages import (
     CreateRoomFailedMessage,
     JoinRoomFailedMessage,
+    LoggedOutMessage,
     LoginFailedMessage,
     LoginOkMessage,
     MatchFoundMessage,
@@ -80,14 +81,25 @@ def test_prune_expired_motions_keeps_a_motion_still_in_flight():
 
 
 def test_apply_message_login_ok_stores_the_rating_and_moves_to_the_lobby():
-    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+    state = apply_message(LoginOkMessage(rating=1234, username="efrat", token="a-jwt-token"), ClientState())
 
     assert state.phase == "lobby"  # waits here for the player to click Play, no auto-matchmaking
     assert state.rating == 1234
+    assert state.auth_token == "a-jwt-token"  # saved to disk as a side effect elsewhere (network_transport.py), not here
+
+
+def test_apply_message_logged_out_returns_to_a_fresh_login_entry():
+    state = apply_message(LoginOkMessage(rating=1234, username="efrat", token="a-jwt-token"), ClientState())
+
+    state = apply_message(LoggedOutMessage(), state)
+
+    assert state.phase == "login_entry"
+    assert state.auth_token is None
+    assert state.saved_username is None  # a revoked token must not still offer "Continue as X"
 
 
 def test_apply_message_waiting_for_opponent_carries_forward_the_rating():
-    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+    state = apply_message(LoginOkMessage(rating=1234, username="efrat", token="a-jwt-token"), ClientState())
 
     state = apply_message(WaitingForOpponentMessage(), state)
 
@@ -96,7 +108,7 @@ def test_apply_message_waiting_for_opponent_carries_forward_the_rating():
 
 
 def test_apply_message_no_opponent_found_carries_forward_the_rating():
-    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+    state = apply_message(LoginOkMessage(rating=1234, username="efrat", token="a-jwt-token"), ClientState())
 
     state = apply_message(NoOpponentFoundMessage(), state)
 
@@ -278,7 +290,7 @@ def test_apply_message_match_found_room_id_defaults_to_none_for_a_play_matched_g
 
 
 def test_apply_message_room_created_sets_phase_and_room_id():
-    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+    state = apply_message(LoginOkMessage(rating=1234, username="efrat", token="a-jwt-token"), ClientState())
 
     state = apply_message(RoomCreatedMessage(room_id="ABC123"), state)
 
@@ -288,7 +300,7 @@ def test_apply_message_room_created_sets_phase_and_room_id():
 
 
 def test_apply_message_join_room_failed_shows_the_reason():
-    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+    state = apply_message(LoginOkMessage(rating=1234, username="efrat", token="a-jwt-token"), ClientState())
 
     state = apply_message(JoinRoomFailedMessage(reason="room_not_found"), state)
 
@@ -299,7 +311,7 @@ def test_apply_message_join_room_failed_shows_the_reason():
 
 
 def test_apply_message_create_room_failed_shows_the_reason_and_kind():
-    state = apply_message(LoginOkMessage(rating=1234), ClientState())
+    state = apply_message(LoginOkMessage(rating=1234, username="efrat", token="a-jwt-token"), ClientState())
 
     state = apply_message(CreateRoomFailedMessage(reason="room_name_taken"), state)
 

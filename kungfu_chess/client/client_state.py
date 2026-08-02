@@ -11,6 +11,7 @@ from kungfu_chess.server.messages import (
     CreateRoomFailedMessage,
     JoinRoomFailedMessage,
     LeftRoomMessage,
+    LoggedOutMessage,
     LoginFailedMessage,
     LoginOkMessage,
     MatchFoundMessage,
@@ -87,6 +88,9 @@ class ClientState:
     login_username_value: str = ""  # typed so far on the login_entry screen - kept across a failed attempt, so it needn't be retyped
     login_password_value: str = ""  # cleared on a failed attempt (see _on_login_failed) - never displayed, only masked
     login_active_field: str = "username"  # "username" or "password" - which one further keystrokes go to
+    saved_username: Optional[str] = None  # a token_store.py session found on disk at launch - drives the login screen's "Continue as X" button
+    saved_token: Optional[str] = None
+    auth_token: Optional[str] = None  # this connection's own current session token, once logged in (Stage 1b)
     white_player: Optional[PlayerInfo] = None
     black_player: Optional[PlayerInfo] = None
     view_state: Optional[BoardViewState] = None
@@ -115,7 +119,11 @@ def _game_over_started_at(previous: Optional[float], board_game_over: bool) -> O
 
 
 def _on_login_ok(message: LoginOkMessage, state: ClientState) -> ClientState:
-    return ClientState(phase=Phase.LOBBY, rating=message.rating)  # waits here for the player to click Play
+    # Handles a fresh LoginMessage/RegisterMessage and a TokenLoginMessage
+    # alike - both reuse this same message (Stage 1b). auth_token is saved
+    # to disk as a side effect in network_transport.py, not here (this
+    # function is pure - no I/O).
+    return ClientState(phase=Phase.LOBBY, rating=message.rating, auth_token=message.token)  # waits here for the player to click Play
 
 
 def _on_login_failed(message: LoginFailedMessage, state: ClientState) -> ClientState:
@@ -127,6 +135,15 @@ def _on_login_failed(message: LoginFailedMessage, state: ClientState) -> ClientS
         login_failure_reason=message.reason,
         login_username_value=state.login_username_value,
     )
+
+
+def _on_logged_out(message: LoggedOutMessage, state: ClientState) -> ClientState:
+    # A fresh ClientState, deliberately: no saved_username/saved_token
+    # carried forward - clearing the on-disk file is network_transport.py's
+    # job (a side effect, not this pure function's), but this in-memory
+    # state must forget them too, or the login screen would still offer
+    # "Continue as X" for the token that was just revoked.
+    return ClientState(phase=Phase.LOGIN_ENTRY)
 
 
 def _on_waiting_for_opponent(message: WaitingForOpponentMessage, state: ClientState) -> ClientState:
@@ -265,6 +282,7 @@ _HANDLERS: Dict[Type[Any], Callable[[Any, ClientState], ClientState]] = {
     OpponentReconnectedMessage: _on_opponent_reconnected,
     StateMessage: _on_state,
     PieceMotionStartedMessage: _on_piece_motion_started,
+    LoggedOutMessage: _on_logged_out,
 }
 
 

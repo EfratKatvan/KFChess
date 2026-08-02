@@ -24,7 +24,7 @@ grows (section 6)."""
 def _auth_json(result: accounts.AuthResult) -> dict:
     if not result.success:
         return {"success": False, "reason": result.reason}
-    return {"success": True, "rating": result.rating}
+    return {"success": True, "rating": result.rating, "token": result.token}
 
 
 def create_app(db_path: str = accounts.DEFAULT_DB_PATH) -> web.Application:

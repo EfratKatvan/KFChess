@@ -11,9 +11,11 @@ from kungfu_chess.server.messages import (
     JumpMessage,
     LeaveRoomMessage,
     LeftRoomMessage,
+    LoggedOutMessage,
     LoginFailedMessage,
     LoginMessage,
     LoginOkMessage,
+    LogoutMessage,
     MatchFoundMessage,
     NoOpponentFoundMessage,
     OpponentDisconnectedMessage,
@@ -29,6 +31,7 @@ from kungfu_chess.server.messages import (
     SelectOrMoveMessage,
     SpectatingMessage,
     StateMessage,
+    TokenLoginMessage,
     WaitingForOpponentMessage,
 )
 from kungfu_chess.server.serialization import (
@@ -109,8 +112,21 @@ def test_register_message_round_trips_username_and_password():
 
 
 def test_login_ok_message_round_trips_the_rating():
-    original = LoginOkMessage(rating=1216)
+    original = LoginOkMessage(rating=1216, username="efrat", token="a-jwt-token")
     assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_token_login_message_round_trips():
+    original = TokenLoginMessage(token="a-jwt-token", username="efrat")
+    assert message_from_wire(message_to_wire(original)) == original
+
+
+def test_logout_message_round_trips():
+    assert message_from_wire(message_to_wire(LogoutMessage())) == LogoutMessage()
+
+
+def test_logged_out_message_round_trips():
+    assert message_from_wire(message_to_wire(LoggedOutMessage())) == LoggedOutMessage()
 
 
 def test_login_failed_message_round_trips_the_reason():

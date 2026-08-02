@@ -121,8 +121,12 @@ def gateway_address(accounts_base_url) -> Iterator[Callable[[str, str, int], Tup
             namespace=namespace,
         )
 
+        redis_client = get_redis_client()
+
         async def handler(ws: ServerConnection) -> None:
-            await ws_gateway._handle_connection(matchmaker, accounts_client, ws, relay_queues, shard_host, shard_port)
+            await ws_gateway._handle_connection(
+                matchmaker, accounts_client, ws, relay_queues, shard_host, shard_port, redis_client
+            )
 
         return await serve(handler, "localhost", 0)
 

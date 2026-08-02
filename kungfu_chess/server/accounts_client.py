@@ -36,7 +36,9 @@ class AccountsClient:
             f"{self._base_url}/{endpoint}", json={"username": username, "password": password}
         ) as response:
             data = await response.json()
-        return AuthResult(success=data["success"], rating=data.get("rating"), reason=data.get("reason"))
+        return AuthResult(
+            success=data["success"], rating=data.get("rating"), reason=data.get("reason"), token=data.get("token")
+        )
 
     async def get_rating(self, username: str) -> Optional[int]:
         async with self._session.get(f"{self._base_url}/ratings/{username}") as response:

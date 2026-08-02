@@ -63,18 +63,21 @@ the same way Redis-backed presence makes *reconnect* stateless.
 
 The one thing a purely stateless token can't do on its own is **revocation** -
 logout, a ban, or a password change should take effect immediately, not wait out the
-token's own expiry. **Redis closes that gap**: `SADD revoked:tokens <jti>` with a TTL
-equal to the token's own remaining lifetime (so a revoked entry disappears from Redis
-at the exact moment it would have expired anyway - the blacklist can never grow
-unbounded, it only ever holds *currently still-valid-but-revoked* tokens). Each
-Gateway does one cheap `SISMEMBER revoked:tokens <jti>` alongside the local signature
-check - a single-key existence lookup, not a full account/session fetch, and against
-infrastructure (Redis) every Gateway already depends on for presence and the seeker
-queue, so this adds no new moving part to the system, only a new key namespace.
+token's own expiry. **Redis closes that gap**: one string key per token,
+`SET revoked:token:<jti> 1 EX <remaining_seconds>` - not a Set with a per-member TTL
+(Redis Sets have no such thing; only whole-key TTLs exist) - so a revoked entry
+disappears from Redis at the exact moment it would have expired anyway (the
+blacklist can never grow unbounded, it only ever holds *currently
+still-valid-but-revoked* tokens). Each Gateway does one cheap
+`EXISTS revoked:token:<jti>` alongside the local signature check - a single-key
+existence lookup, not a full account/session fetch, and against infrastructure
+(Redis) every Gateway already depends on for presence and the seeker queue, so this
+adds no new moving part to the system, only a new key namespace. Implemented in
+Stage 1b (section 19) as `matchmaker.py`'s `_handle_logout`.
 
-| | Stateless-only JWT (no blacklist) | JWT + Redis revocation set (chosen) |
+| | Stateless-only JWT (no blacklist) | JWT + Redis revocation (chosen) |
 |---|---|---|
-| Per-request cost | zero network calls | one `SISMEMBER` (cheap, same Redis already in the hot path) |
+| Per-request cost | zero network calls | one `EXISTS` (cheap, same Redis already in the hot path) |
 | Logout/ban takes effect | only once the token itself expires | immediately, fleet-wide |
 | New infra required | none | none - reuses the Redis cluster from section 1 |
 
@@ -762,11 +765,14 @@ Status reflects the actual code/git history as of this writing, not just the pla
    16.1) - `kungfu_chess/server/redis_client.py`.
 2. **Stage 1 - Done** (`461ea55`): `accounts.py`/`accounts_db.py` split into a
    standalone API Service (`accounts_service.py`); the rest of the system calls it
-   over HTTP (`accounts_client.py`) instead of importing it directly. **Not yet
-   included**: JWT issuance/verification and the Redis revocation blacklist (section
-   1.1) - today this stage still returns a bare `AuthResult`, no token. Worth doing
-   as a Stage 1b before splitting the Gateway further, since every later stage's
-   Gateway-side auth check assumes a JWT exists.
+   over HTTP (`accounts_client.py`) instead of importing it directly.
+   - **Stage 1b - Done**: JWT issuance (`kungfu_chess/server/auth_token.py`) at
+     login/register, local signature+expiry verification at the Gateway (no
+     Accounts Service round-trip for a `TokenLoginMessage`), and Redis-backed
+     revocation (`matchmaker.py`'s `_handle_logout`, section 1.1) - plus the
+     client-facing features that give it an actual purpose: a "Continue as X"
+     saved-session login (`kungfu_chess/client/token_store.py`) and a real
+     **Logout** button in the lobby.
 3. **Stage 2 - Done** (`ec00217`): socket acceptance itself split out of `server.py`
    into `kungfu_chess/server/ws_gateway.py`, talking to the rest of the system over
    Redis/HTTP (still one process at this stage).
@@ -785,11 +791,16 @@ Status reflects the actual code/git history as of this writing, not just the pla
      otherwise would have caused (an immediate personalized send on selection,
      and an immediate full snapshot on reconnect - `game_room.py`,
      `client/motion_tracker.py`).
-   - **Stage 4a - Not yet started**: `game_room.py` becomes a standalone Game
-     Server Shard process, receiving commands from and sending state to the WS
-     Gateway over an actual transport - not the client directly, and not
-     shared in-process `ServerConnection` objects the way today's single
-     process still does.
+   - **Stage 4a - Done** (`dc90bdc`, same commit as 4b): `game_room.py`'s logic
+     now runs in a standalone `kungfu_chess/server/game_shard.py` process,
+     reached only by the WS Gateway's relay connections over
+     `shard_protocol.py` - never a real client socket directly, and no more
+     shared in-process `ServerConnection` objects. `matchmaker.py` no longer
+     constructs a `GameRoom`; it fires an `on_enter_relay` signal and
+     `ws_gateway.py` switches the connection into a raw byte-pipe relay to the
+     Shard, covering ELO matching, Room Create/Join, spectators, and
+     cross-process reconnect (verified end-to-end over real sockets in
+     `tests/unit/test_relay_integration.py`).
 6. **Stage 5 - Not yet started**: package per section 17's decision (recommended: one
    image, role chosen via `SERVICE_ROLE`) + a local `docker-compose.yml` running
    everything alongside Redis/NATS/Postgres.
