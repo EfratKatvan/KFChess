@@ -1,20 +1,11 @@
 import asyncio
 
-import pytest
-
 from kungfu_chess.server import accounts, accounts_db, auth_token, protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.messages import LoginMessage, RegisterMessage, RestartMessage, TokenLoginMessage
 from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.server.ws_gateway import _authenticate
 from tests.unit.test_matchmaker import FakeConnection, _last_type
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    return path
 
 
 class QueuedConnection(FakeConnection):

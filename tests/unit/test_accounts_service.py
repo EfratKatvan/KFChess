@@ -1,16 +1,7 @@
 import asyncio
 
-import pytest
-
 from kungfu_chess.server import accounts
 from kungfu_chess.server.accounts_client import AccountsClient
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    return path
 
 
 def test_register_over_http_creates_the_account_at_the_starting_rating(accounts_base_url):

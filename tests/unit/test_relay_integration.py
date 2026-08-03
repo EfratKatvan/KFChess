@@ -34,13 +34,6 @@ real WS Gateway, and real client sockets together."""
 
 
 @pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    return path
-
-
-@pytest.fixture
 def servers(shard_address, gateway_address):
     """Starts a real Shard + WS Gateway pair sharing one fresh Redis
     namespace, and returns the Gateway's (host, port) - the one address

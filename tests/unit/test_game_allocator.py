@@ -10,13 +10,6 @@ from kungfu_chess.server.redis_client import get_client as get_redis_client
 from tests.unit.test_matchmaker import FakeConnection
 
 
-@pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    return path
-
-
 def _make_allocator(accounts_base_url: str) -> GameAllocator:
     """A fresh GameAllocator per test, on a unique Redis namespace - the
     same test-isolation seam matchmaker.py/rooms.py already use."""

@@ -3,3 +3,4 @@ websockets
 redis
 aiohttp
 PyJWT
+psycopg2-binary

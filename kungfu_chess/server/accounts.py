@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional, Tuple
 
 from kungfu_chess.server import accounts_db, auth_token
-from kungfu_chess.server.accounts_db import DEFAULT_DB_PATH
+from kungfu_chess.server.accounts_db import DEFAULT_SCHEMA
 
 STARTING_RATING = 1200
 ELO_K_FACTOR = 32
@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 
 """The accounts application layer: password hashing, the
 login-vs-register decision, and the ELO math - all business logic, none
-of it touching sqlite3 directly (see accounts_db.py for that). Since
-Stage 1 (Server_Design.md section 19), accounts_service.py is the only
-process that actually calls into this module's DB-backed functions;
-ws_gateway.py imports it only for the pure AuthResult type, and
-matchmaker.py/game_room.py reach accounts over HTTP via
-accounts_client.AccountsClient instead."""
+of it touching Postgres directly (see accounts_db.py for that -
+Server_Design.md section 6: a replicated, network-reachable Postgres,
+not the single-writer local SQLite file this used to be). Since Stage 1
+(Server_Design.md section 19), accounts_service.py is the only process
+that actually calls into this module's DB-backed functions; ws_gateway.py
+imports it only for the pure AuthResult type, and matchmaker.py/
+game_room.py reach accounts over HTTP via accounts_client.AccountsClient
+instead. `schema` names which Postgres schema each call operates in -
+always DEFAULT_SCHEMA ("public") in production, a fresh throwaway one
+per test (see tests/unit/conftest.py's db_path fixture)."""
 
 
 @dataclass(frozen=True)
@@ -48,16 +52,16 @@ def _hash_password(password: str, salt: str) -> str:
     return hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), PBKDF2_ITERATIONS).hex()
 
 
-def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
-    accounts_db.init_db(db_path)
+def init_db(schema: str = DEFAULT_SCHEMA) -> None:
+    accounts_db.init_db(schema)
 
 
-def login(db_path: str, username: str, password: str) -> AuthResult:
+def login(schema: str, username: str, password: str) -> AuthResult:
     """Only succeeds for an already-registered username with the right
     password - unlike the old auto-register-on-first-login behavior,
     an unknown username is now a rejection, not a fresh account (see
     register() for that)."""
-    existing = accounts_db.fetch_user(db_path, username)
+    existing = accounts_db.fetch_user(schema, username)
     if existing is None:
         logger.info("login failed: %s (no such account)", username)
         return AuthResult(success=False, reason="no such account - please register")
@@ -74,23 +78,23 @@ def login(db_path: str, username: str, password: str) -> AuthResult:
     return AuthResult(success=True, rating=rating, token=auth_token.issue_token(username, rating))
 
 
-def register(db_path: str, username: str, password: str) -> AuthResult:
+def register(schema: str, username: str, password: str) -> AuthResult:
     """Only succeeds for a username that doesn't exist yet, creating it
     at STARTING_RATING - the login()-equivalent counterpart for a
     username that's already taken is a rejection, not a silent
     password check."""
-    if accounts_db.fetch_user(db_path, username) is not None:
+    if accounts_db.fetch_user(schema, username) is not None:
         logger.info("register failed: %s (username already taken)", username)
         return AuthResult(success=False, reason="username already taken")
 
     salt = secrets.token_hex(16)
-    accounts_db.insert_user(db_path, username, salt, _hash_password(password, salt), STARTING_RATING)
+    accounts_db.insert_user(schema, username, salt, _hash_password(password, salt), STARTING_RATING)
     logger.info("register ok: %s (new account)", username)
     return AuthResult(success=True, rating=STARTING_RATING, token=auth_token.issue_token(username, STARTING_RATING))
 
 
-def get_rating(db_path: str, username: str) -> Optional[int]:
-    return accounts_db.fetch_rating(db_path, username)
+def get_rating(schema: str, username: str) -> Optional[int]:
+    return accounts_db.fetch_rating(schema, username)
 
 
 def expected_score(rating: int, opponent_rating: int) -> float:
@@ -100,14 +104,14 @@ def expected_score(rating: int, opponent_rating: int) -> float:
 
 
 def update_ratings_after_game(
-    db_path: str, winner_username: str, loser_username: str, k_factor: int = ELO_K_FACTOR
+    schema: str, winner_username: str, loser_username: str, k_factor: int = ELO_K_FACTOR
 ) -> Tuple[int, int]:
     """Applies one ELO update for a decisive (no-draw) game - the
     smaller the winner's expected score was going in (i.e. the bigger
     the upset), the more rating moves. Returns (new_winner_rating,
     new_loser_rating). All the math is here; accounts_db only supplies
     the before/after numbers."""
-    winner_rating, loser_rating = accounts_db.fetch_ratings(db_path, winner_username, loser_username)
+    winner_rating, loser_rating = accounts_db.fetch_ratings(schema, winner_username, loser_username)
 
     winner_expected = expected_score(winner_rating, loser_rating)
     loser_expected = expected_score(loser_rating, winner_rating)
@@ -115,5 +119,5 @@ def update_ratings_after_game(
     new_winner_rating = round(winner_rating + k_factor * (1 - winner_expected))
     new_loser_rating = round(loser_rating + k_factor * (0 - loser_expected))
 
-    accounts_db.write_ratings(db_path, winner_username, new_winner_rating, loser_username, new_loser_rating)
+    accounts_db.write_ratings(schema, winner_username, new_winner_rating, loser_username, new_loser_rating)
     return new_winner_rating, new_loser_rating

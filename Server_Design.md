@@ -241,6 +241,32 @@ that decision. Presence, the seeker queue, and the room-ownership lease (section
 deliberately do **not** live here - that ephemeral, extremely high-churn data belongs
 in Redis, not a relational DB.
 
+**Status: Done.** `accounts_db.py` talks to Postgres via `psycopg2` - a fresh
+connection per call, the same simplicity level the old `sqlite3.connect(db_path)`-per-
+call code already had; connection pooling is a real optimization but a separate
+concern from *which* database this talks to, deliberately left for later rather than
+bundled into this migration. `accounts_service.py` remains the only process that
+touches it directly (unchanged from Stage 1); since `psycopg2` is a blocking driver,
+its handlers now run each DB call via `run_in_executor` so one slow query stalls only
+the request awaiting it, not every other concurrent request the same event loop is
+serving - the first genuinely new failure mode this migration introduced, since a
+blocking local SQLite call never stalled other requests noticeably. Every
+`accounts.py`/`accounts_db.py` function's first argument is now a Postgres **schema**
+name, not a file path - always `"public"` in production, a fresh throwaway schema per
+test (`tests/unit/conftest.py`'s `db_path` fixture, `CREATE SCHEMA`/`DROP SCHEMA
+CASCADE`) for the same real-isolation reason a fresh SQLite file per test used to
+serve. `docker-compose.yml` gains a `postgres` service with a named volume (survives
+`docker compose down`, not `down -v`). One real, measured consequence worth naming:
+network round trips to Postgres are meaningfully slower than local SQLite file access
+was, enough that two already-existing timing-sensitive tests in `test_game_room.py`
+(auto-resign after a disconnect grace period, which itself does a rating-update round
+trip) needed their sleep buffers widened to stay reliably green - not a correctness
+regression, just this migration's most direct, empirical illustration of exactly the
+kind of latency section 8 discusses in a different context. Sharding by `user_id`
+hash and MySQL-as-an-alternative remain unimplemented, left as explicitly future work
+per this section's own scaling trigger (~83,000 writes/sec) - not yet reached by
+anything this codebase actually drives.
+
 ## 7. Question 2 - 10M concurrent players: routing, "everyone plays everyone", any room from anywhere
 
 **One server is nowhere close to enough**, for two independent reasons: no single

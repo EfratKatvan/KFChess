@@ -2,8 +2,6 @@ import asyncio
 import json
 from typing import Any, List, Optional, Tuple
 
-import pytest
-
 from kungfu_chess.model.piece import WHITE, BLACK
 from kungfu_chess.server import accounts, accounts_db, protocol, shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
@@ -91,13 +89,6 @@ async def _cancel_room(matchmaker: Matchmaker, ws: FakeConnection) -> None:
 
 async def _cancel_seek(matchmaker: Matchmaker, ws: FakeConnection) -> None:
     await matchmaker.on_message(ws, serialize_message(CancelSeekMessage()))
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    return path
 
 
 def test_logging_in_lands_in_the_lobby_without_entering_matchmaking(db_path, accounts_base_url):

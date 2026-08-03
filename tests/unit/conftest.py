@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import uuid
 from typing import Callable, Iterator, Tuple
 
 import pytest
 from aiohttp.test_utils import TestServer
 from websockets.asyncio.server import Server, ServerConnection, serve
 
-from kungfu_chess.server import matchmaking_service, ws_gateway
+from kungfu_chess.server import accounts, accounts_db, matchmaking_service, ws_gateway
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_service import create_app
 from kungfu_chess.server.game_shard import GameShard
@@ -47,6 +48,22 @@ class _BackgroundLoop:
 
 
 _background = _BackgroundLoop()
+
+
+@pytest.fixture
+def db_path() -> Iterator[str]:
+    """A fresh, throwaway Postgres schema per test (Server_Design.md
+    section 6) - the direct replacement for the old fresh-SQLite-file-
+    per-test isolation, now that accounts_db.py talks to a single shared
+    Postgres instance instead of a local file. Kept named `db_path`,
+    not `schema`, even though its value is now a schema name - dozens of
+    existing call sites across this suite already pass it under this
+    name into functions whose own parameter is `schema`; positional
+    arguments don't care what the caller's local variable is called."""
+    schema = f"test_{uuid.uuid4().hex}"
+    accounts.init_db(schema)
+    yield schema
+    accounts_db.drop_schema(schema)
 
 
 @pytest.fixture

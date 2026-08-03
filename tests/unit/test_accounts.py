@@ -1,15 +1,6 @@
-import sqlite3
-
 import pytest
 
-from kungfu_chess.server import accounts
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    return path
+from kungfu_chess.server import accounts, accounts_db
 
 
 def test_register_creates_the_username_at_the_starting_rating(db_path):
@@ -47,8 +38,7 @@ def test_login_with_the_wrong_password_fails(db_path):
 
 def test_password_is_not_stored_in_plain_text(db_path):
     accounts.register(db_path, "efrat", "hunter2")
-    with sqlite3.connect(db_path) as connection:
-        stored = connection.execute("SELECT password_hash FROM users WHERE username = ?", ("efrat",)).fetchone()[0]
+    _, stored, _ = accounts_db.fetch_user(db_path, "efrat")
     assert stored != "hunter2"
 
 
@@ -59,11 +49,8 @@ def test_two_accounts_with_the_same_password_get_different_stored_hashes(db_path
     would immediately reveal."""
     accounts.register(db_path, "efrat", "hunter2")
     accounts.register(db_path, "alice", "hunter2")
-    with sqlite3.connect(db_path) as connection:
-        rows = connection.execute(
-            "SELECT salt, password_hash FROM users WHERE username IN ('efrat', 'alice')"
-        ).fetchall()
-    (salt_a, hash_a), (salt_b, hash_b) = rows
+    salt_a, hash_a, _ = accounts_db.fetch_user(db_path, "efrat")
+    salt_b, hash_b, _ = accounts_db.fetch_user(db_path, "alice")
     assert salt_a != salt_b
     assert hash_a != hash_b
 
@@ -94,9 +81,7 @@ def test_beating_a_much_higher_rated_opponent_gains_more_rating_than_beating_a_s
     accounts.register(db_path, "favorite", "pw")
     accounts.register(db_path, "near_peer", "pw")
 
-    with sqlite3.connect(db_path) as connection:
-        connection.execute("UPDATE users SET rating = 1600 WHERE username = 'favorite'")
-        connection.execute("UPDATE users SET rating = 1250 WHERE username = 'near_peer'")
+    accounts_db.write_ratings(db_path, "favorite", 1600, "near_peer", 1250)
 
     new_a, _ = accounts.update_ratings_after_game(db_path, winner_username="underdog_a", loser_username="favorite")
     new_b, _ = accounts.update_ratings_after_game(db_path, winner_username="underdog_b", loser_username="near_peer")

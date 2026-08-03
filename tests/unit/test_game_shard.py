@@ -5,7 +5,7 @@ import uuid
 import pytest
 
 from kungfu_chess.model.piece import BLACK, WHITE
-from kungfu_chess.server import accounts, game_shard, protocol, shard_protocol
+from kungfu_chess.server import accounts, accounts_db, game_shard, protocol, shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.game_shard import GameShard
 from kungfu_chess.server.messages import LeaveRoomMessage, SelectOrMoveMessage
@@ -72,12 +72,16 @@ async def _wait_until(predicate, timeout: float = 2.0) -> None:
 
 
 @pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    accounts.register(path, "alice", "pw")
-    accounts.register(path, "bob", "pw")
-    return path
+def db_path():
+    """A fresh Postgres schema, pre-seeded with alice/bob (this file's
+    own two standard test users) - the local override this file needs
+    beyond the shared, unseeded db_path fixture in conftest.py."""
+    schema = f"test_{uuid.uuid4().hex}"
+    accounts.init_db(schema)
+    accounts.register(schema, "alice", "pw")
+    accounts.register(schema, "bob", "pw")
+    yield schema
+    accounts_db.drop_schema(schema)
 
 
 def _make_shard(accounts_base_url: str, namespace: str = None) -> GameShard:

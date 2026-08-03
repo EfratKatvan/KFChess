@@ -4,11 +4,25 @@ services:
     ports:
       - "6379:6379"
 
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: kfchess
+      POSTGRES_PASSWORD: kfchess
+      POSTGRES_DB: kfchess
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
   api:
     build: .
     environment:
       SERVICE_ROLE: api
       HOST: 0.0.0.0
+      POSTGRES_DSN: postgresql://kfchess:kfchess@postgres:5432/kfchess
+    depends_on:
+      - postgres
 
   ws-gateway:
     build: .
@@ -54,3 +68,6 @@ services:
     depends_on:
       - redis
       - api
+
+volumes:
+  postgres_data:  # Server_Design.md section 6 - survives `docker compose down` (not `down -v`)

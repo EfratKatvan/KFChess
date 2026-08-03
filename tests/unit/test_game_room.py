@@ -1,7 +1,5 @@
 import asyncio
 
-import pytest
-
 from kungfu_chess.engine.board_view_state import BoardViewState, PieceView
 from kungfu_chess.model.piece import KING, WHITE, BLACK
 from kungfu_chess.model.position import Position
@@ -20,13 +18,6 @@ def _make_room(db_path, accounts_base_url, white_ws=None, black_ws=None):
         black_ws or FakeConnection("black"), "black_player",
         accounts_client=AccountsClient(accounts_base_url),
     )
-
-
-@pytest.fixture
-def db_path(tmp_path):
-    path = str(tmp_path / "test_users.db")
-    accounts.init_db(path)
-    return path
 
 
 def _view_state_with_survivor(color: str) -> BoardViewState:
@@ -357,7 +348,12 @@ async def _auto_resign_scenario(db_path, accounts_base_url):
     await room.start()
 
     await room.handle_disconnect(WHITE)  # black is the survivor
-    await asyncio.sleep(0.15)
+    # Comfortably past the (shortened) grace period plus the auto-resign's
+    # own rating-update round trip (2 GETs + 1 POST to the Accounts Service,
+    # backed by real Postgres connections since Server_Design.md section 6 -
+    # each meaningfully slower than the old local-SQLite-file access this
+    # buffer was originally sized against).
+    await asyncio.sleep(0.4)
 
     assert room._engine.is_game_over() is True
     assert accounts.get_rating(db_path, "black_player") == accounts.STARTING_RATING + accounts.ELO_K_FACTOR // 2
@@ -395,7 +391,12 @@ async def _both_disconnect_scenario(db_path, accounts_base_url):
     await room.handle_disconnect(WHITE)  # black is the (initial) survivor
     await room.handle_disconnect(BLACK)  # ...but black is gone too now - nobody is left
 
-    await asyncio.sleep(0.15)  # past the (shortened) grace period
+    # Comfortably past the (shortened) grace period plus the auto-resign's
+    # own rating-update round trip (2 GETs + 1 POST to the Accounts Service,
+    # backed by real Postgres connections since Server_Design.md section 6 -
+    # each meaningfully slower than the old local-SQLite-file access this
+    # buffer was originally sized against).
+    await asyncio.sleep(0.4)
     await asyncio.sleep(0)  # let the event loop actually process the tick task's cancellation
 
     assert room._engine.is_game_over() is True
