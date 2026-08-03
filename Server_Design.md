@@ -873,9 +873,10 @@ Status reflects the actual code/git history as of this writing, not just the pla
    NATS** - for the two things that are never a reply to the caller's own request
    (signaling a match/room-seat to the *other*, already-waiting player; the
    seek-timeout's `NO_OPPONENT_FOUND`, fired by an internal timer with no request
-   to reply to at all). NATS is deliberately still not introduced - it would add
-   new infra for zero durability payoff before JetStream/crash-recovery (section 3)
-   is actually built, and Redis is already deployed everywhere else in this stack;
+   to reply to at all). NATS was deliberately not introduced *for this*, even
+   though it was later added for JetStream/crash-recovery (section 3): the two
+   are separate decisions made at separate times, for separate reasons - this
+   Pub/Sub traffic never needed durability, so it never needed NATS.
    `ws_gateway.py`'s per-connection `relay_queues` dict is gone, replaced by a
    Redis Pub/Sub channel scoped to a per-connection id it generates itself.
    One documented deviation from section 14's mapping table survives this stage
@@ -883,14 +884,46 @@ Status reflects the actual code/git history as of this writing, not just the pla
    `Matchmaker` in the Matchmaking Service - a Stage 4a decision (placement
    physically follows the room it allocates, not the fairness decision that
    preceded it), left as-is rather than re-litigated as a side effect of this
-   stage. NATS and Postgres are still not in `docker-compose.yml`: neither is
-   used by any code path yet (control-plane events/JetStream replay - section 3 -
-   and the Postgres migration - section 6 - are both still just design), and
-   standing up unused containers nothing connects to would misrepresent what's
-   actually running.
-7. **Stage 6 - Not yet started**: add Observability (logs/metrics/health
-   checks/load tests) + cluster manifests, starting on K3s per section 18's
-   recommendation.
+   stage. NATS and Postgres joined `docker-compose.yml` in later commits, once
+   JetStream crash-recovery (section 3) and the Postgres migration (section 6)
+   actually landed - not as part of this stage.
+7. **Stage 6 - Done**: Prometheus metrics on every role
+   (`kungfu_chess/server/metrics.py`, one `/metrics` HTTP endpoint per role via
+   `prometheus_client.start_http_server`, doubling as each role's Docker/K8s
+   health check), each reporting the exact scaling metric section 1's own table
+   already names for that role - request rate (`api`), open connections
+   (`ws-gateway`), queue depth (`matchmaking`), active-room count
+   (`game-shard`) - not a generic, undifferentiated pile of counters. Prometheus
+   + Grafana added to `docker-compose.yml`; the same roles translated into
+   `k8s/` manifests (Deployments/Services/PVCs/a Secret for Postgres
+   credentials), targeting K3s per section 18's own recommendation (identical
+   API/manifests to full Kubernetes, so these apply unchanged to a managed
+   cluster too - see `k8s/README.md`).
+
+   Verified twice, not just written: the observability stack end-to-end in
+   Docker Compose (all 4 app roles' Prometheus targets `up`, real traffic
+   reflected in `api_requests_total`/`matchmaking_matches_made_total`, Grafana
+   reachable), and the full `k8s/` manifest set actually deployed to a live
+   cluster (Docker Desktop's own Kubernetes) - not just schema-validated,
+   since `kubectl`'s dry-run in this environment still needs a reachable API
+   server to check anything against. That real deployment caught a genuine
+   bug no amount of static review would have: Kubernetes auto-injects
+   Docker-links-style env vars for every Service in a namespace
+   (`REDIS_PORT=tcp://<ip>:6379`), colliding with this project's own
+   same-named env vars - fixed with `enableServiceLinks: false` on every app
+   Deployment. It also caught a second, more interesting bug: `matchmaking.yaml`
+   originally requested 2 replicas (matching queue depth as ws-gateway's own
+   named scaling metric), which intermittently failed to pair two concurrent
+   seekers - `matchmaker.py`'s `_waiting` dict is local, in-memory,
+   per-process state (the live `_RemoteConnection` handle a match needs to
+   signal), not something Redis's shared seekers ZSET actually replicates
+   across replicas; a seeker connected through one replica is invisible to
+   another replica's own attempt to pair with them. `game-shard.yaml`'s own
+   comment already named this exact class of limitation for the Shard fleet;
+   this is the same limitation surfacing in the Matchmaking Service instead -
+   `matchmaking.yaml` now stays at `replicas: 1` until that shared-state
+   redesign happens, documented in the manifest itself, not silently
+   worked around.
 
 Verification at each stage: `python -m pytest` should keep passing, and two client
 processes (`python app.py` run twice) should still be able to connect, get matched,

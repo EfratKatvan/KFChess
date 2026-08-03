@@ -1,0 +1,85 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: game-shard
+  namespace: kfchess
+spec:
+  # Deliberately 1, not N - unlike the other three roles here. Scaling
+  # this to multiple replicas today would be a real correctness bug, not
+  # just a missed optimization: ws_gateway.py dials a single fixed
+  # SHARD_HOST (this Service's DNS name), and a Kubernetes Service
+  # load-balances each *new* TCP connection across whichever replicas
+  # are ready - meaning a reconnect for a room hosted on replica A could
+  # land on replica B, which has never heard of that room_id, and fail.
+  # game_allocator.py's own docstring is explicit about this same
+  # assumption ("there's only ever one process/allocator"). Multiple
+  # Shard replicas need the room-to-worker discovery/routing layer
+  # Server_Design.md section 3 describes and this project's own
+  # Server_Design.md (NATS/JetStream crash-recovery entry) explicitly
+  # scoped out as a separate, larger follow-up - not a config change.
+  # This is exactly the shard-lifecycle case section 18 flags as the
+  # trigger to reach for Agones instead of plain Deployment/ReplicaSet
+  # semantics - not yet needed at replicas: 1.
+  replicas: 1
+  selector:
+    matchLabels:
+      app: game-shard
+  template:
+    metadata:
+      labels:
+        app: game-shard
+    spec:
+      # See matchmaking.yaml's own comment - Kubernetes' auto-injected
+      # Docker-links-style env vars (REDIS_PORT=tcp://<ip>:6379, etc.)
+      # collide with this app's own same-named env vars.
+      enableServiceLinks: false
+      containers:
+        - name: game-shard
+          image: kfchess:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE_ROLE
+              value: game-shard
+            - name: SHARD_HOST
+              value: "0.0.0.0"  # this pod's own bind - see kungfu_chess/server/game_shard.py's comment
+            - name: ACCOUNTS_SERVICE_URL
+              value: http://api:8766
+            - name: REDIS_HOST
+              value: redis
+            - name: NATS_URL
+              value: nats://nats:4222
+          ports:
+            - containerPort: 8767
+            - containerPort: 9100
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9100
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+# ClusterIP only - Server_Design.md section 2: a Shard is reachable only
+# from the WS Gateway, never from outside the cluster, never directly
+# by a client - the same isolation docker-compose.yml's missing `ports:`
+# already established for this role.
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-shard
+  namespace: kfchess
+spec:
+  selector:
+    app: game-shard
+  ports:
+    - name: ws
+      port: 8767
+      targetPort: 8767
+    - name: metrics
+      port: 9100
+      targetPort: 9100

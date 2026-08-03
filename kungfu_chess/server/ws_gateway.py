@@ -7,6 +7,7 @@ import os
 import uuid
 from typing import Any, Dict, Optional, Tuple, Union
 
+from prometheus_client import Gauge
 from redis.asyncio import Redis
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
@@ -27,7 +28,12 @@ from kungfu_chess.server.messages import (
     RegisterMessage,
     TokenLoginMessage,
 )
+from kungfu_chess.server.metrics import start_metrics_server
 from kungfu_chess.server.redis_client import get_client as get_redis_client
+
+# Server_Design.md section 1: this role's own named scaling metric is
+# open connection count.
+ACTIVE_CONNECTIONS = Gauge("ws_gateway_active_connections", "Currently open client WebSocket connections")
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
 # Env-overridable (Stage 5, section 17): docker-compose binds this to
@@ -254,6 +260,7 @@ async def _handle_connection(
     if auth is None:
         return  # never enters the lobby - bad login or the connection dropped before completing it
     username, _, claims = auth
+    ACTIVE_CONNECTIONS.inc()
 
     # A fresh id per connection, known only to this Gateway and the
     # Matchmaking Service it tells - the two ends of the Redis Pub/Sub
@@ -317,6 +324,7 @@ async def _handle_connection(
         drain_task.cancel()
         await pubsub.aclose()
         await matchmaking_client.disconnect(connection_id)
+        ACTIVE_CONNECTIONS.dec()
 
 
 async def run(
@@ -344,6 +352,7 @@ async def run(
 
 def main() -> None:
     configure_logging(LOG_FILE)
+    start_metrics_server()
     asyncio.run(run())
 
 

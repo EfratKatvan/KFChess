@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
+from prometheus_client import Gauge
 from redis.asyncio import Redis
 from websockets.asyncio.server import ServerConnection, serve
 
@@ -17,10 +18,16 @@ from kungfu_chess.server.accounts_client import get_client as get_accounts_clien
 from kungfu_chess.server.game_allocator import GameAllocator, RoomAllocationError
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import LeaveRoomMessage, LeftRoomMessage
+from kungfu_chess.server.metrics import start_metrics_server
 from kungfu_chess.server.move_log_stream import MoveLogStream
 from kungfu_chess.server.redis_client import get_client as get_redis_client
 from kungfu_chess.server.rooms import RoomRegistry
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
+
+# Server_Design.md section 1: this role's own named scaling metric is
+# active-room count (alongside CPU, which Prometheus's own process/cpu
+# collectors already cover generically - no bespoke metric needed for that half).
+ACTIVE_ROOMS = Gauge("game_shard_active_rooms", "Live GameRooms this worker currently hosts")
 
 # Env-overridable (Stage 5, section 17) - and deliberately double-duty:
 # this module's own run()/main() use it as the address to *bind*, while
@@ -89,6 +96,7 @@ class GameShard:
         self._room_registry = RoomRegistry(redis_client=redis_client, namespace=namespace)
         self._rooms: Dict[str, GameRoom] = {}
         self._pending: Dict[str, _PendingRoom] = {}
+        ACTIVE_ROOMS.set_function(lambda: len(self._rooms))
 
     async def handle_connection(self, ws: ServerConnection) -> None:
         """The one entry point websockets.serve dispatches every relay
@@ -258,6 +266,7 @@ async def run(host: str = SHARD_HOST, port: int = SHARD_PORT, accounts_service_u
 
 def main() -> None:
     configure_logging(LOG_FILE)
+    start_metrics_server()
     asyncio.run(run())
 
 

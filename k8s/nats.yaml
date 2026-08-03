@@ -1,0 +1,72 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nats-data
+  namespace: kfchess
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi  # Server_Design.md section 3: bounded by each room's own ~90s retention, not
+      # an ever-growing dataset - 1Gi is generous headroom for this project's actual scale, not
+      # a real capacity-planning number for the 5,000,000-concurrent-game target section 9 discusses.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nats
+  namespace: kfchess
+spec:
+  replicas: 1  # a real deployment clusters NATS itself for HA - out of scope at this project's scale
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: nats
+  template:
+    metadata:
+      labels:
+        app: nats
+    spec:
+      containers:
+        - name: nats
+          image: nats:2-alpine
+          args: ["-js", "-sd", "/data", "-m", "8222"]
+          ports:
+            - containerPort: 4222
+            - containerPort: 8222  # monitoring - probes only, never routed to by application traffic
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 5
+            periodSeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: nats-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  namespace: kfchess
+spec:
+  selector:
+    app: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+    - name: monitor
+      port: 8222
+      targetPort: 8222

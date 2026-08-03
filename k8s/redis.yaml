@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: kfchess
+spec:
+  replicas: 1  # Server_Design.md section 7's failure-mode table: Redis dying pauses only *new*
+  # matchmaking/room-joins fleet-wide - a real deployment clusters this (Redis Cluster/Sentinel,
+  # section 7); one replica here matches docker-compose.yml's own dev-scale simplicity, not a
+  # production recommendation.
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 5
+            periodSeconds: 15
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: kfchess
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379

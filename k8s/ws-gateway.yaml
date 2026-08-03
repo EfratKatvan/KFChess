@@ -1,0 +1,81 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ws-gateway
+  namespace: kfchess
+spec:
+  replicas: 2  # Server_Design.md section 14.2: stateful per connection, stateless as a fleet - no
+  # instance holds anything that must survive its own crash (presence/reconnect routing lives in
+  # Redis), so any number of interchangeable replicas works; scales on open-connection count.
+  selector:
+    matchLabels:
+      app: ws-gateway
+  template:
+    metadata:
+      labels:
+        app: ws-gateway
+    spec:
+      # See matchmaking.yaml's own comment - Kubernetes' auto-injected
+      # Docker-links-style env vars (REDIS_PORT=tcp://<ip>:6379,
+      # SHARD_PORT=tcp://<ip>:8767, etc.) collide with this app's own
+      # same-named env vars.
+      enableServiceLinks: false
+      containers:
+        - name: ws-gateway
+          image: kfchess:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SERVICE_ROLE
+              value: ws-gateway
+            - name: HOST
+              value: "0.0.0.0"
+            - name: ACCOUNTS_SERVICE_URL
+              value: http://api:8766
+            - name: SHARD_HOST
+              value: game-shard
+            - name: SHARD_PORT
+              value: "8767"
+            - name: MATCHMAKING_SERVICE_URL
+              value: http://matchmaking:8768
+            - name: REDIS_HOST
+              value: redis
+          ports:
+            - containerPort: 8765
+            - containerPort: 9100
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9100
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: 9100
+            initialDelaySeconds: 10
+            periodSeconds: 15
+---
+# LoadBalancer, not ClusterIP - Server_Design.md section 2: this is the
+# *only* role a client ever reaches directly ("a client never has a
+# socket to a Shard - only ever to a Gateway"). K3s's built-in ServiceLB
+# (Klipper) satisfies a LoadBalancer type out of the box, even on a
+# single node - no cloud provider integration needed, matching section
+# 18's "K3s ... identical API, same manifests" point. This is also the
+# edge-LB layer section 2 describes sitting in front of the Gateway
+# fleet, spreading incoming connections across every ws-gateway replica.
+apiVersion: v1
+kind: Service
+metadata:
+  name: ws-gateway
+  namespace: kfchess
+spec:
+  type: LoadBalancer
+  selector:
+    app: ws-gateway
+  ports:
+    - name: ws
+      port: 8765
+      targetPort: 8765
+    - name: metrics
+      port: 9100
+      targetPort: 9100

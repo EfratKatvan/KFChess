@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, Optional, Tuple, Type
 
+from prometheus_client import Counter, Gauge
 from redis.asyncio import Redis
 from websockets.asyncio.server import ServerConnection
 
@@ -38,6 +39,14 @@ from kungfu_chess.server.rooms import RoomError, RoomRegistry
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
 logger = logging.getLogger(__name__)
+
+# Server_Design.md section 1: this role's own named scaling metric is
+# queue depth - SEEKERS_WAITING reads it live via set_function below
+# rather than scattering inc()/dec() calls across every place _waiting
+# is mutated, so it can never drift out of sync with the real dict.
+SEEKERS_WAITING = Gauge("matchmaking_seekers_waiting", "Players currently waiting for an ELO match")
+MATCHES_MADE_TOTAL = Counter("matchmaking_matches_made_total", "Total ELO matches made")
+ROOMS_CREATED_TOTAL = Counter("matchmaking_rooms_created_total", "Total Create Room rooms created")
 
 
 @dataclass
@@ -102,6 +111,7 @@ class Matchmaker:
         self._namespace = namespace if namespace is not None else uuid.uuid4().hex
         self._seekers_queue_key = f"seekers:queue:{self._namespace}"
         self._waiting: Dict[str, _WaitingLocal] = {}  # username -> its local (non-Redis) bookkeeping
+        SEEKERS_WAITING.set_function(lambda: len(self._waiting))
         # ws -> (room_id, color) once matched/joined - color is None for a
         # spectator. Replaces the old ws -> GameRoom map now that the room
         # itself lives in a different process (Stage 4a) - just enough to
@@ -228,6 +238,7 @@ class Matchmaker:
                     room_id=room_id, color=BLACK, username=username, opponent_username=opponent_username,
                 ))
                 logger.info("matched %s (white) vs %s (black)", opponent_username, username)
+                MATCHES_MADE_TOTAL.inc()
                 return
             # Claimed them in the Redis queue, but they're already gone
             # from local bookkeeping (disconnected/cancelled in the
@@ -292,6 +303,7 @@ class Matchmaker:
             return
         self._pending_room_creators[ws] = room.room_id
         logger.info("room %s created by %s", room.room_id, username)
+        ROOMS_CREATED_TOTAL.inc()
         await ws.send(serialize_message(RoomCreatedMessage(room_id=room.room_id)))
 
     async def _join_room(self, ws: ServerConnection, message: JoinRoomMessage) -> None:
@@ -318,6 +330,7 @@ class Matchmaker:
                 room_id=room.room_id, color=BLACK, username=username, opponent_username=room.creator_username,
             ))
             logger.info("room %s: %s joined as black - game starting", room.room_id, username)
+            MATCHES_MADE_TOTAL.inc()
             return
 
         # The room already had an opponent - this join is a spectator.

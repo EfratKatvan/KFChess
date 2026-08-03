@@ -14,6 +14,7 @@ from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
 from kungfu_chess.server.auth_token import TokenClaims
 from kungfu_chess.server.matchmaker import Matchmaker
+from kungfu_chess.server.metrics import start_metrics_server
 from kungfu_chess.server.redis_client import get_client as get_redis_client
 
 # Env-overridable (Stage 5, section 17), same pattern as every other role.
@@ -160,6 +161,7 @@ def create_app(
 
 def main() -> None:
     configure_logging(LOG_FILE)
+    start_metrics_server()
     web.run_app(create_app(), host=HOST, port=PORT)
 
 

@@ -3,6 +3,11 @@ services:
     image: redis:7-alpine
     ports:
       - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   postgres:
     image: postgres:16-alpine
@@ -14,6 +19,11 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kfchess"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   nats:
     image: nats:2-alpine
@@ -21,12 +31,20 @@ services:
     # durable per-room move log crash recovery replays from. A room's own
     # retention is bounded (~90s, set per-stream at creation - see
     # move_log_stream.py), so this volume never grows without bound the way
-    # a naive "log everything forever" store would.
-    command: ["-js", "-sd", "/data"]
+    # a naive "log everything forever" store would. -m 8222 turns on NATS'
+    # own HTTP monitoring endpoint, used only for the healthcheck below -
+    # never published to the host, same isolation posture as game-shard/
+    # matchmaking's own missing `ports:`.
+    command: ["-js", "-sd", "/data", "-m", "8222"]
     ports:
       - "4222:4222"
     volumes:
       - nats_data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://localhost:8222/healthz"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
 
   api:
     build: .
@@ -35,7 +53,14 @@ services:
       HOST: 0.0.0.0
       POSTGRES_DSN: postgresql://kfchess:kfchess@postgres:5432/kfchess
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   ws-gateway:
     build: .
@@ -50,10 +75,20 @@ services:
     ports:
       - "8765:8765"  # the client's socket - the only container a player ever reaches directly (section 2)
     depends_on:
-      - redis
-      - api
-      - game-shard
-      - matchmaking
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      game-shard:
+        condition: service_healthy
+      matchmaking:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   game-shard:
     build: .
@@ -67,9 +102,18 @@ services:
     # is reachable only from the WS Gateway, over the compose network -
     # never from outside the cluster, and never directly by a client.
     depends_on:
-      - redis
-      - api
-      - nats
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   matchmaking:
     build: .
@@ -81,9 +125,43 @@ services:
     # Also no `ports:` - reachable only from the WS Gateway over the
     # compose network, same isolation reasoning as game-shard above.
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9100/metrics', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
       - api
+      - ws-gateway
+      - matchmaking
+      - game-shard
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: kfchess
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
 
 volumes:
   postgres_data:  # Server_Design.md section 6 - survives `docker compose down` (not `down -v`)
   nats_data:  # Server_Design.md section 3 - the JetStream move-log store
+  prometheus_data:
+  grafana_data:

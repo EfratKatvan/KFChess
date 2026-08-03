@@ -2,12 +2,36 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from functools import partial
 
 from aiohttp import web
+from prometheus_client import Counter, Histogram
 
 from kungfu_chess.logging_config import configure_logging
 from kungfu_chess.server import accounts
+from kungfu_chess.server.metrics import start_metrics_server
+
+# Server_Design.md section 1: this role's own named scaling metric is
+# request rate - a generic per-endpoint counter/timer, not anything
+# accounts-specific, so a middleware covers every route uniformly
+# rather than repeating instrumentation in each handler.
+REQUESTS_TOTAL = Counter("api_requests_total", "Total HTTP requests handled", ["endpoint", "outcome"])
+REQUEST_DURATION = Histogram("api_request_duration_seconds", "Request handling duration in seconds", ["endpoint"])
+
+
+@web.middleware
+async def _metrics_middleware(request: web.Request, handler):
+    start = time.perf_counter()
+    try:
+        response = await handler(request)
+        REQUESTS_TOTAL.labels(endpoint=request.path, outcome=str(response.status)).inc()
+        return response
+    except Exception:
+        REQUESTS_TOTAL.labels(endpoint=request.path, outcome="error").inc()
+        raise
+    finally:
+        REQUEST_DURATION.labels(endpoint=request.path).observe(time.perf_counter() - start)
 
 # Env-overridable (Stage 5, section 17): docker-compose binds this to
 # 0.0.0.0 so the container accepts connections from other containers,
@@ -69,7 +93,7 @@ def create_app(schema: str = accounts.DEFAULT_SCHEMA) -> web.Application:
         )
         return web.json_response({"winner_rating": new_winner, "loser_rating": new_loser})
 
-    app = web.Application()
+    app = web.Application(middlewares=[_metrics_middleware])
     app.router.add_post("/login", login)
     app.router.add_post("/register", register)
     app.router.add_get("/ratings/{username}", get_rating)
@@ -80,6 +104,7 @@ def create_app(schema: str = accounts.DEFAULT_SCHEMA) -> web.Application:
 def main() -> None:
     configure_logging(LOG_FILE)
     accounts.init_db()
+    start_metrics_server()
     web.run_app(create_app(), host=HOST, port=PORT)
 
 
