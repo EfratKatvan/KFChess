@@ -17,6 +17,7 @@ from kungfu_chess.server.accounts_client import get_client as get_accounts_clien
 from kungfu_chess.server.game_allocator import GameAllocator, RoomAllocationError
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.messages import LeaveRoomMessage, LeftRoomMessage
+from kungfu_chess.server.move_log_stream import MoveLogStream
 from kungfu_chess.server.redis_client import get_client as get_redis_client
 from kungfu_chess.server.rooms import RoomRegistry
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
@@ -76,10 +77,15 @@ class GameShard:
         accounts_client: AccountsClient,
         redis_client: Optional[Redis] = None,
         namespace: str = "",
+        move_log_stream: Optional[MoveLogStream] = None,
     ) -> None:
         self._accounts_client = accounts_client
         redis_client = redis_client or get_redis_client()
-        self._game_allocator = GameAllocator(accounts_client=accounts_client, redis_client=redis_client, namespace=namespace)
+        self._move_log_stream = move_log_stream
+        self._game_allocator = GameAllocator(
+            accounts_client=accounts_client, redis_client=redis_client, namespace=namespace,
+            move_log_stream=move_log_stream,
+        )
         self._room_registry = RoomRegistry(redis_client=redis_client, namespace=namespace)
         self._rooms: Dict[str, GameRoom] = {}
         self._pending: Dict[str, _PendingRoom] = {}
@@ -156,6 +162,16 @@ class GameShard:
             pending.ready.set()
             self._pending.pop(room_id, None)
             return
+        if self._move_log_stream is not None:
+            # Server_Design.md sections 3/20.5: almost always empty (a
+            # room_id is normally brand new the one time _build_room ever
+            # runs for it) - non-empty specifically identifies the
+            # crash-recovery case, reconstructing the board/cooldown state
+            # this worker never itself witnessed happening.
+            replayed = await self._move_log_stream.replay_moves(room_id)
+            if replayed:
+                logger.info("room %s: replaying %d recorded move(s) from JetStream", room_id, len(replayed))
+                room.replay(replayed)
         self._rooms[room_id] = room
         pending.room = room
         await room.start()
@@ -228,7 +244,13 @@ class GameShard:
 
 async def run(host: str = SHARD_HOST, port: int = SHARD_PORT, accounts_service_url: str = ACCOUNTS_SERVICE_URL) -> None:
     accounts_client = get_accounts_client(accounts_service_url)
-    shard = GameShard(accounts_client=accounts_client)
+    # Server_Design.md section 3: one NATS connection, reused for every
+    # room this worker ever hosts - if this raises (NATS unreachable),
+    # this process fails to start rather than silently running without
+    # crash recovery, since docker-compose.yml declares NATS a hard
+    # dependency of this role.
+    move_log_stream = await MoveLogStream.connect()
+    shard = GameShard(accounts_client=accounts_client, move_log_stream=move_log_stream)
     async with serve(shard.handle_connection, host, port):
         logger.info("Kung Fu Chess Game Shard listening on ws://%s:%s", host, port)
         await asyncio.Future()  # runs until the process is killed

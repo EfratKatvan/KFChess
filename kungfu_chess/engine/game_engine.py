@@ -54,6 +54,15 @@ class GameEngine:
     def is_game_over(self) -> bool:
         return self._state.game_over
 
+    @property
+    def elapsed_ms(self) -> int:
+        """Total in-game time elapsed so far - the same value
+        MoveLoggedEvent.elapsed_ms is stamped with at request_move time
+        (Server_Design.md section 3's crash-recovery replay needs this
+        to fast-forward wait() by exactly the right amount between
+        replayed moves, see server/game_room.py's GameRoom.replay)."""
+        return self._total_elapsed_ms
+
     def resign(self) -> None:
         """Force-ends the game without a capture - e.g. auto-resign after
         a player disconnects and doesn't return within the grace period

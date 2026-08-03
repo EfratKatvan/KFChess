@@ -10,6 +10,7 @@ from websockets.asyncio.server import ServerConnection
 
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.game_room import GameRoom
+from kungfu_chess.server.move_log_stream import MoveLogStream
 from kungfu_chess.server.redis_client import get_client as get_redis_client
 
 LEASE_TTL_MS = 5000  # Server_Design.md section 3's own example: SET room:<id>:owner <worker> NX PX 5000
@@ -46,10 +47,15 @@ class GameAllocator:
         accounts_client: AccountsClient,
         redis_client: Optional[Redis] = None,
         namespace: str = "",
+        move_log_stream: Optional[MoveLogStream] = None,
     ) -> None:
         self._accounts_client = accounts_client
         self._redis = redis_client or get_redis_client()
         self._namespace = namespace
+        # None in every test that doesn't care about crash recovery -
+        # forwarded straight through to each GameRoom this allocates
+        # (Server_Design.md section 3).
+        self._move_log_stream = move_log_stream
         # A fresh id per GameAllocator instance - in production there's
         # only ever one process/allocator, so this never needs to
         # persist across a restart; a crashed worker's leases simply
@@ -90,6 +96,7 @@ class GameAllocator:
             black_ws=black_ws, black_username=black_username,
             accounts_client=self._accounts_client, room_id=room_id,
             on_game_over=release,
+            move_log_stream=self._move_log_stream,
         )
         self._lease_renewal_tasks[lease_id] = asyncio.create_task(self._renew_lease(lease_id))
         return room

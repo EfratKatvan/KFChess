@@ -4,3 +4,4 @@ redis
 aiohttp
 PyJWT
 psycopg2-binary
+nats-py

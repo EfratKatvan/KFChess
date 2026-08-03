@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import Any, Awaitable, Callable, Dict, Optional, Set, Type
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple, Type
 
 from websockets.asyncio.server import ServerConnection
 
@@ -11,6 +11,7 @@ from kungfu_chess.engine.board_view_state import BoardViewState
 from kungfu_chess.engine.game_engine import GameEngine
 from kungfu_chess.input.controller import Controller
 from kungfu_chess.io.board_parser import build_board
+from kungfu_chess.model.game_state import GameObserver, MoveLoggedEvent
 from kungfu_chess.model.piece import KING, WHITE, BLACK
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.real_time_arbiter import RealTimeArbiter
@@ -28,6 +29,7 @@ from kungfu_chess.server.messages import (
     SelectOrMoveMessage,
     StateMessage,
 )
+from kungfu_chess.server.move_log_stream import MoveLogStream
 from kungfu_chess.server.serialization import serialize_message
 from kungfu_chess.starting_position import STARTING_POSITION
 from kungfu_chess.events.observers import MotionCollector, MoveLogObserver, ScoreObserver
@@ -38,6 +40,25 @@ BROADCAST_INTERVAL_SECONDS = 0.2  # periodic full-snapshot resync rate (section 
 # this interval now only needs to be fast enough to keep cooldown overlays/scores/move-log reasonably fresh
 
 logger = logging.getLogger(__name__)
+
+
+class _JetStreamMoveLogger(GameObserver):
+    """Publishes every accepted move to this room's own durable
+    JetStream stream (Server_Design.md section 3) - a server-specific
+    concern, so it lives here rather than in events/observers.py (that
+    module is deliberately layer-agnostic, reusable by the old local
+    single-player view too, and has no business knowing NATS exists).
+    Fired, never awaited - GameEngine.add_observer's Bus calls
+    on_move_logged synchronously (see events/bus.py), so the actual
+    publish is scheduled as a background task, the same fire-and-forget
+    shape matchmaking_service.py's own on_enter_relay callback uses."""
+
+    def __init__(self, stream: MoveLogStream, room_id: str) -> None:
+        self._stream = stream
+        self._room_id = room_id
+
+    def on_move_logged(self, event: MoveLoggedEvent) -> None:
+        asyncio.create_task(self._stream.publish_move(self._room_id, event))
 
 
 class GameRoom:
@@ -60,12 +81,17 @@ class GameRoom:
         accounts_client: AccountsClient,
         room_id: Optional[str] = None,
         on_game_over: Optional[Callable[[], Awaitable[None]]] = None,
+        move_log_stream: Optional[MoveLogStream] = None,
     ) -> None:
         self._connections: Dict[str, ServerConnection] = {WHITE: white_ws, BLACK: black_ws}
         self._usernames: Dict[str, str] = {WHITE: white_username, BLACK: black_username}
         self._accounts_client = accounts_client
         self._room_id = room_id
         self._on_game_over = on_game_over
+        # None in every test that doesn't care about crash recovery
+        # (Server_Design.md section 3) - a room logs its own moves only
+        # when a Shard actually has a NATS connection to log them to.
+        self._move_log_stream = move_log_stream
         # Spectators live outside _connections (they have no color) - a
         # RestartMessage rebuilds the game via _build_fresh_game but must
         # not drop anyone watching it, so this is initialized here, not there.
@@ -90,6 +116,8 @@ class GameRoom:
         self._engine.add_observer(self._score)
         self._motion_collector = MotionCollector()
         self._engine.add_observer(self._motion_collector)
+        if self._move_log_stream is not None and self._room_id is not None:
+            self._engine.add_observer(_JetStreamMoveLogger(self._move_log_stream, self._room_id))
         self._last_tick = time.perf_counter()
         self._last_broadcast = time.perf_counter()
         self._rating_update_applied = False
@@ -105,6 +133,37 @@ class GameRoom:
 
     def is_game_over(self) -> bool:
         return self._engine.is_game_over()
+
+    def replay(self, replayed: List[Tuple[MoveLoggedEvent, float]]) -> None:
+        """Rebuilds this room's board/cooldown state from its own
+        recorded move history (Server_Design.md sections 3 and 20.5) -
+        called once, right after construction and before start(), by
+        whichever Shard finds prior JetStream history for a room_id it's
+        about to build (a crash-recovery rebuild, not a fresh game - see
+        game_shard.py's _build_room). Fast-forwards the exact same
+        GameEngine.wait()/request_move() primitives ordinary play already
+        drives, just compressed into an immediate sequential replay
+        instead of real TICK_SECONDS ticks - correct because
+        RealTimeArbiter's physics is a deterministic function of elapsed
+        time, not of wall-clock history, per section 3's own reasoning
+        for why this recovery is cheap in the first place. A no-op for
+        an empty list (nothing to replay - the room's stream had
+        already expired, or this is genuinely a fresh room)."""
+        if not replayed:
+            return
+        for event, _ in replayed:
+            dt = event.elapsed_ms - self._engine.elapsed_ms
+            if dt > 0:
+                self._engine.wait(dt)
+            self._engine.request_move(event.from_pos, event.to_pos)
+        # Catch up from the last recorded move to *now* - real wall-clock
+        # time (the outage itself, plus however long the replay took)
+        # has passed since then, and a piece's cooldown must reflect
+        # that instead of freezing at the instant of the crash.
+        _, last_published_at = replayed[-1]
+        catch_up_ms = max(0, int((time.time() - last_published_at) * 1000))
+        if catch_up_ms > 0:
+            self._engine.wait(catch_up_ms)
 
     async def start(self) -> None:
         for color, ws in self._connections.items():
@@ -246,6 +305,14 @@ class GameRoom:
 
     async def _handle_restart(self, controller: Controller, message: RestartMessage) -> None:
         if self._engine.is_game_over():
+            # A rematch in the same room_id is a brand-new game, not a
+            # continuation - its own move history must never mix with
+            # the finished game's (a later crash-recovery replay would
+            # otherwise try to request_move every move from game 1
+            # *and* game 2 into a single fresh board, in order, which
+            # is meaningless past wherever game 1 actually ended).
+            if self._move_log_stream is not None and self._room_id is not None:
+                asyncio.create_task(self._move_log_stream.reset_room(self._room_id))
             self._build_fresh_game()
 
     async def _handle_resign(self, controller: Controller, message: ResignMessage) -> None:

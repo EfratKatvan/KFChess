@@ -154,6 +154,36 @@ worker, and that worker replays the JetStream stream to rebuild the board and
 in-flight/cooldown state before re-acquiring the lease and resuming ticking - see the
 full message-by-message sequence in **section 20.5**.
 
+**Status: the publish-and-replay mechanism itself is Done** -
+`kungfu_chess/server/move_log_stream.py` publishes every accepted `MoveLoggedEvent` to
+a per-room JetStream stream (`GameRoom`'s new `_JetStreamMoveLogger` observer,
+game_room.py), and `GameRoom.replay()` reconstructs board/cooldown state from a
+replayed history using the exact same `GameEngine.wait()`/`request_move()` primitives
+ordinary play already drives - fast-forwarded instead of ticked in real time, correct
+specifically because `RealTimeArbiter`'s physics is a deterministic function of
+elapsed time, not of wall-clock history. `game_shard.py`'s `_build_room` checks for
+prior history on every room it builds. Verified two ways: a dedicated test
+(`tests/unit/test_move_log_stream.py`) that plays real moves into a live room, then
+independently rebuilds a second room for the same `room_id` from nothing but replayed
+JetStream history and confirms the piece positions agree - directly answering section
+12's own open question ("JetStream replay correctness... not yet verified against a
+real crash-and-replay test"); and a real Docker test that kills and restarts the
+`game-shard` container mid-game and confirms, by querying NATS directly from a fresh
+process afterward, that the move history genuinely survived the crash.
+
+**Deliberately not yet built, and worth being precise about the boundary**: the
+*automatic* half of this story - the **Game Allocator noticing** a crashed worker
+(there is no multi-worker health-check/reassignment logic at all today; `game_allocator.py`'s
+own docstring is explicit that "there's only ever one process/allocator" right now) and
+a live player's session **automatically re-entering a reconnect attempt** after a relay
+failure (today, `ws_gateway.py` falls a broken relay session back to an *ordinary*
+lobby state, not a reconnect attempt - the existing `ReconnectMessage` path is only ever
+triggered by a fresh login for a `_disconnected_players` entry, which a broken
+Gateway<->Shard relay never produces, since the player's own Gateway connection never
+drops). Building that is a second, separate, genuinely large subsystem - dynamic
+room-to-worker discovery plus multi-replica failover - deliberately scoped out here in
+favor of proving the replay mechanism itself first, correctly.
+
 - This was weighed against a **paired hot-standby worker** (mirroring every room live
   onto a second process, so failover is instant with no replay at all) and rejected
   for cost: that would roughly double the entire Game-hosting fleet's footprint,

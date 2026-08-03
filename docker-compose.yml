@@ -15,6 +15,19 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
+  nats:
+    image: nats:2-alpine
+    # JetStream on, with a real file store (Server_Design.md section 3) - the
+    # durable per-room move log crash recovery replays from. A room's own
+    # retention is bounded (~90s, set per-stream at creation - see
+    # move_log_stream.py), so this volume never grows without bound the way
+    # a naive "log everything forever" store would.
+    command: ["-js", "-sd", "/data"]
+    ports:
+      - "4222:4222"
+    volumes:
+      - nats_data:/data
+
   api:
     build: .
     environment:
@@ -49,12 +62,14 @@ services:
       SHARD_HOST: 0.0.0.0  # this container's own bind, not the address others dial - see game_shard.py's comment
       ACCOUNTS_SERVICE_URL: http://api:8766
       REDIS_HOST: redis
+      NATS_URL: nats://nats:4222
     # Deliberately no `ports:` here (Server_Design.md section 2): a Shard
     # is reachable only from the WS Gateway, over the compose network -
     # never from outside the cluster, and never directly by a client.
     depends_on:
       - redis
       - api
+      - nats
 
   matchmaking:
     build: .
@@ -71,3 +86,4 @@ services:
 
 volumes:
   postgres_data:  # Server_Design.md section 6 - survives `docker compose down` (not `down -v`)
+  nats_data:  # Server_Design.md section 3 - the JetStream move-log store
