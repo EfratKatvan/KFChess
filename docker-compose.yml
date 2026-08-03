@@ -95,6 +95,7 @@ services:
     environment:
       SERVICE_ROLE: game-shard
       SHARD_HOST: 0.0.0.0  # this container's own bind, not the address others dial - see game_shard.py's comment
+      SHARD_ADVERTISED_ADDRESS: game-shard:8767  # the actually-dialable address registered into room_shard_registry
       ACCOUNTS_SERVICE_URL: http://api:8766
       REDIS_HOST: redis
       NATS_URL: nats://nats:4222

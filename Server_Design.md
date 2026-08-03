@@ -171,6 +171,23 @@ real crash-and-replay test"); and a real Docker test that kills and restarts the
 `game-shard` container mid-game and confirms, by querying NATS directly from a fresh
 process afterward, that the move history genuinely survived the crash.
 
+**Room-to-shard discovery: since done.** `kungfu_chess/server/room_shard_registry.py`
+makes the lease's own *value* a real, dialable `host:port` (not just an opaque worker
+id) - `game_allocator.py` writes it on allocation and renews it by heartbeat (the exact
+`SET room:<id>:owner <worker> NX PX 5000` this section itself specifies, now doing
+double duty as a genuine registry, not just mutual exclusion); `ws_gateway.py` reads it
+to resolve an *existing* room_id (a reconnect or a spectator join) to whichever shard
+currently owns it, instead of assuming it's always the same fixed
+`SHARD_HOST`/`SHARD_PORT`. Deliberately **not** used for a *brand-new* room's
+placement decision (`HostSeatMessage` still always uses the fixed address) - which
+shard to place a new room on is a separate, not-yet-needed mechanism (today there's
+only one candidate shard regardless - `game-shard.yaml`'s own `replicas: 1`), not the
+same thing as resolving where an *already-placed* room lives. Verified with tests that
+prove the dynamic path actually wins over a deliberately-wrong fixed fallback (not just
+that it coincidentally matches - `tests/unit/test_ws_gateway.py`), plus a live Docker
+reconnect that queries Redis directly to confirm the registry holds the real address,
+not an opaque id.
+
 **Deliberately not yet built, and worth being precise about the boundary**: the
 *automatic* half of this story - the **Game Allocator noticing** a crashed worker
 (there is no multi-worker health-check/reassignment logic at all today; `game_allocator.py`'s
@@ -180,9 +197,13 @@ failure (today, `ws_gateway.py` falls a broken relay session back to an *ordinar
 lobby state, not a reconnect attempt - the existing `ReconnectMessage` path is only ever
 triggered by a fresh login for a `_disconnected_players` entry, which a broken
 Gateway<->Shard relay never produces, since the player's own Gateway connection never
-drops). Building that is a second, separate, genuinely large subsystem - dynamic
-room-to-worker discovery plus multi-replica failover - deliberately scoped out here in
-favor of proving the replay mechanism itself first, correctly.
+drops). The registry above answers "where does an existing room live" correctly and
+dynamically now - it does not by itself make *more than one* Game Shard replica safe to
+run (nothing yet decides *which* of several candidates a brand-new room should go to,
+nor notices one has died), and it does not make a live player's dropped relay session
+automatically retry a reconnect. Both remain a second, separate, genuinely large
+subsystem, deliberately scoped out here in favor of building the registry and replay
+mechanisms correctly first.
 
 - This was weighed against a **paired hot-standby worker** (mirroring every room live
   onto a second process, so failover is instant with no replay at all) and rejected

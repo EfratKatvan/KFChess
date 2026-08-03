@@ -30,6 +30,7 @@ from kungfu_chess.server.messages import (
 )
 from kungfu_chess.server.metrics import start_metrics_server
 from kungfu_chess.server.redis_client import get_client as get_redis_client
+from kungfu_chess.server.room_shard_registry import RoomShardRegistry
 
 # Server_Design.md section 1: this role's own named scaling metric is
 # open connection count.
@@ -224,8 +225,35 @@ async def _pump(src: Any, dst: Any) -> None:
         logger.debug("relay pump ended: %s", error)
 
 
+async def _resolve_shard_address(
+    routing: shard_protocol.RoutingMessage, shard_host: str, shard_port: int, room_shard_registry: RoomShardRegistry
+) -> Tuple[str, int]:
+    """HostSeatMessage (a brand-new room) always uses the fixed
+    shard_host/shard_port - there is no registry entry yet to look up
+    (placement, not routing - see room_shard_registry.py's own
+    docstring on that distinction; today it's also moot, since there is
+    only ever one Game Shard to place a new room on regardless).
+    ReconnectMessage/SpectateMessage name an *existing* room_id, so
+    resolve it dynamically instead of assuming it's still the same
+    fixed shard - the whole point of Server_Design.md section 3's
+    registry. Falls back to the fixed address if the registry somehow
+    has no entry (the room's lease already expired, or this worker
+    never actually registered it) - the Shard itself is still the one
+    that decides whether the reconnect/spectate is actually valid."""
+    if isinstance(routing, (shard_protocol.ReconnectMessage, shard_protocol.SpectateMessage)):
+        address = await room_shard_registry.get(routing.room_id)
+        if address is not None:
+            host, port = address.rsplit(":", 1)
+            return host, int(port)
+    return shard_host, shard_port
+
+
 async def _run_relay_session(
-    ws: ServerConnection, routing: shard_protocol.RoutingMessage, shard_host: str, shard_port: int
+    ws: ServerConnection,
+    routing: shard_protocol.RoutingMessage,
+    shard_host: str,
+    shard_port: int,
+    room_shard_registry: RoomShardRegistry,
 ) -> bool:
     """Opens an outbound connection to the Game Shard, sends the one
     routing handshake message (Server_Design.md Stage 4a), then pumps
@@ -235,8 +263,9 @@ async def _run_relay_session(
     an ordinary "Back to Lobby" - so the caller goes back to lobby
     mode); False if the real client socket itself closed (a genuine
     disconnect, mid-relay)."""
+    resolved_host, resolved_port = await _resolve_shard_address(routing, shard_host, shard_port, room_shard_registry)
     try:
-        async with connect(f"ws://{shard_host}:{shard_port}") as shard_ws:
+        async with connect(f"ws://{resolved_host}:{resolved_port}") as shard_ws:
             await shard_ws.send(shard_protocol.send_routing_message(routing))
             client_to_shard = asyncio.create_task(_pump(ws, shard_ws))
             shard_to_client = asyncio.create_task(_pump(shard_ws, ws))
@@ -255,6 +284,7 @@ async def _handle_connection(
     shard_host: str,
     shard_port: int,
     redis_client: Redis,
+    room_shard_registry: RoomShardRegistry,
 ) -> None:
     auth = await _authenticate(ws, accounts_client, redis_client)
     if auth is None:
@@ -307,7 +337,7 @@ async def _handle_connection(
                 item = push_task.result()
                 if item["kind"] == "routing":
                     routing = shard_protocol.deserialize_routing(item["routing"])
-                    still_open = await _run_relay_session(ws, routing, shard_host, shard_port)
+                    still_open = await _run_relay_session(ws, routing, shard_host, shard_port, room_shard_registry)
                     if not still_open:
                         break
                     await matchmaking_client.leave_relay(connection_id)
@@ -334,16 +364,25 @@ async def run(
     shard_host: str = SHARD_HOST,
     shard_port: int = SHARD_PORT,
     matchmaking_service_url: str = MATCHMAKING_SERVICE_URL,
+    namespace: str = "",
 ) -> None:
+    # namespace must match the Shard's own GameAllocator namespace (see
+    # game_shard.py's GameShard, default "") - both processes share one
+    # Redis room_shard_registry. Production leaves this at the shared ""
+    # default; tests pass a unique value to isolate themselves on one
+    # Redis server (see tests/unit/conftest.py's shard_address fixture).
     accounts_client = get_accounts_client(accounts_service_url)
     matchmaking_client = get_matchmaking_client(matchmaking_service_url)
     # A second, independent Redis client from the Matchmaking Service's
     # own (see redis_client.py's own non-singleton rationale) - used for
     # the Stage 1b revocation check and this connection's Pub/Sub channel.
     redis_client = get_redis_client()
+    room_shard_registry = RoomShardRegistry(redis_client, namespace)
 
     async def handler(ws: ServerConnection) -> None:
-        await _handle_connection(matchmaking_client, accounts_client, ws, shard_host, shard_port, redis_client)
+        await _handle_connection(
+            matchmaking_client, accounts_client, ws, shard_host, shard_port, redis_client, room_shard_registry
+        )
 
     async with serve(handler, host, port):
         logger.info("Kung Fu Chess server listening on ws://%s:%s", host, port)

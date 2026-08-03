@@ -1,10 +1,13 @@
 import asyncio
+import uuid
 
-from kungfu_chess.server import accounts, accounts_db, auth_token, protocol
+from kungfu_chess.server import accounts, accounts_db, auth_token, protocol, shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.messages import LoginMessage, RegisterMessage, RestartMessage, TokenLoginMessage
+from kungfu_chess.server.redis_client import get_client as get_redis_client
+from kungfu_chess.server.room_shard_registry import RoomShardRegistry
 from kungfu_chess.server.serialization import serialize_message
-from kungfu_chess.server.ws_gateway import _authenticate
+from kungfu_chess.server.ws_gateway import _authenticate, _resolve_shard_address
 from tests.unit.test_matchmaker import FakeConnection, _last_type
 
 
@@ -209,3 +212,70 @@ async def _revoked_token_login_scenario(db_path, accounts_base_url):
 
     assert result is None
     assert _last_type(ws) == protocol.LOGIN_FAILED
+
+
+def test_host_seat_always_uses_the_fixed_address_never_the_registry():
+    """A brand-new room has no registry entry yet by definition (see
+    room_shard_registry.py's own docstring on placement vs. routing) -
+    HostSeatMessage must never even consult it, regardless of what -
+    if anything - happens to be sitting there under the same room_id."""
+    asyncio.run(_host_seat_ignores_registry_scenario())
+
+
+async def _host_seat_ignores_registry_scenario():
+    registry = RoomShardRegistry(get_redis_client(), namespace=uuid.uuid4().hex)
+    await registry.acquire("room-1", "decoy-shard:9999")
+    routing = shard_protocol.HostSeatMessage(room_id="room-1", color="white", username="a", opponent_username="b")
+
+    host, port = await _resolve_shard_address(routing, "fixed-host", 1234, registry)
+
+    assert (host, port) == ("fixed-host", 1234)
+
+
+def test_reconnect_resolves_to_the_registry_address_not_the_fixed_fallback():
+    """The actual point of this whole mechanism: an existing room's
+    real owner - discovered dynamically - must win even when it
+    disagrees with whatever fixed shard_host/shard_port this Gateway
+    process happened to start with."""
+    asyncio.run(_reconnect_uses_registry_scenario())
+
+
+async def _reconnect_uses_registry_scenario():
+    registry = RoomShardRegistry(get_redis_client(), namespace=uuid.uuid4().hex)
+    await registry.acquire("room-1", "real-shard:8767")
+    routing = shard_protocol.ReconnectMessage(room_id="room-1", color="white", username="alice")
+
+    host, port = await _resolve_shard_address(routing, "wrong-fixed-host", 1234, registry)
+
+    assert (host, port) == ("real-shard", 8767)
+
+
+def test_spectate_resolves_to_the_registry_address_not_the_fixed_fallback():
+    asyncio.run(_spectate_uses_registry_scenario())
+
+
+async def _spectate_uses_registry_scenario():
+    registry = RoomShardRegistry(get_redis_client(), namespace=uuid.uuid4().hex)
+    await registry.acquire("room-1", "real-shard:8767")
+    routing = shard_protocol.SpectateMessage(room_id="room-1", username="carol")
+
+    host, port = await _resolve_shard_address(routing, "wrong-fixed-host", 1234, registry)
+
+    assert (host, port) == ("real-shard", 8767)
+
+
+def test_reconnect_with_no_registry_entry_falls_back_to_the_fixed_address():
+    """The room's lease already expired (or was never this worker's to
+    begin with) - the Shard itself still decides whether a reconnect
+    attempt against the fixed fallback is actually valid; this
+    function's only job is picking an address to *try*."""
+    asyncio.run(_reconnect_falls_back_scenario())
+
+
+async def _reconnect_falls_back_scenario():
+    registry = RoomShardRegistry(get_redis_client(), namespace=uuid.uuid4().hex)
+    routing = shard_protocol.ReconnectMessage(room_id="never-registered", color="white", username="alice")
+
+    host, port = await _resolve_shard_address(routing, "fixed-host", 1234, registry)
+
+    assert (host, port) == ("fixed-host", 1234)

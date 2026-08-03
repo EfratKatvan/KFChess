@@ -12,8 +12,8 @@ from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.game_room import GameRoom
 from kungfu_chess.server.move_log_stream import MoveLogStream
 from kungfu_chess.server.redis_client import get_client as get_redis_client
+from kungfu_chess.server.room_shard_registry import LEASE_TTL_MS, RoomShardRegistry
 
-LEASE_TTL_MS = 5000  # Server_Design.md section 3's own example: SET room:<id>:owner <worker> NX PX 5000
 LEASE_RENEWAL_SECONDS = 2.0  # comfortably under the TTL, so a slow tick never lets the lease lapse on a live room
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,7 @@ class GameAllocator:
         redis_client: Optional[Redis] = None,
         namespace: str = "",
         move_log_stream: Optional[MoveLogStream] = None,
+        shard_address: Optional[str] = None,
     ) -> None:
         self._accounts_client = accounts_client
         self._redis = redis_client or get_redis_client()
@@ -56,16 +57,29 @@ class GameAllocator:
         # forwarded straight through to each GameRoom this allocates
         # (Server_Design.md section 3).
         self._move_log_stream = move_log_stream
-        # A fresh id per GameAllocator instance - in production there's
-        # only ever one process/allocator, so this never needs to
-        # persist across a restart; a crashed worker's leases simply
-        # expire (no renewal ever arrives) rather than needing to be
-        # explicitly reclaimed under the old id.
-        self._worker_id = uuid.uuid4().hex
+        self._registry = RoomShardRegistry(self._redis, namespace)
+        # This worker's own advertised address (Server_Design.md section
+        # 3) - the lease's actual *value*, not just an opaque id, so
+        # ws_gateway.py can resolve an existing room_id to the shard
+        # that owns it (see room_shard_registry.py) instead of assuming
+        # it's always the same fixed one. Falls back to a random id for
+        # callers/tests that don't pass a real address - production
+        # (game_shard.py's run()) always does.
+        self._worker_id = shard_address or uuid.uuid4().hex
         self._lease_renewal_tasks: Dict[str, asyncio.Task] = {}
 
+    def set_shard_address(self, shard_address: str) -> None:
+        """Updates the advertised address after construction - only
+        needed where it isn't known until after startup (a test's
+        ephemeral port, bound to 0 and assigned by the OS - see
+        tests/unit/conftest.py's shard_address fixture); production
+        always knows its address upfront (game_shard.py's run()) and
+        never needs this. Safe to call any time before the first
+        allocate() - nothing reads self._worker_id before then."""
+        self._worker_id = shard_address
+
     def _lease_key(self, lease_id: str) -> str:
-        return f"room:{self._namespace}:{lease_id}:owner"
+        return self._registry.key(lease_id)
 
     async def allocate(
         self,
@@ -82,7 +96,7 @@ class GameAllocator:
         unique while pending by RoomRegistry), or a fresh uuid for an
         ELO-matched room, which has no player-chosen name at all."""
         lease_id = room_id or uuid.uuid4().hex
-        acquired = await self._redis.set(self._lease_key(lease_id), self._worker_id, nx=True, px=LEASE_TTL_MS)
+        acquired = await self._registry.acquire(lease_id, self._worker_id, ttl_ms=LEASE_TTL_MS)
         if not acquired:
             raise RoomAllocationError(f"room lease {lease_id!r} is already held by another worker")
 
@@ -105,16 +119,14 @@ class GameAllocator:
         """Heartbeat, section 3: while this worker actually still holds
         the room, keep pushing the lease's expiry back out - so only a
         worker that stops renewing (crashed, or genuinely done) ever
-        lets it lapse. XX (only-if-exists) rather than a plain SET
-        guards against re-creating a lease that's already expired and
-        possibly been claimed by someone else - it deliberately does
-        NOT check that the value is still our own worker_id first
-        (that would need a compare-and-set), since with a single
-        worker today nothing else is ever writing this key regardless."""
+        lets it lapse. The compare-and-renew (only if the stored value
+        is still this worker's own address) is what actually lets
+        multiple workers safely share this Redis instance - see
+        room_shard_registry.py's own atomic renew script."""
         try:
             while True:
                 await asyncio.sleep(LEASE_RENEWAL_SECONDS)
-                await self._redis.set(self._lease_key(lease_id), self._worker_id, xx=True, px=LEASE_TTL_MS)
+                await self._registry.renew(lease_id, self._worker_id, ttl_ms=LEASE_TTL_MS)
         except asyncio.CancelledError:
             pass
 
@@ -122,4 +134,4 @@ class GameAllocator:
         task = self._lease_renewal_tasks.pop(lease_id, None)
         if task is not None:
             task.cancel()
-        await self._redis.delete(self._lease_key(lease_id))
+        await self._registry.release(lease_id)

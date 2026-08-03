@@ -15,6 +15,7 @@ from kungfu_chess.server.accounts_service import create_app
 from kungfu_chess.server.game_shard import GameShard
 from kungfu_chess.server.matchmaking_client import MatchmakingClient
 from kungfu_chess.server.redis_client import get_client as get_redis_client
+from kungfu_chess.server.room_shard_registry import RoomShardRegistry
 
 """Shared test infrastructure for the Accounts/Ratings API Service
 (Stage 1, Server_Design.md section 19): a real aiohttp server, not a
@@ -100,7 +101,15 @@ def shard_address(accounts_base_url) -> Iterator[Callable[[str], Tuple[str, int]
         shard = GameShard(
             accounts_client=AccountsClient(accounts_base_url), redis_client=get_redis_client(), namespace=namespace
         )
-        return await serve(shard.handle_connection, "localhost", 0)
+        server = await serve(shard.handle_connection, "localhost", 0)
+        # The real port isn't known until after serve() actually binds
+        # it (0 means "OS, pick one") - so the advertised address (what
+        # ws_gateway.py's room_shard_registry lookup will resolve a
+        # reconnect/spectate to) can only be set now, not at
+        # construction time. Safe: no room is allocated until real
+        # traffic arrives, well after this fixture returns.
+        shard.set_shard_address(f"localhost:{server.sockets[0].getsockname()[1]}")
+        return server
 
     def _factory(namespace: str) -> Tuple[str, int]:
         server = _background.run(_start(namespace))
@@ -145,10 +154,11 @@ def gateway_address(accounts_base_url) -> Iterator[Callable[[str, str, int], Tup
         matchmaking_client = MatchmakingClient(str(matchmaking_server.make_url("/")).rstrip("/"))
 
         redis_client = get_redis_client()
+        room_shard_registry = RoomShardRegistry(redis_client, namespace)
 
         async def handler(ws: ServerConnection) -> None:
             await ws_gateway._handle_connection(
-                matchmaking_client, accounts_client, ws, shard_host, shard_port, redis_client
+                matchmaking_client, accounts_client, ws, shard_host, shard_port, redis_client, room_shard_registry
             )
 
         return await serve(handler, "localhost", 0)

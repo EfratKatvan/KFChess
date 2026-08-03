@@ -42,6 +42,16 @@ ACTIVE_ROOMS = Gauge("game_shard_active_rooms", "Live GameRooms this worker curr
 # container's process imports this module.
 SHARD_HOST = os.environ.get("SHARD_HOST", "localhost")
 SHARD_PORT = int(os.environ.get("SHARD_PORT", "8767"))
+# A third, genuinely separate purpose from SHARD_HOST's existing double
+# duty above (Server_Design.md section 3): the address this worker
+# advertises into the room_shard_registry - what ws_gateway.py resolves
+# an *existing* room_id to for reconnect/spectate, not what this
+# process binds to (0.0.0.0 isn't dialable) and not what a *different*
+# container's own SHARD_HOST happens to be set to. Defaults to
+# "SHARD_HOST:SHARD_PORT", correct for local/single-process dev where
+# SHARD_HOST really is a dialable "localhost" - docker-compose.yml sets
+# it explicitly to "game-shard:8767" instead.
+SHARD_ADVERTISED_ADDRESS = os.environ.get("SHARD_ADVERTISED_ADDRESS", f"{SHARD_HOST}:{SHARD_PORT}")
 LOG_FILE = "game_shard.log"
 PENDING_ROOM_TIMEOUT_SECONDS = 10  # bounds how long the first seat of a brand-new room waits for the second
 
@@ -85,18 +95,25 @@ class GameShard:
         redis_client: Optional[Redis] = None,
         namespace: str = "",
         move_log_stream: Optional[MoveLogStream] = None,
+        shard_address: Optional[str] = None,
     ) -> None:
         self._accounts_client = accounts_client
         redis_client = redis_client or get_redis_client()
         self._move_log_stream = move_log_stream
         self._game_allocator = GameAllocator(
             accounts_client=accounts_client, redis_client=redis_client, namespace=namespace,
-            move_log_stream=move_log_stream,
+            move_log_stream=move_log_stream, shard_address=shard_address,
         )
         self._room_registry = RoomRegistry(redis_client=redis_client, namespace=namespace)
         self._rooms: Dict[str, GameRoom] = {}
         self._pending: Dict[str, _PendingRoom] = {}
         ACTIVE_ROOMS.set_function(lambda: len(self._rooms))
+
+    def set_shard_address(self, shard_address: str) -> None:
+        """See GameAllocator.set_shard_address's own docstring - a
+        test-only escape hatch for an ephemeral port not known until
+        after the server actually starts."""
+        self._game_allocator.set_shard_address(shard_address)
 
     async def handle_connection(self, ws: ServerConnection) -> None:
         """The one entry point websockets.serve dispatches every relay
@@ -258,7 +275,9 @@ async def run(host: str = SHARD_HOST, port: int = SHARD_PORT, accounts_service_u
     # crash recovery, since docker-compose.yml declares NATS a hard
     # dependency of this role.
     move_log_stream = await MoveLogStream.connect()
-    shard = GameShard(accounts_client=accounts_client, move_log_stream=move_log_stream)
+    shard = GameShard(
+        accounts_client=accounts_client, move_log_stream=move_log_stream, shard_address=SHARD_ADVERTISED_ADDRESS
+    )
     async with serve(shard.handle_connection, host, port):
         logger.info("Kung Fu Chess Game Shard listening on ws://%s:%s", host, port)
         await asyncio.Future()  # runs until the process is killed
