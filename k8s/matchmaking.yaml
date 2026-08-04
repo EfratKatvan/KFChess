@@ -4,24 +4,21 @@ metadata:
   name: matchmaking
   namespace: kfchess
 spec:
-  # Deliberately 1, not N - found the hard way, by actually deploying 2 and
-  # watching matching intermittently fail under real concurrent load (a
-  # dry-run/schema validation would never have caught this). matchmaker.py's
-  # _waiting dict is local, in-memory, per-process state - it holds the
-  # actual live "connection handle" (_RemoteConnection) needed to signal a
-  # match, not just a row in Redis. The seekers *queue* itself lives in
-  # Redis and is genuinely shared (section 16.1's ZSET) - but the moment one
-  # replica's _claim_opponent_within_elo_range finds a candidate there, it
-  # calls self._waiting.pop(opponent_username) on its *own* local dict,
-  # which is empty for anyone who actually connected through a *different*
-  # replica. With 2 replicas and Kubernetes' per-connection (not
-  # per-request) load balancing across them, two genuinely concurrent
-  # seekers landing on different replicas silently fail to pair - each just
-  # stays "waiting," with no error. Scaling this for real needs the same
-  # kind of shared-state redesign game_allocator.py's own docstring already
-  # flags for game-shard ("there's only ever one process/allocator") -  not
-  # a replica-count change.
-  replicas: 1
+  # Back to 2 (previously pinned to 1 - see git history on this file for
+  # the original incident writeup) now that matchmaker.py no longer keeps
+  # any per-connection state in a local, in-memory dict: the seekers queue
+  # was already a shared Redis ZSET (section 16.1), pairing *decisions* are
+  # now made by exactly one replica at a time via a Redis lease
+  # (matchmaker_leader.py's MatchmakerLeaderElection, driven by
+  # matchmaking_service.py's own periodic tick loop - see run_matching_tick
+  # in matchmaker.py), and every other per-connection map (active
+  # connections, room membership, pending-reconnect routing, session
+  # tokens) moved into Redis too (see matchmaker.py's __init__ for the
+  # full list and the one deliberately-deferred gap: a replica that
+  # crashes without ever calling /disconnect leaks a stale "already
+  # logged in" entry - needs a heartbeat/liveness TTL to fully close,
+  # not bundled into this fix).
+  replicas: 2
   selector:
     matchLabels:
       app: matchmaking
@@ -54,18 +51,26 @@ spec:
           ports:
             - containerPort: 8768
             - containerPort: 9100
+          # timeoutSeconds explicit, not left at Kubernetes' own 1s default -
+          # see ws-gateway.yaml's own note: found the hard way, watching
+          # this pod get SIGKILL'd (exit 137) by its own liveness probe
+          # under real concurrent test load on a resource-constrained
+          # single-node dev cluster.
           readinessProbe:
             httpGet:
               path: /metrics
               port: 9100
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /metrics
               port: 9100
             initialDelaySeconds: 10
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
 ---
 # ClusterIP only (default type, no external exposure) - Server_Design.md
 # section 2: reachable only from the WS Gateway over the cluster network,

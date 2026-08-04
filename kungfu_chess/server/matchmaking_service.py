@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
+import logging
 import os
 from typing import Any, Dict, Optional
 
@@ -14,6 +16,7 @@ from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
 from kungfu_chess.server.auth_token import TokenClaims
 from kungfu_chess.server.matchmaker import Matchmaker
+from kungfu_chess.server.matchmaker_leader import LEADER_RENEWAL_SECONDS, MatchmakerLeaderElection
 from kungfu_chess.server.metrics import start_metrics_server
 from kungfu_chess.server.redis_client import get_client as get_redis_client
 
@@ -21,6 +24,8 @@ from kungfu_chess.server.redis_client import get_client as get_redis_client
 HOST = os.environ.get("HOST", "localhost")
 PORT = int(os.environ.get("PORT", "8768"))
 LOG_FILE = "matchmaking_service.log"
+
+logger = logging.getLogger(__name__)
 
 """The Matchmaking Service (Server_Design.md section 1's "Matchmaker
 service" row, section 14 row 3): the network-reachable home for
@@ -98,23 +103,95 @@ def create_app(
     redis_client = redis_client or get_redis_client()  # redis.asyncio.Redis() itself needs no running loop
     connections: Dict[str, _RemoteConnection] = {}
     state: Dict[str, Any] = {"matchmaker": None}
+    # asyncio.create_task() only keeps a *weak* reference to the task it
+    # returns - a fire-and-forget task with nothing else holding a
+    # reference to it can be garbage-collected before it ever actually
+    # runs (this is documented asyncio behavior, not a bug in
+    # create_task itself). _on_enter_relay's own publish used to do
+    # exactly that, and under real concurrent load (many matches
+    # decided in the same tick - see matchmaker.py's _sweep_matches)
+    # this intermittently dropped the Redis publish entirely: a real
+    # k8s deployment with matchmaking replicas=2 reproduced it directly
+    # (one seeker out of several concurrent pairs would never receive
+    # its MATCH_FOUND). Keeping every such task in this set until it
+    # finishes is the standard fix.
+    _background_tasks: set = set()
 
-    def _on_enter_relay(connection: _RemoteConnection, routing: shard_protocol.RoutingMessage) -> None:
+    def _on_enter_relay(connection_id: str, routing: shard_protocol.RoutingMessage) -> None:
         # Fired, never awaited - matches matchmaker.py's own documented
         # contract for this callback. Scheduled as a background task so
         # the synchronous call inside Matchmaker returns immediately.
+        # connection_id is now a plain string (this stage's own change -
+        # see matchmaker.py's own on_enter_relay docstring): a leader
+        # replica publishing this is never required to have accepted
+        # this connection itself - Redis Pub/Sub reaches the right
+        # Gateway regardless of which Matchmaking Service replica
+        # decided the match, closing the cross-replica notification gap
+        # a purely in-memory `connections` dict would otherwise leave.
         payload = json.dumps({"kind": "routing", "routing": shard_protocol.serialize_routing(routing)})
-        asyncio.create_task(redis_client.publish(f"mm:{connection.connection_id}", payload))
+        task = asyncio.create_task(redis_client.publish(f"mm:{connection_id}", payload))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
     async def _on_startup(app: web.Application) -> None:
+        state["leader_election"] = MatchmakerLeaderElection(redis_client, namespace=namespace)
         state["matchmaker"] = Matchmaker(
             accounts_client=accounts_client or get_accounts_client(),
             redis_client=redis_client,
             on_enter_relay=_on_enter_relay,
             namespace=namespace,
+            leader_election=state["leader_election"],
+            remote_connection_resolver=_connection_for,
         )
+        state["tick_task"] = asyncio.create_task(_run_matching_tick_loop())
+
+    async def _run_matching_tick_loop() -> None:
+        # One tick loop per replica (Server_Design.md section 16.1) -
+        # try_become_leader() below is what makes running this
+        # everywhere safe: only whichever replica currently holds the
+        # lease actually sweeps the queue on any given tick (see
+        # matchmaker_leader.py). A replica that isn't leader still calls
+        # run_matching_tick() every interval - it's a cheap no-op then,
+        # and it's what lets a non-leader replica take over instantly
+        # once the current leader's lease lapses.
+        while True:
+            await asyncio.sleep(LEADER_RENEWAL_SECONDS)
+            try:
+                await state["matchmaker"].run_matching_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("matching tick failed")
+
+    async def _on_cleanup(app: web.Application) -> None:
+        tick_task = state.get("tick_task")
+        if tick_task is not None:
+            tick_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await tick_task
+        leader_election = state.get("leader_election")
+        if leader_election is not None:
+            await leader_election.resign()
 
     def _connection_for(connection_id: str) -> _RemoteConnection:
+        # Always resolves - never a lookup that can miss. _RemoteConnection
+        # carries no state of its own (just connection_id + a Redis
+        # client - see its own docstring), so any replica can construct
+        # one for any connection_id on demand; `connections` is purely a
+        # cache to avoid reallocating one per call, never a correctness
+        # requirement. Getting this wrong here was a real, found bug: a
+        # Kubernetes Service gives no session affinity, so /connect and a
+        # later /message|/leave_relay|/disconnect for the same
+        # connection_id can each land on a *different* replica - a plain
+        # `connections.get(...)` (returning None, silently no-op'ing the
+        # call while still answering 200 OK) on any of those three routes
+        # meant a seek/leave/disconnect that happened to land on a
+        # replica other than the one that handled /connect was silently
+        # dropped: the seeker never got matched (nothing ever called
+        # Matchmaker.on_message for it), and a dropped /disconnect left
+        # that connection's Matchmaker-side state (active_by_username and
+        # friends - see matchmaker.py's own __init__ note) stale forever.
+        # Reproduced directly against a real 2-replica deployment.
         connection = connections.get(connection_id)
         if connection is None:
             connection = _RemoteConnection(connection_id, redis_client)
@@ -131,27 +208,26 @@ def create_app(
 
     async def message(request: web.Request) -> web.Response:
         body = await request.json()
-        connection = connections.get(body["connection_id"])
-        if connection is not None:
-            await state["matchmaker"].on_message(connection, body["raw"])
+        connection = _connection_for(body["connection_id"])
+        await state["matchmaker"].on_message(connection, body["raw"])
         return web.json_response({})
 
     async def leave_relay(request: web.Request) -> web.Response:
         body = await request.json()
-        connection = connections.get(body["connection_id"])
-        if connection is not None:
-            await state["matchmaker"].on_leave_relay(connection)
+        connection = _connection_for(body["connection_id"])
+        await state["matchmaker"].on_leave_relay(connection)
         return web.json_response({})
 
     async def disconnect(request: web.Request) -> web.Response:
         body = await request.json()
-        connection = connections.pop(body["connection_id"], None)
-        if connection is not None:
-            await state["matchmaker"].on_disconnect(connection)
+        connection = _connection_for(body["connection_id"])
+        connections.pop(body["connection_id"], None)
+        await state["matchmaker"].on_disconnect(connection)
         return web.json_response({})
 
     app = web.Application()
     app.on_startup.append(_on_startup)
+    app.on_cleanup.append(_on_cleanup)
     app.router.add_post("/connect", connect)
     app.router.add_post("/message", message)
     app.router.add_post("/leave_relay", leave_relay)

@@ -8,6 +8,14 @@
 # dependency-version drift between roles.
 FROM python:3.11-slim
 
+# Unset, stdout is fully block-buffered here (no TTY) - every role's
+# own logging_config.py StreamHandler would sit invisible until the
+# buffer filled or the process exited, making `kubectl logs`/`docker
+# logs` show nothing during normal operation. Found the hard way while
+# trying to diagnose a live matchmaking issue in k8s and seeing empty
+# logs despite real traffic.
+ENV PYTHONUNBUFFERED=1
+
 WORKDIR /app
 
 COPY requirements.txt .

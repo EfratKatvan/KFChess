@@ -96,11 +96,15 @@ def shard_address(accounts_base_url) -> Iterator[Callable[[str], Tuple[str, int]
     its own caller - a real running service over a real OS socket, not
     a mock, same standard as accounts_base_url above."""
     started: list[Server] = []
+    accounts_clients: list[AccountsClient] = []
+    redis_clients: list = []
 
     async def _start(namespace: str) -> Server:
-        shard = GameShard(
-            accounts_client=AccountsClient(accounts_base_url), redis_client=get_redis_client(), namespace=namespace
-        )
+        accounts_client = AccountsClient(accounts_base_url)
+        accounts_clients.append(accounts_client)
+        redis_client = get_redis_client()
+        redis_clients.append(redis_client)
+        shard = GameShard(accounts_client=accounts_client, redis_client=redis_client, namespace=namespace)
         server = await serve(shard.handle_connection, "localhost", 0)
         # The real port isn't known until after serve() actually binds
         # it (0 means "OS, pick one") - so the advertised address (what
@@ -122,6 +126,19 @@ def shard_address(accounts_base_url) -> Iterator[Callable[[str], Tuple[str, int]
         for server in started:
             server.close()
             await server.wait_closed()
+        # An unclosed aiohttp.ClientSession/redis connection left open on
+        # _background's own persistent, session-long event loop doesn't
+        # just print a GC warning - it can leave a keep-alive connection
+        # aiohttp's own AppRunner.cleanup() (see matchmaking_service.py's
+        # own TestServer.close() in gateway_address below) still
+        # considers "active", stalling that shutdown for its own
+        # multi-second grace period. Closing every client this fixture
+        # itself created is what actually prevents that, not just tidier
+        # teardown output.
+        for accounts_client in accounts_clients:
+            await accounts_client.close()
+        for redis_client in redis_clients:
+            await redis_client.aclose()
 
     _background.run(_stop_all())
 
@@ -142,18 +159,28 @@ def gateway_address(accounts_base_url) -> Iterator[Callable[[str, str, int], Tup
     boundary this design introduces, not just the Shard's."""
     started: list[Server] = []
     matchmaking_servers: list[TestServer] = []
+    accounts_clients: list[AccountsClient] = []
+    matchmaking_clients: list[MatchmakingClient] = []
+    redis_clients: list = []
 
     async def _start(namespace: str, shard_host: str, shard_port: int) -> Server:
         accounts_client = AccountsClient(accounts_base_url)
+        accounts_clients.append(accounts_client)
+        matchmaking_accounts_client = AccountsClient(accounts_base_url)
+        accounts_clients.append(matchmaking_accounts_client)
+        matchmaking_redis_client = get_redis_client()
+        redis_clients.append(matchmaking_redis_client)
         matchmaking_app = matchmaking_service.create_app(
-            accounts_client=AccountsClient(accounts_base_url), redis_client=get_redis_client(), namespace=namespace
+            accounts_client=matchmaking_accounts_client, redis_client=matchmaking_redis_client, namespace=namespace
         )
         matchmaking_server = TestServer(matchmaking_app)
         await matchmaking_server.start_server()
         matchmaking_servers.append(matchmaking_server)
         matchmaking_client = MatchmakingClient(str(matchmaking_server.make_url("/")).rstrip("/"))
+        matchmaking_clients.append(matchmaking_client)
 
         redis_client = get_redis_client()
+        redis_clients.append(redis_client)
         room_shard_registry = RoomShardRegistry(redis_client, namespace)
 
         async def handler(ws: ServerConnection) -> None:
@@ -176,5 +203,15 @@ def gateway_address(accounts_base_url) -> Iterator[Callable[[str, str, int], Tup
             await server.wait_closed()
         for matchmaking_server in matchmaking_servers:
             await matchmaking_server.close()
+        # Same reasoning as shard_address's own teardown above - every
+        # client this fixture constructed (there are five: two
+        # AccountsClients, two Redis clients, one MatchmakingClient) gets
+        # closed here, not left for GC to eventually warn about.
+        for matchmaking_client in matchmaking_clients:
+            await matchmaking_client.close()
+        for accounts_client in accounts_clients:
+            await accounts_client.close()
+        for redis_client in redis_clients:
+            await redis_client.aclose()
 
     _background.run(_stop_all())

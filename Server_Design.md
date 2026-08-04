@@ -195,7 +195,8 @@ own docstring is explicit that "there's only ever one process/allocator" right n
 a live player's session **automatically re-entering a reconnect attempt** after a relay
 failure (today, `ws_gateway.py` falls a broken relay session back to an *ordinary*
 lobby state, not a reconnect attempt - the existing `ReconnectMessage` path is only ever
-triggered by a fresh login for a `_disconnected_players` entry, which a broken
+triggered by a fresh login for a pending-reconnect entry (`matchmaker.py`'s
+self-expiring `disconnected:<namespace>:<username>` Redis key), which a broken
 Gateway<->Shard relay never produces, since the player's own Gateway connection never
 drops). The registry above answers "where does an existing room live" correctly and
 dynamically now - it does not by itself make *more than one* Game Shard replica safe to
@@ -204,6 +205,74 @@ nor notices one has died), and it does not make a live player's dropped relay se
 automatically retry a reconnect. Both remain a second, separate, genuinely large
 subsystem, deliberately scoped out here in favor of building the registry and replay
 mechanisms correctly first.
+
+**Matchmaking Service: multi-replica pairing race, since fixed.** Section 19's Stage 6
+verification caught `matchmaking.yaml`'s 2-replica config intermittently failing to
+pair two concurrent seekers (documented there at the time as "stays at `replicas: 1`
+until that shared-state redesign happens"). That redesign is now done:
+`kungfu_chess/server/matchmaker_leader.py`'s `MatchmakerLeaderElection` is the same
+`SET key value NX PX ttl` lease shape as `room_shard_registry.py`'s own room-ownership
+lease, just applied to "which replica currently runs the matching sweep" instead of
+"which worker owns this room" - every replica still accepts `SeekGameMessage`/
+`CancelSeekMessage` directly (the seekers ZSET was already Redis-shared, section 16.1),
+but only the lease-holder actually decides pairs and timeouts, on a fast (0.2s) tick
+(`matchmaker.py`'s `run_matching_tick`, driven by `matchmaking_service.py`'s own loop).
+Investigating this surfaced a second, previously-unnoticed instance of the *same*
+per-replica-local-state class of bug, one level deeper: `Matchmaker`'s other
+per-connection bookkeeping (who's logged in as whom, which room a connection belongs
+to, a pending reconnect's room/color, a session's token claims) was *also* still a
+plain in-process dict keyed by a live `ws` object - correct only as long as every
+request for one connection was guaranteed to reach the same replica, a guarantee a
+Kubernetes Service load-balancing across replicas never gives. All of it moved into
+Redis, keyed by `connection_id` (a plain string) instead of a live object, mirroring
+the seekers queue's own approach - see `matchmaker.py`'s `__init__` for the full list
+of keys. `matchmaking.yaml` is back to `replicas: 2`.
+
+One gap remains, deliberately not solved here: a replica (chiefly the WS Gateway,
+which owns the real client socket) that crashes without ever calling `/disconnect`
+leaves its username's active-connection entry in Redis stale forever, permanently
+refusing that username's next login. The in-process version had the *opposite*
+failure mode by accident (a crashed process silently dropped its own state, with no
+one else able to see it was ever stale) rather than by design - a real fix needs a
+heartbeat/liveness TTL layered on top, a separate feature from the race this fix
+actually targets.
+
+**A second, genuinely separate bug, found only by actually load-testing the real
+2-replica deployment (a dozen concurrent seekers, repeatedly) rather than trusting the
+above redesign on its own merits**: `matchmaking_service.py`'s own HTTP route handlers
+for `/message`, `/leave_relay`, and `/disconnect` looked their `_RemoteConnection` up via
+a plain `connections.get(connection_id)` - returning `None`, and silently no-oping
+*while still answering `200 OK`*, whenever that specific request landed on a replica
+other than the one that happened to handle that connection's `/connect` call. Since a
+Kubernetes Service gives no session affinity, a seeker's own `SeekGameMessage` forward
+landing on the "wrong" replica meant the seek was silently dropped - not queued, not
+logged, just gone, with the WS Gateway never learning anything failed (its own HTTP
+call returned 200). `_RemoteConnection` carries no state of its own (just
+`connection_id` and a shared Redis client), so the fix is exactly what
+`_connection_for` already did for `/connect`: construct one on demand instead of
+requiring a local-cache hit. Reproduced directly against the real 2-replica
+deployment (roughly 1 in 6 concurrent seekers lost) and confirmed fixed the same way
+(25/25 clean runs of 12 concurrent seekers afterward). A related, purely-environmental
+finding along the way: `k8s/*.yaml`'s liveness/readiness probes left `timeoutSeconds`
+at Kubernetes' own 1-second default, tight enough that a pod under real CPU load (e.g.
+a concurrent `docker build` on the same single-node dev machine) could get SIGKILL'd
+by its own liveness probe - now set explicitly to `timeoutSeconds: 5` (and a slightly
+more forgiving `failureThreshold: 5` on liveness) across all four app manifests.
+
+Two more, smaller correctness bugs turned up along the way, both genuinely unrelated
+to multi-replica matchmaking itself: `matchmaking_service.py`'s own fire-and-forget
+`asyncio.create_task(...)` for publishing a match's routing signal kept no reference to
+the task it created - a task with nothing else referencing it is eligible for garbage
+collection before it ever runs (a documented, if easy-to-miss, `asyncio.create_task`
+pitfall), which could silently drop the publish; fixed by keeping every such task in a
+module-level set until its own done-callback fires. And `game_room.py`'s
+`_apply_rating_update` guarded against double-applying with a plain boolean flag set
+*before* its own DB round trips - correct for preventing a double-apply, but it let a
+concurrent caller (the periodic broadcast tick, which also checks for an already-over
+game) see "already applied" and proceed to send the game-over `StateMessage` before the
+update had actually finished writing, occasionally letting an immediate reconnect read
+a stale rating; fixed with an `asyncio.Lock` around the whole check-and-apply, so a
+concurrent caller waits for the in-flight update instead of skipping past it.
 
 - This was weighed against a **paired hot-standby worker** (mirroring every room live
   onto a second process, so failover is instant with no replay at all) and rejected
@@ -942,9 +1011,11 @@ Status reflects the actual code/git history as of this writing, not just the pla
    another replica's own attempt to pair with them. `game-shard.yaml`'s own
    comment already named this exact class of limitation for the Shard fleet;
    this is the same limitation surfacing in the Matchmaking Service instead -
-   `matchmaking.yaml` now stays at `replicas: 1` until that shared-state
-   redesign happens, documented in the manifest itself, not silently
-   worked around.
+   `matchmaking.yaml` was pinned to `replicas: 1` until that shared-state
+   redesign happened, documented in the manifest itself, not silently
+   worked around. **Since fixed** - see section 3's own "Matchmaking Service:
+   multi-replica pairing race, since fixed" for the redesign and
+   `matchmaking.yaml`'s current `replicas: 2`.
 
 Verification at each stage: `python -m pytest` should keep passing, and two client
 processes (`python app.py` run twice) should still be able to connect, get matched,

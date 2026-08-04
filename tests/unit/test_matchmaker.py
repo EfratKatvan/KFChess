@@ -20,10 +20,16 @@ class FakeConnection:
     """A stand-in for websockets.asyncio.server.ServerConnection - only
     needs an async send() that records what was sent, since Matchmaker
     (Stage 4a: never a live GameRoom - see game_shard.py) is the only
-    thing that ever calls anything on a connection directly here."""
+    thing that ever calls anything on a connection directly here.
+    connection_id (this stage's own addition) reuses `name` as a
+    convenient, already-unique-per-test stand-in - Matchmaker itself
+    only ever needs it to be a stable string identifying this
+    connection, the same role a real matchmaking_service.py
+    _RemoteConnection's connection_id plays."""
 
     def __init__(self, name: str) -> None:
         self.name = name
+        self.connection_id = name
         self.sent = []
 
     async def send(self, message: str) -> None:
@@ -40,16 +46,23 @@ class FakeRelayOpener:
     match/join/reconnect/spectate actually happened, since Matchmaker
     itself never constructs one anymore (see game_shard.py). Whether the
     resulting relay session actually succeeds is exercised separately,
-    against a real Shard, in test_relay_integration.py."""
+    against a real Shard, in test_relay_integration.py.
+
+    Keyed by connection_id (a plain string, this stage's own change -
+    see matchmaker.py's own on_enter_relay docstring for why) rather
+    than a live connection object - last_for still accepts either a
+    FakeConnection or a bare connection_id string, so every existing
+    call site (`relay_opener.last_for(alice)`) keeps working unchanged."""
 
     def __init__(self) -> None:
-        self.calls: List[Tuple[FakeConnection, Any]] = []
+        self.calls: List[Tuple[str, Any]] = []
 
-    def __call__(self, ws: FakeConnection, routing: shard_protocol.RoutingMessage) -> None:
-        self.calls.append((ws, routing))
+    def __call__(self, connection_id: str, routing: shard_protocol.RoutingMessage) -> None:
+        self.calls.append((connection_id, routing))
 
-    def last_for(self, ws: FakeConnection) -> Optional[shard_protocol.RoutingMessage]:
-        return next((routing for w, routing in reversed(self.calls) if w is ws), None)
+    def last_for(self, ws_or_connection_id) -> Optional[shard_protocol.RoutingMessage]:
+        connection_id = getattr(ws_or_connection_id, "connection_id", ws_or_connection_id)
+        return next((routing for cid, routing in reversed(self.calls) if cid == connection_id), None)
 
 
 def _make_matchmaker(accounts_base_url: str, relay_opener: Optional[FakeRelayOpener] = None) -> Matchmaker:
@@ -72,7 +85,13 @@ async def _connect(matchmaker: Matchmaker, db_path: str, ws: FakeConnection, use
 
 
 async def _seek(matchmaker: Matchmaker, ws: FakeConnection) -> None:
+    """Enqueue-only now (see matchmaker.py's own _start_seeking) - the
+    tick right after reproduces the old inline-matching behavior every
+    existing test here was written against, since with only ever a
+    single Matchmaker instance under test, nothing else would ever run
+    the sweep between two sequential _seek() calls."""
     await matchmaker.on_message(ws, serialize_message(SeekGameMessage()))
+    await matchmaker.run_matching_tick()
 
 
 async def _create_room(matchmaker: Matchmaker, ws: FakeConnection, room_id: str = "test-room") -> None:
@@ -277,6 +296,10 @@ async def _timeout_scenario(db_path, accounts_base_url):
     await _connect(matchmaker, db_path, alice, "alice", 1200)
     await _seek(matchmaker, alice)
     await asyncio.sleep(0.1)
+    # No background task anymore (see matchmaker.py's run_matching_tick) -
+    # timeout sweep only ever runs on the next tick, same as a real
+    # Matchmaking Service's own periodic loop would provide.
+    await matchmaker.run_matching_tick()
 
     assert _last_type(alice) == protocol.NO_OPPONENT_FOUND
 
@@ -399,8 +422,8 @@ async def _reconnect_signal_scenario(db_path, accounts_base_url):
     room_id = relay_opener.last_for(alice).room_id
 
     await matchmaker.on_disconnect(alice)
-    assert "alice" in matchmaker._disconnected_players
-    assert matchmaker._disconnected_players["alice"] == (room_id, WHITE)
+    disconnected_raw = await matchmaker._redis.get(f"{matchmaker._disconnected_key_prefix}alice")
+    assert json.loads(disconnected_raw) == {"room_id": room_id, "color": WHITE}
 
     alice_new = FakeConnection("alice-reconnected")
     await _connect(matchmaker, db_path, alice_new, "alice", 1200)
@@ -409,7 +432,8 @@ async def _reconnect_signal_scenario(db_path, accounts_base_url):
     assert isinstance(reconnect_routing, shard_protocol.ReconnectMessage)
     assert reconnect_routing.room_id == room_id
     assert reconnect_routing.color == WHITE
-    assert "alice" not in matchmaker._disconnected_players  # consumed by the reconnect attempt
+    # consumed by the reconnect attempt (on_connect's own getdel)
+    assert await matchmaker._redis.get(f"{matchmaker._disconnected_key_prefix}alice") is None
 
     await matchmaker.on_disconnect(alice_new)
     await matchmaker.on_disconnect(bob)
@@ -433,13 +457,13 @@ async def _leave_relay_scenario(db_path, accounts_base_url):
     await _connect(matchmaker, db_path, bob, "bob", 1200)
     await _seek(matchmaker, alice)
     await _seek(matchmaker, bob)
-    assert alice in matchmaker._room_of
+    assert await matchmaker._redis.hget(matchmaker._room_of_key, alice.connection_id) is not None
 
     await matchmaker.on_leave_relay(alice)
-    assert alice not in matchmaker._room_of
+    assert await matchmaker._redis.hget(matchmaker._room_of_key, alice.connection_id) is None
 
     await matchmaker.on_disconnect(alice)  # now an ordinary lobby disconnect
-    assert "alice" not in matchmaker._disconnected_players
+    assert await matchmaker._redis.get(f"{matchmaker._disconnected_key_prefix}alice") is None
 
     await matchmaker.on_disconnect(bob)
 

@@ -51,18 +51,26 @@ spec:
           ports:
             - containerPort: 8767
             - containerPort: 9100
+          # timeoutSeconds explicit, not left at Kubernetes' own 1s default -
+          # see ws-gateway.yaml's own note: found the hard way, watching a
+          # pod get SIGKILL'd (exit 137) by its own liveness probe under
+          # real concurrent test load on a resource-constrained
+          # single-node dev cluster.
           readinessProbe:
             httpGet:
               path: /metrics
               port: 9100
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /metrics
               port: 9100
             initialDelaySeconds: 10
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
 ---
 # ClusterIP only - Server_Design.md section 2: a Shard is reachable only
 # from the WS Gateway, never from outside the cluster, never directly

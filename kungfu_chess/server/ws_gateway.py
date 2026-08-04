@@ -193,12 +193,27 @@ async def _pump_lobby_message(matchmaking_client: MatchmakingClient, connection_
     a routing signal, or nothing at all) arrives later over this
     connection's Pub/Sub channel, never as this call's own return
     value - matchmaking_service.py's /message endpoint never sends a
-    meaningful body back for exactly that reason."""
+    meaningful body back for exactly that reason.
+
+    The forward itself is shielded from cancellation - the caller
+    (_handle_connection) races this coroutine's own task against
+    push_task and cancels whichever one loses (see its own docstring
+    on why). Once ws.recv() has actually returned a message, that
+    message has already been consumed from the socket and can never be
+    read again - if the push side wins the race at that exact moment
+    (a routing/reply message for this same connection arriving while
+    the forward HTTP call is still in flight) and this task's own
+    cancellation were allowed to reach the send_message() call, the
+    message would be silently lost: read from the client, never
+    delivered to the Matchmaking Service. asyncio.shield() lets the
+    outer race still resolve immediately (this task still raises
+    CancelledError, exactly as before) while the forward itself keeps
+    running to completion in the background regardless."""
     try:
         raw = await ws.recv()
     except ConnectionClosed:
         return False
-    await matchmaking_client.send_message(connection_id, raw)
+    await asyncio.shield(matchmaking_client.send_message(connection_id, raw))
     return True
 
 

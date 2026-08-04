@@ -42,18 +42,29 @@ spec:
           ports:
             - containerPort: 8765
             - containerPort: 9100
+          # timeoutSeconds explicit, not left at Kubernetes' own 1s default -
+          # found the hard way, watching this pod get SIGKILL'd (exit 137)
+          # by its own liveness probe under real concurrent test load on a
+          # resource-constrained single-node dev cluster, losing every
+          # in-flight connection's cleanup with it (see matchmaker.py's own
+          # __init__ note on the resulting stale active_by_username entries).
+          # A single slow /metrics response under CPU pressure shouldn't be
+          # mistaken for a genuinely hung process.
           readinessProbe:
             httpGet:
               path: /metrics
               port: 9100
             initialDelaySeconds: 5
             periodSeconds: 10
+            timeoutSeconds: 5
           livenessProbe:
             httpGet:
               path: /metrics
               port: 9100
             initialDelaySeconds: 10
             periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 5
 ---
 # LoadBalancer, not ClusterIP - Server_Design.md section 2: this is the
 # *only* role a client ever reaches directly ("a client never has a

@@ -121,6 +121,12 @@ class GameRoom:
         self._last_tick = time.perf_counter()
         self._last_broadcast = time.perf_counter()
         self._rating_update_applied = False
+        # A concurrent caller must *wait* for an in-flight update, not
+        # just see the flag and skip (see _apply_rating_update) - the
+        # flag alone only prevents applying the update twice, it
+        # doesn't stop a caller from observing "already applied" before
+        # the first caller's own DB round trip has actually finished.
+        self._rating_update_lock = asyncio.Lock()
         self._disconnected_color: Optional[str] = None
         self._survivor_also_disconnected = False
         self._paused = False
@@ -432,25 +438,38 @@ class GameRoom:
         otherwise it's the color whose king is still standing. Doesn't
         free the room itself (see leave/on_game_over) - a finished game
         still might get a New Game rematch in the very same room, so
-        only actually leaving means the room is truly done."""
-        if self._rating_update_applied:
-            return
-        self._rating_update_applied = True
-        if winner_color is None:
-            white_has_king = any(p.kind == KING and p.color == WHITE for p in view_state.pieces)
-            winner_color = WHITE if white_has_king else BLACK
-        loser_color = _other_color(winner_color)
-        winner_username, loser_username = self._usernames[winner_color], self._usernames[loser_color]
-        old_winner_rating = await self._accounts_client.get_rating(winner_username)
-        old_loser_rating = await self._accounts_client.get_rating(loser_username)
-        new_winner_rating, new_loser_rating = await self._accounts_client.update_ratings_after_game(
-            winner_username, loser_username
-        )
-        logger.info(
-            "rating update: %s %d->%d, %s %d->%d",
-            winner_username, old_winner_rating, new_winner_rating,
-            loser_username, old_loser_rating, new_loser_rating,
-        )
+        only actually leaving means the room is truly done.
+
+        Guarded by a lock, not just the flag alone: _handle_resign calls
+        this and then awaits it fully before the resign handler returns,
+        but the periodic _broadcast tick can call it again concurrently
+        the moment _handle_resign's own first await yields control back
+        to the event loop - which is *before* the DB round trips below
+        have actually completed, only after _rating_update_applied is
+        already set. Without the lock, that concurrent call would see
+        the flag, skip immediately, and let _broadcast's own STATE
+        message (which is what a client's game-over actually gets acted
+        on for, e.g. this room's own reconnect/rating-fetch flow) go out
+        before the update it was supposed to wait for had landed."""
+        async with self._rating_update_lock:
+            if self._rating_update_applied:
+                return
+            self._rating_update_applied = True
+            if winner_color is None:
+                white_has_king = any(p.kind == KING and p.color == WHITE for p in view_state.pieces)
+                winner_color = WHITE if white_has_king else BLACK
+            loser_color = _other_color(winner_color)
+            winner_username, loser_username = self._usernames[winner_color], self._usernames[loser_color]
+            old_winner_rating = await self._accounts_client.get_rating(winner_username)
+            old_loser_rating = await self._accounts_client.get_rating(loser_username)
+            new_winner_rating, new_loser_rating = await self._accounts_client.update_ratings_after_game(
+                winner_username, loser_username
+            )
+            logger.info(
+                "rating update: %s %d->%d, %s %d->%d",
+                winner_username, old_winner_rating, new_winner_rating,
+                loser_username, old_loser_rating, new_loser_rating,
+            )
 
     def _personalized_message(self, color: str, view_state: BoardViewState) -> StateMessage:
         controller = self._controllers[color]
