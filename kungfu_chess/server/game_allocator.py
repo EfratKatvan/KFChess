@@ -36,11 +36,14 @@ class GameAllocator:
     fairness decision (section 7): given a freshly-matched pair, this
     decides which worker hosts the game and acquires that worker's
     lease on the room (section 3) before the room is handed back to
-    play. Still one process for now (section 19's Stage 3) - "picking
-    a worker" has nothing to choose between yet, since this process is
-    the only one - but the lease itself is acquired, renewed by
-    heartbeat, and released for real, so the Redis schema and failure
-    behavior already match the design this is a stepping stone toward."""
+    play. "Which worker" for a *brand-new* room is still just whichever
+    replica Kubernetes' own Service load-balancing happened to route
+    this HostSeatMessage to (no custom picking logic here) - but the
+    lease itself is acquired, renewed by heartbeat, and released for
+    real, and a crashed worker's now-expired lease is exactly what lets
+    a *different* replica's game_shard.py rebuild an orphaned room from
+    JetStream replay (see room_shard_registry.py's own save_meta/
+    load_meta and game_shard.py's _handle_reconnect)."""
 
     def __init__(
         self,

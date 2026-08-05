@@ -21,6 +21,7 @@ from kungfu_chess.server.messages import LeaveRoomMessage, LeftRoomMessage
 from kungfu_chess.server.metrics import start_metrics_server
 from kungfu_chess.server.move_log_stream import MoveLogStream
 from kungfu_chess.server.redis_client import get_client as get_redis_client
+from kungfu_chess.server.room_shard_registry import RoomShardRegistry
 from kungfu_chess.server.rooms import RoomRegistry
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
@@ -105,6 +106,13 @@ class GameShard:
             move_log_stream=move_log_stream, shard_address=shard_address,
         )
         self._room_registry = RoomRegistry(redis_client=redis_client, namespace=namespace)
+        # Same namespace/Redis as the lease GameAllocator itself acquires
+        # (room:<ns>:<id>:owner) - only ever used here for the durable
+        # white/black pairing (room:<ns>:<id>:meta - see its own
+        # save_meta/load_meta docstring), which is what makes _build_room
+        # callable again on a *different* worker after this room's
+        # original owner crashed, not just on the one that first built it.
+        self._room_shard_registry = RoomShardRegistry(redis_client, namespace)
         self._rooms: Dict[str, GameRoom] = {}
         self._pending: Dict[str, _PendingRoom] = {}
         ACTIVE_ROOMS.set_function(lambda: len(self._rooms))
@@ -197,6 +205,10 @@ class GameShard:
             if replayed:
                 logger.info("room %s: replaying %d recorded move(s) from JetStream", room_id, len(replayed))
                 room.replay(replayed)
+        # Durable, unlike self._rooms - see save_meta's own docstring on
+        # why this is what lets _handle_reconnect rebuild this exact
+        # pairing on a *different* worker later, if this one crashes.
+        await self._room_shard_registry.save_meta(room_id, white.username, black.username)
         self._rooms[room_id] = room
         pending.room = room
         await room.start()
@@ -205,10 +217,56 @@ class GameShard:
 
     async def _handle_reconnect(self, ws: ServerConnection, routing: shard_protocol.ReconnectMessage) -> None:
         room = self._rooms.get(routing.room_id)
-        if room is None or not await room.try_reconnect(routing.color, ws):
-            await ws.close()  # missing room or expired grace period - the Gateway falls back to the lobby
+        if room is not None:
+            if not await room.try_reconnect(routing.color, ws):
+                await ws.close()  # expired grace period - the Gateway falls back to the lobby
+                return
+            await self._run_seat_messages(ws, room, routing.color)
             return
-        await self._run_seat_messages(ws, room, routing.color)
+
+        # Not hosted here. Two very different reasons that can be true,
+        # both landing on whatever worker a Kubernetes Service happened
+        # to route this relay connection to (there is no session
+        # affinity - same reasoning as matchmaking_service.py's own
+        # per-connection state, section 3): this worker genuinely never
+        # saw this room (a routine reconnect, misrouted to a sibling
+        # replica), or this room's *original* worker crashed and this
+        # is the recovery path - room_meta (durable - see save_meta)
+        # is what tells the two apart, since self._rooms itself can't
+        # (a crashed worker's in-memory dict is simply gone, taking the
+        # answer with it). Reuses the exact same "wait for the other
+        # seat, then _build_room" flow _handle_host_seat already has -
+        # a genuine crash recovery is expected to bring *both* players'
+        # own Gateways here at nearly the same moment (see
+        # ws_gateway.py's own automatic-retry-on-shard-failure), so the
+        # very same pairing-wait naturally handles it; if only one
+        # actually shows up, this times out exactly like an abandoned
+        # brand-new room does today - a known, deliberately simple limit
+        # for this stage, not a silent gap (see Server_Design.md).
+        meta = await self._room_shard_registry.load_meta(routing.room_id)
+        if meta is None:
+            await ws.close()  # never existed, or already long gone - the Gateway falls back to the lobby
+            return
+        white_username, black_username = meta
+        opponent_username = black_username if routing.color == WHITE else white_username
+        pending = self._pending.setdefault(routing.room_id, _PendingRoom())
+        pending.seats[routing.color] = _SeatArrival(ws=ws, username=routing.username, opponent_username=opponent_username)
+
+        if len(pending.seats) < 2:
+            try:
+                await asyncio.wait_for(pending.ready.wait(), timeout=PENDING_ROOM_TIMEOUT_SECONDS)
+            except asyncio.TimeoutError:
+                logger.warning("room %s: recovery abandoned - the other seat never reconnected", routing.room_id)
+                self._pending.pop(routing.room_id, None)
+                await ws.close()
+                return
+        else:
+            await self._build_room(routing.room_id, pending)
+
+        if pending.failed or pending.room is None:
+            await ws.close()
+            return
+        await self._run_seat_messages(ws, pending.room, routing.color)
 
     async def _handle_spectate(self, ws: ServerConnection, routing: shard_protocol.SpectateMessage) -> None:
         room = self._rooms.get(routing.room_id)
@@ -264,6 +322,7 @@ class GameShard:
 
     async def _release_room(self, room_id: str) -> None:
         await self._room_registry.close(room_id)
+        await self._room_shard_registry.clear_meta(room_id)
         self._rooms.pop(room_id, None)
 
 

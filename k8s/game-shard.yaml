@@ -4,22 +4,37 @@ metadata:
   name: game-shard
   namespace: kfchess
 spec:
-  # Deliberately 1, not N - unlike the other three roles here. Scaling
-  # this to multiple replicas today would be a real correctness bug, not
-  # just a missed optimization: ws_gateway.py dials a single fixed
-  # SHARD_HOST (this Service's DNS name), and a Kubernetes Service
-  # load-balances each *new* TCP connection across whichever replicas
-  # are ready - meaning a reconnect for a room hosted on replica A could
-  # land on replica B, which has never heard of that room_id, and fail.
-  # game_allocator.py's own docstring is explicit about this same
-  # assumption ("there's only ever one process/allocator"). Multiple
-  # Shard replicas need the room-to-worker discovery/routing layer
-  # Server_Design.md section 3 describes and this project's own
-  # Server_Design.md (NATS/JetStream crash-recovery entry) explicitly
-  # scoped out as a separate, larger follow-up - not a config change.
-  # This is exactly the shard-lifecycle case section 18 flags as the
-  # trigger to reach for Agones instead of plain Deployment/ReplicaSet
-  # semantics - not yet needed at replicas: 1.
+  # Still 1, not 2 - tried 2 directly against a real cluster (not just
+  # reasoned about) while building this stage's own crash-recovery work
+  # below, and it reproduced a real, different bug: a brand-new room's
+  # two HostSeatMessage relay connections (white's and black's) are two
+  # *independent* TCP connections, each dialing the fixed SHARD_HOST
+  # Service name separately - Kubernetes' own per-connection
+  # load-balancing (no session affinity) can and does send them to
+  # *different* replicas, and neither ever sees both seats, so
+  # _handle_host_seat's own pairing wait reliably times out for roughly
+  # half of all matches. Naively assuming "Kubernetes' own load-balancing
+  # spreads new rooms across replicas for free" (an earlier version of
+  # this exact comment) was wrong - that reasoning holds for a *single*
+  # relay connection needing *any* live replica (matchmaking-style), not
+  # for two independent connections that both need to land on the
+  # *same* one. Fixing this for real needs the two seats' connections
+  # routed together - a consistent hash of room_id over the actual set
+  # of live replica pod IPs (a headless Service, not this one, so DNS
+  # resolves every replica, not a single load-balanced VIP) - a
+  # separate, still-undone piece of work, not a config change.
+  #
+  # What *is* done and real: crash recovery for whichever single
+  # replica is currently running. room_shard_registry.py persists each
+  # room's white/black pairing durably (save_meta/load_meta - separate
+  # from the lease's own TTL'd key, which is what makes a crashed
+  # owner's lease actually expire and disappear), and game_shard.py's
+  # own _handle_reconnect rebuilds the room from that plus JetStream
+  # replay when a replacement pod (still just one at a time) takes over
+  # after this one crashes. ws_gateway.py's own relay loop retries as a reconnect
+  # automatically when the Shard side of a relay session drops without
+  # a clean close, giving that rebuild a real chance before falling
+  # back to the lobby.
   replicas: 1
   selector:
     matchLabels:
@@ -42,6 +57,19 @@ spec:
               value: game-shard
             - name: SHARD_HOST
               value: "0.0.0.0"  # this pod's own bind - see kungfu_chess/server/game_shard.py's comment
+            # Without this, SHARD_ADVERTISED_ADDRESS defaults to
+            # "{SHARD_HOST}:{SHARD_PORT}" = "0.0.0.0:8767" - a bind
+            # address, not a dialable one. room_shard_registry.py stores
+            # exactly this value as the lease a *different* process
+            # later dials to reach this room (reconnect/spectate, and -
+            # this stage's own addition - automatic recovery after a
+            # crash) - a real, pre-existing bug that simply had nothing
+            # exercising this path for real until ws_gateway.py's own
+            # automatic retry-on-shard-crash started actually dialing
+            # it. docker-compose.yml already set this correctly; the
+            # k8s manifest never did.
+            - name: SHARD_ADVERTISED_ADDRESS
+              value: "game-shard:8767"
             - name: ACCOUNTS_SERVICE_URL
               value: http://api:8766
             - name: REDIS_HOST

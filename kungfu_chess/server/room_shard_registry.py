@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Optional
+import json
+from typing import Optional, Tuple
 
 from redis.asyncio import Redis
 
@@ -65,3 +66,29 @@ class RoomShardRegistry:
 
     async def release(self, room_id: str) -> None:
         await self._redis.delete(self.key(room_id))
+
+    def _meta_key(self, room_id: str) -> str:
+        return f"room:{self._namespace}:{room_id}:meta"
+
+    async def save_meta(self, room_id: str, white_username: str, black_username: str) -> None:
+        """Persists the one fact a *different* worker needs to rebuild
+        this room's pairing that its own crash would otherwise take
+        with it: who's playing which color. Deliberately a separate,
+        non-expiring key from the lease above (own(room_id)'s TTL is
+        exactly what makes an owner's crash detectable at all - this
+        key needs the opposite lifetime, surviving that crash). Written
+        once, at allocation (game_shard.py's own _build_room); read
+        only on the recovery path (_handle_reconnect finding no locally
+        hosted room); cleared alongside the lease once the room is
+        genuinely done (see release, called from the same place)."""
+        await self._redis.set(self._meta_key(room_id), json.dumps({"white": white_username, "black": black_username}))
+
+    async def load_meta(self, room_id: str) -> Optional[Tuple[str, str]]:
+        raw = await self._redis.get(self._meta_key(room_id))
+        if raw is None:
+            return None
+        data = json.loads(raw)
+        return data["white"], data["black"]
+
+    async def clear_meta(self, room_id: str) -> None:
+        await self._redis.delete(self._meta_key(room_id))

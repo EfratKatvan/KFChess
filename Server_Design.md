@@ -188,23 +188,66 @@ that it coincidentally matches - `tests/unit/test_ws_gateway.py`), plus a live D
 reconnect that queries Redis directly to confirm the registry holds the real address,
 not an opaque id.
 
-**Deliberately not yet built, and worth being precise about the boundary**: the
-*automatic* half of this story - the **Game Allocator noticing** a crashed worker
-(there is no multi-worker health-check/reassignment logic at all today; `game_allocator.py`'s
-own docstring is explicit that "there's only ever one process/allocator" right now) and
-a live player's session **automatically re-entering a reconnect attempt** after a relay
-failure (today, `ws_gateway.py` falls a broken relay session back to an *ordinary*
-lobby state, not a reconnect attempt - the existing `ReconnectMessage` path is only ever
-triggered by a fresh login for a pending-reconnect entry (`matchmaker.py`'s
-self-expiring `disconnected:<namespace>:<username>` Redis key), which a broken
-Gateway<->Shard relay never produces, since the player's own Gateway connection never
-drops). The registry above answers "where does an existing room live" correctly and
-dynamically now - it does not by itself make *more than one* Game Shard replica safe to
-run (nothing yet decides *which* of several candidates a brand-new room should go to,
-nor notices one has died), and it does not make a live player's dropped relay session
-automatically retry a reconnect. Both remain a second, separate, genuinely large
-subsystem, deliberately scoped out here in favor of building the registry and replay
-mechanisms correctly first.
+**Automatic crash recovery for a live game: since done.** This section used to end here
+with both halves of automatic recovery listed as deliberately unbuilt. They're built now,
+and - like the Matchmaking Service work above - actually verified against a real cluster,
+not just reasoned about, including one live pod-kill mid-game that surfaced two more real
+bugs neither unit tests nor reasoning alone would have caught.
+
+What changed: `room_shard_registry.py` gained a second, *durable* key alongside the
+existing TTL'd ownership lease - `save_meta`/`load_meta`/`clear_meta`, storing a room's
+white/black username pairing under a plain (non-expiring) key. The lease's own TTL is
+exactly what makes a crashed worker's ownership disappear; this second key is what
+survives that disappearance, since it's the one fact a *different* worker needs to
+rebuild the pairing that a crashed worker's in-memory state would otherwise take with
+it. `game_shard.py`'s `_handle_reconnect` now falls back to this when a room isn't
+hosted locally: it looks up the durable pairing, re-enters the exact same "wait for the
+other seat, then build the room" flow `_handle_host_seat` already had, and lets
+`_build_room`'s already-existing JetStream replay (section 3, this same section) do the
+actual board reconstruction - no new replay logic needed, just a new way to reach it.
+`ws_gateway.py`'s relay loop now tells a Shard's own *deliberate* closes (game over, a
+rejected reconnect - `ConnectionClosedOK`) apart from the process actually dying
+mid-session (`ConnectionClosedError`, no close handshake at all) and, only in the latter
+case, retries as a `ReconnectMessage` instead of immediately falling back to the lobby -
+bounded (30 seconds across repeated attempts, not indefinite), giving a replacement
+worker a real chance to finish rebuilding before giving up.
+
+Two bugs this surfaced, both found only by killing a live pod against a real cluster
+mid-game, not by reasoning about the design or by unit tests:
+
+- `game-shard.yaml` set `SHARD_HOST=0.0.0.0` (correct for *binding* every interface)
+  but never set `SHARD_ADVERTISED_ADDRESS` - which defaults to `f"{SHARD_HOST}:{SHARD_PORT}"`,
+  i.e. `0.0.0.0:8767`, the literal value `room_shard_registry.py` was persisting as the
+  address a *different* process should dial to reach this room. A real, pre-existing bug
+  (docker-compose.yml already set this correctly; only the k8s manifest didn't) that
+  simply had nothing in the whole system ever exercising this path for real until this
+  stage's own automatic retry started actually dialing it.
+- The retry loop's own budget (an untested guess of 3 retries × 1 second) reliably gave
+  up before Kubernetes had even finished scheduling and starting a replacement pod - a
+  killed pod's replacement needs several real seconds at an absolute minimum, more under
+  any load, and 4 seconds of total retry budget was never going to be enough. Raised to
+  20 retries × 1.5 seconds (30 seconds total, still bounded) after watching the first
+  number fail against the real timing and picking one wide enough to actually cover it.
+
+**What is still out of scope, precisely**: *placement* of a brand-new room
+(`HostSeatMessage`) is unchanged - still dials the fixed `SHARD_HOST`. This was tried
+directly against a real cluster too (`game-shard.yaml` at `replicas: 2`) specifically
+while building the above, and reproduced a different, genuine bug: a new room's two
+`HostSeatMessage` relay connections (white's and black's) are two *independent* TCP
+connections, each dialing the same Service name separately - Kubernetes' own
+per-connection load-balancing (no session affinity) can and does send them to *different*
+replicas, and since neither ever sees both seats, `_handle_host_seat`'s own pairing wait
+reliably timed out for roughly half of all matches. This is a different shape of problem
+than everything else this stage fixed: those were all *one* connection needing to reach
+*whichever* replica already holds some existing state (reconnect, spectate, a Matchmaking
+Service request) - solved by making that state Redis-shared, reachable from any replica.
+This is *two* independent connections that must reach the *same* replica *before* either
+one has any state to be shared - Redis-backed state doesn't help decide that; it needs
+the two connections routed together, e.g. a consistent hash of `room_id` over the actual
+set of live replica pod IPs (a headless Service, so DNS resolves every pod, not a single
+load-balanced VIP). `game-shard.yaml` is back to `replicas: 1` - crash recovery for
+whichever single instance is currently running is real and verified; concurrent
+multi-replica placement is a separate, still-undone piece of work.
 
 **Matchmaking Service: multi-replica pairing race, since fixed.** Section 19's Stage 6
 verification caught `matchmaking.yaml`'s 2-replica config intermittently failing to

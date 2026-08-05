@@ -11,7 +11,7 @@ from prometheus_client import Gauge
 from redis.asyncio import Redis
 from websockets.asyncio.client import connect
 from websockets.asyncio.server import ServerConnection, serve
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from kungfu_chess.logging_config import configure_logging
 from kungfu_chess.server import accounts, auth_token, shard_protocol
@@ -232,12 +232,18 @@ async def _try_send_raw(ws: ServerConnection, raw: str) -> None:
 async def _pump(src: Any, dst: Any) -> None:
     """One direction of a relay session's byte pipe - raw, undecoded:
     the Gateway never needs to know what a relayed message means, only
-    that it needs to reach the other side (see _run_relay_session)."""
-    try:
-        async for raw in src:
-            await dst.send(raw)
-    except Exception as error:
-        logger.debug("relay pump ended: %s", error)
+    that it needs to reach the other side (see _run_relay_session).
+
+    Exceptions propagate now, deliberately not swallowed here anymore -
+    _run_relay_session's own caller (_relay_with_crash_retry) needs to
+    tell a deliberate close (ConnectionClosedOK - the Shard's own
+    ws.close() calls: a rejected reconnect, an ordinary "Back to
+    Lobby") apart from the Shard process itself dying mid-session
+    (ConnectionClosedError - no close handshake at all, just the
+    connection dropping), since only the latter should trigger an
+    automatic reconnect retry (Server_Design.md section 3)."""
+    async for raw in src:
+        await dst.send(raw)
 
 
 async def _resolve_shard_address(
@@ -269,27 +275,89 @@ async def _run_relay_session(
     shard_host: str,
     shard_port: int,
     room_shard_registry: RoomShardRegistry,
-) -> bool:
+) -> Tuple[bool, bool]:
     """Opens an outbound connection to the Game Shard, sends the one
     routing handshake message (Server_Design.md Stage 4a), then pumps
-    raw bytes both directions until either side closes. Returns True
-    if the real client socket is still open afterward (the Shard
-    ended the session on its own - a rejected reconnect/spectate, or
-    an ordinary "Back to Lobby" - so the caller goes back to lobby
-    mode); False if the real client socket itself closed (a genuine
-    disconnect, mid-relay)."""
+    raw bytes both directions until either side closes.
+
+    Returns (client_still_open, shard_crashed). client_still_open is
+    False if the real client socket itself closed (a genuine
+    disconnect, mid-relay) - unchanged from before. shard_crashed is
+    the new half (section 3's automatic-failover piece): True if the
+    Shard side of the relay ended *without* a clean close handshake -
+    the process dying mid-session, not one of its own deliberate
+    ws.close() calls (a rejected reconnect, an ordinary "Back to
+    Lobby") - or if the outbound connection couldn't even be
+    established at all (the Shard was already gone). The caller
+    (_relay_with_crash_retry) is what actually decides to retry on
+    this signal; this function only ever reports what it saw."""
     resolved_host, resolved_port = await _resolve_shard_address(routing, shard_host, shard_port, room_shard_registry)
+    shard_crashed = False
     try:
         async with connect(f"ws://{resolved_host}:{resolved_port}") as shard_ws:
             await shard_ws.send(shard_protocol.send_routing_message(routing))
             client_to_shard = asyncio.create_task(_pump(ws, shard_ws))
             shard_to_client = asyncio.create_task(_pump(shard_ws, ws))
-            await asyncio.wait({client_to_shard, shard_to_client}, return_when=asyncio.FIRST_COMPLETED)
-            for task in (client_to_shard, shard_to_client):
+            done, pending = await asyncio.wait({client_to_shard, shard_to_client}, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
                 task.cancel()
+            if shard_to_client in done and isinstance(shard_to_client.exception(), ConnectionClosedError):
+                shard_crashed = True
+            for task in done:
+                error = task.exception()
+                if error is not None and not isinstance(error, ConnectionClosed):
+                    logger.debug("relay pump ended with an unexpected error: %s", error)
     except Exception as error:
+        # Couldn't even open/handshake the outbound connection - the
+        # same "the Shard isn't there" signal as a mid-session drop,
+        # just discovered before a session ever started.
         logger.warning("relay session to the shard failed: %s", error)
-    return ws.close_code is None
+        shard_crashed = True
+    return ws.close_code is None, shard_crashed
+
+
+# Verified against a real cluster, not just reasoned about: a killed
+# pod's *replacement* needs Kubernetes to notice, reschedule, pull the
+# (already-cached, so this is close to a best case) image, start the
+# container, and pass its readiness probe - several seconds at an
+# absolute minimum, comfortably more under any real load. The original
+# 3 retries * 1s (an arbitrary, never-actually-tested guess) reliably
+# gave up before a replacement pod was even listening. 20 * 1.5s = 30s
+# is still bounded, not indefinite, but gives a real replacement a real
+# chance to actually come up.
+RELAY_CRASH_MAX_RETRIES = 20
+RELAY_CRASH_RETRY_DELAY_SECONDS = 1.5
+
+
+async def _relay_with_crash_retry(
+    ws: ServerConnection,
+    routing: shard_protocol.RoutingMessage,
+    shard_host: str,
+    shard_port: int,
+    room_shard_registry: RoomShardRegistry,
+) -> bool:
+    """Server_Design.md section 3's automatic-failover half: runs
+    _run_relay_session, and if it reports the Shard side crashed
+    (rather than one of its own deliberate closes), retries as a
+    reconnect attempt instead of immediately falling back to the
+    lobby - giving game_shard.py's own recovery path (_handle_reconnect
+    rebuilding the room from JetStream replay when it isn't hosted
+    locally) a real chance to run first. A short delay between
+    attempts, not an immediate retry: the replacement worker (wherever
+    Kubernetes routes this next attempt to) needs a moment to actually
+    finish that rebuild. Bounded, not indefinite - if the room never
+    recovers (JetStream has nothing to replay, or the opponent's own
+    retry never arrives either - see game_shard.py's own note on that),
+    this still falls back to the lobby exactly as before, just after
+    giving real recovery a real chance."""
+    for attempt in range(RELAY_CRASH_MAX_RETRIES + 1):
+        client_still_open, shard_crashed = await _run_relay_session(ws, routing, shard_host, shard_port, room_shard_registry)
+        if not client_still_open or not shard_crashed or attempt == RELAY_CRASH_MAX_RETRIES:
+            return client_still_open
+        logger.warning("room %s: shard connection dropped - retrying as a reconnect (attempt %d)", routing.room_id, attempt + 1)
+        await asyncio.sleep(RELAY_CRASH_RETRY_DELAY_SECONDS)
+        routing = shard_protocol.ReconnectMessage(room_id=routing.room_id, color=routing.color, username=routing.username)
+    return True  # unreachable - the loop above always returns by its last iteration
 
 
 async def _handle_connection(
@@ -352,7 +420,7 @@ async def _handle_connection(
                 item = push_task.result()
                 if item["kind"] == "routing":
                     routing = shard_protocol.deserialize_routing(item["routing"])
-                    still_open = await _run_relay_session(ws, routing, shard_host, shard_port, room_shard_registry)
+                    still_open = await _relay_with_crash_retry(ws, routing, shard_host, shard_port, room_shard_registry)
                     if not still_open:
                         break
                     await matchmaking_client.leave_relay(connection_id)
