@@ -291,18 +291,36 @@ address, not the allocated Pod's own - useless under `portPolicy: None`, where n
 maps that Node address back to this specific replica; fixed by filtering for the
 `PodIP`-typed entry specifically. And, unrelated to Agones itself but caught in the
 course of this verification: a long-lived `game_shard.py` replica's `MoveLogStream`
-(NATS) connection does not recover if the underlying NATS server itself restarts
+(NATS) connection did not recover if the underlying NATS server itself restarted
 (observed against this real cluster's own NATS pod, which had already restarted several
-times from cumulative resource pressure) - the room-hosting connection silently goes
-stale and the next `_build_room` crashes reaching for it. **Deliberately not fixed as
-part of this stage** - it's a pre-existing gap in `move_log_stream.py`'s connection
-handling, orthogonal to Agones/placement, and deserves its own focused fix (likely
-detecting a closed connection and reconnecting/re-subscribing) rather than being
-bundled in here. Worked around for this stage's own verification by recycling the
-affected GameServer (Agones replaces it cleanly, the same graceful-degradation path a
-genuine crash already exercises) - a real, load-bearing example of why `save_meta`'s
-durable pairing plus JetStream replay (both earlier in this section) matter even for
-"an ordinary process is misbehaving," not only a hard pod-kill.
+times from cumulative resource pressure) - the room-hosting connection silently went
+stale and the next `_build_room` crashed reaching for it. Worked around at the time for
+this stage's own verification by recycling the affected GameServer (Agones replaces it
+cleanly, the same graceful-degradation path a genuine crash already exercises) - a real,
+load-bearing example of why `save_meta`'s durable pairing plus JetStream replay (both
+earlier in this section) matter even for "an ordinary process is misbehaving," not only
+a hard pod-kill.
+
+**Since fixed**, as its own focused follow-up (not bundled into the Agones work above,
+since it's an orthogonal `move_log_stream.py` connection-handling gap, not a placement
+one). Root cause, confirmed by reading `nats-py`'s own source: `nats.connect()`'s
+default `max_reconnect_attempts=60` at `reconnect_time_wait=2s` gives a connection only
+~120 seconds of total retry budget before it gives up *permanently* - once
+`nats-py` considers itself closed, no amount of the server later coming back fixes it;
+a brand-new connection is required. `MoveLogStream.connect()` now passes
+`max_reconnect_attempts=-1` (nats-py's own "unlimited" sentinel - confirmed against its
+source, not guessed) plus `disconnected_cb`/`reconnected_cb` logging, so a NATS blip is
+visible in this role's own logs rather than only surfacing as a confusing crash the next
+time a room happens to need this connection. The exact same reasoning
+`RELAY_CRASH_MAX_RETRIES` already used earlier in this section (a retry budget sized for
+an *assumption* about real infra timing, not measured against it) applied here too -
+this class's own docstring already says one connection is reused for a Game Shard
+replica's *entire process lifetime*, so it should never give up reconnecting on its own,
+the same way the process itself doesn't restart just because NATS blipped once. Verified
+against a real NATS container restart (not reasoned about): published a move, restarted
+the `nats` container mid-connection, and confirmed the *same* `MoveLogStream` instance
+both published a second move and replayed both afterward - the exact operation that
+raised `ConnectionClosedError` before this fix.
 
 **A resource note, given this project's own single-node dev cluster**: Fleet replica
 counts (`game-shard`: 2, `game-shard-eu`: 1) are kept deliberately small - the placement
@@ -813,12 +831,6 @@ now an answered, reproducible question instead of an assumed one.
   (measured match/move latency under concurrency, on this project's own dev
   hardware), but benchmarking actual tick cost and socket overhead per worker at the
   numbers this section names is still real future work, not yet done.
-- **`move_log_stream.py`'s NATS connection resilience** (found verifying section 3's
-  Agones work, not yet fixed): a long-lived Game Shard replica's NATS connection does
-  not recover if the underlying NATS server itself restarts - the connection goes
-  silently stale and the next room build crashes reaching for it. A real, observed
-  gap, deliberately left for its own focused fix rather than bundled into unrelated
-  work.
 
 ## 13. From six logical components to four deployable units
 
@@ -1245,9 +1257,10 @@ Status reflects the actual code/git history as of this writing, not just the pla
    against the real cluster, not just reasoned about or unit-tested, in the same
    style every prior stage above used - including three more real bugs found only by
    that live testing (an `aiohttp` SSL-context type error, a mixed-address-list
-   parsing bug, and a pre-existing NATS-reconnection gap in `move_log_stream.py`,
-   the last one deliberately left unfixed as its own separate concern - all detailed
-   in section 3). Session-level resource care worth naming plainly: this stage's own
+   parsing bug, and a pre-existing NATS-reconnection gap in `move_log_stream.py` -
+   all three since fixed, all detailed in section 3, the last one verified against a
+   real NATS container restart, not just reasoned about). Session-level resource care
+   worth naming plainly: this stage's own
    Fleet replica counts were kept intentionally small (2+1, not larger) given this
    project's one physical dev machine had already hit real resource limits once
    before (Stage 6's own Docker Desktop crash, above) - proving the mechanism, not

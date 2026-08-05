@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import time
 from typing import List, Tuple
 
 import nats
 from nats.js.errors import NotFoundError
+
+logger = logging.getLogger(__name__)
 
 from kungfu_chess.model.game_state import MoveLoggedEvent
 from kungfu_chess.model.position import Position
@@ -105,7 +108,35 @@ class MoveLogStream:
 
     @classmethod
     async def connect(cls, url: str = NATS_URL) -> "MoveLogStream":
-        nc = await nats.connect(url)
+        # max_reconnect_attempts=-1 (unlimited), not nats-py's own default
+        # of 60 attempts * reconnect_time_wait=2s (~120s total budget) -
+        # found the hard way, the same way ws_gateway.py's own
+        # RELAY_CRASH_MAX_RETRIES budget was: a real NATS pod restart on
+        # this project's own resource-constrained single-node cluster
+        # took long enough that this connection exhausted its retry
+        # budget and gave up *permanently* (nats-py's own ConnectionClosedError
+        # is not "still reconnecting," it's "gave up for good" - no
+        # amount of the *server* coming back later fixes a client that's
+        # already reached this state on its own). This class's own
+        # docstring already says this one connection is reused for a
+        # Game Shard's *entire* process lifetime - it should never give
+        # up trying to reconnect on its own, the same way this process
+        # itself doesn't restart just because NATS blipped once.
+        # disconnected_cb/reconnected_cb make a real blip visible in
+        # this role's own logs instead of only surfacing as a confusing
+        # crash the next time a room happens to need this connection.
+        async def _on_disconnected() -> None:
+            logger.warning("NATS connection lost - reconnecting (unlimited attempts)")
+
+        async def _on_reconnected() -> None:
+            logger.info("NATS connection restored")
+
+        nc = await nats.connect(
+            url,
+            max_reconnect_attempts=-1,
+            disconnected_cb=_on_disconnected,
+            reconnected_cb=_on_reconnected,
+        )
         return cls(nc, nc.jetstream())
 
     async def close(self) -> None:
