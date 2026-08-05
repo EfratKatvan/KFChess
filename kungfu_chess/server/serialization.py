@@ -149,10 +149,12 @@ def legal_destinations_from_wire(value: List[List[int]]) -> Set[Position]:
 def message_to_wire(message: Any) -> Dict[str, Any]:
     if isinstance(message, (
         WaitingForOpponentMessage, NoOpponentFoundMessage, RestartMessage, OpponentReconnectedMessage,
-        SeekGameMessage, CancelRoomMessage, RoomCancelledMessage, CancelSeekMessage, SeekCancelledMessage,
+        CancelRoomMessage, RoomCancelledMessage, CancelSeekMessage, SeekCancelledMessage,
         LeaveRoomMessage, LeftRoomMessage, ResignMessage, LogoutMessage, LoggedOutMessage,
     )):
         return {"type": message.type}
+    if isinstance(message, SeekGameMessage):
+        return {"type": message.type, "region": message.region}
     if isinstance(message, (LoginMessage, RegisterMessage)):
         return {"type": message.type, "username": message.username, "password": message.password}
     if isinstance(message, TokenLoginMessage):
@@ -223,7 +225,7 @@ def message_from_wire(data: Dict[str, Any]) -> Any:
     if message_type == protocol.LOGGED_OUT:
         return LoggedOutMessage()
     if message_type == protocol.SEEK_GAME:
-        return SeekGameMessage()
+        return SeekGameMessage(region=data.get("region", protocol.DEFAULT_REGION))
     if message_type == protocol.WAITING_FOR_OPPONENT:
         return WaitingForOpponentMessage()
     if message_type == protocol.CANCEL_SEEK:

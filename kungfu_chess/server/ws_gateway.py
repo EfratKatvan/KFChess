@@ -249,23 +249,26 @@ async def _pump(src: Any, dst: Any) -> None:
 async def _resolve_shard_address(
     routing: shard_protocol.RoutingMessage, shard_host: str, shard_port: int, room_shard_registry: RoomShardRegistry
 ) -> Tuple[str, int]:
-    """HostSeatMessage (a brand-new room) always uses the fixed
-    shard_host/shard_port - there is no registry entry yet to look up
-    (placement, not routing - see room_shard_registry.py's own
-    docstring on that distinction; today it's also moot, since there is
-    only ever one Game Shard to place a new room on regardless).
-    ReconnectMessage/SpectateMessage name an *existing* room_id, so
-    resolve it dynamically instead of assuming it's still the same
-    fixed shard - the whole point of Server_Design.md section 3's
-    registry. Falls back to the fixed address if the registry somehow
-    has no entry (the room's lease already expired, or this worker
-    never actually registered it) - the Shard itself is still the one
-    that decides whether the reconnect/spectate is actually valid."""
-    if isinstance(routing, (shard_protocol.ReconnectMessage, shard_protocol.SpectateMessage)):
-        address = await room_shard_registry.get(routing.room_id)
-        if address is not None:
-            host, port = address.rsplit(":", 1)
-            return host, int(port)
+    """Every routing message names a room_id whose placement already
+    happened elsewhere by the time this runs - Server_Design.md section
+    3, Stage 7: for HostSeatMessage (a brand-new room), matchmaker.py's
+    own Agones allocation call already wrote this exact room's resolved
+    address into the registry *before* either seat's relay connection
+    was even opened (see agones_allocation_client.py/matchmaker.py's
+    _pair), specifically so both seats' independent connections resolve
+    the *same* replica. ReconnectMessage/SpectateMessage name an
+    already-running room the same way they always did. So this always
+    resolves dynamically first - no more HostSeatMessage special case.
+    Falls back to the fixed shard_host/shard_port only if the registry
+    has no entry (no Agones integration configured at all - e.g.
+    docker-compose/most tests, which never populate this key ahead of
+    time - or a genuinely expired/never-registered lease); the Shard
+    itself is still the one that decides whether the connection is
+    actually valid."""
+    address = await room_shard_registry.get(routing.room_id)
+    if address is not None:
+        host, port = address.rsplit(":", 1)
+        return host, int(port)
     return shard_host, shard_port
 
 

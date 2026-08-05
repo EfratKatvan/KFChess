@@ -9,15 +9,53 @@ spec:
     requests:
       storage: 1Gi
 ---
+# Stage 7: primary-side setup for a real streaming read replica
+# (Server_Design.md section 6) - a dedicated `replicator` role (only
+# REPLICATION LOGIN, not the kfchess superuser - least-privilege for a
+# new network-facing connection) plus a permanent physical replication
+# slot, run once against a genuinely empty data dir via
+# docker-entrypoint-initdb.d/. The image's own default pg_hba.conf line
+# ("host all all all scram-sha-256") explicitly does NOT authorize
+# replication connections (the special "replication" pseudo-database
+# needs its own line) - 02-allow-replication.sh is what actually fixes
+# that; missing it is the single most common silent-failure point here.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-primary-initdb
+  namespace: kfchess
+data:
+  01-create-replicator-role.sh: |
+    #!/bin/sh
+    set -e
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" <<-EOSQL
+        DO \$\$
+        BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '$POSTGRES_REPLICATION_USER') THEN
+                CREATE ROLE "$POSTGRES_REPLICATION_USER" WITH REPLICATION LOGIN PASSWORD '$POSTGRES_REPLICATION_PASSWORD';
+            END IF;
+        END
+        \$\$;
+        SELECT pg_create_physical_replication_slot('kfchess_replica_slot')
+        WHERE NOT EXISTS (
+            SELECT 1 FROM pg_replication_slots WHERE slot_name = 'kfchess_replica_slot'
+        );
+    EOSQL
+  02-allow-replication.sh: |
+    #!/bin/sh
+    set -e
+    echo "host replication ${POSTGRES_REPLICATION_USER} all scram-sha-256" >> "$PGDATA/pg_hba.conf"
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: postgres
   namespace: kfchess
 spec:
-  replicas: 1  # Server_Design.md section 6: a real deployment replicates this (primary + synced
-  # replicas, sharded by user_id hash once write throughput - section 9's ~83,000/sec - actually
-  # demands it) - one replica matches this project's current, not-yet-at-that-scale reality.
+  replicas: 1  # Server_Design.md section 6: this is the primary - see postgres-replica below
+  # for the read replica half. Sharded-by-user_id-hash is still future work if write throughput
+  # (section 9's ~83,000/sec) ever actually demands it; one primary matches this project's
+  # current, not-yet-at-that-scale reality.
   strategy:
     type: Recreate  # a single ReadWriteOnce volume can't be mounted by two pods at once during a rollout
   selector:
@@ -30,6 +68,152 @@ spec:
     spec:
       containers:
         - name: postgres
+          image: postgres:16-alpine
+          # wal_level=replica/max_wal_senders/max_replication_slots are
+          # already PG16's compiled-in defaults - set explicitly here
+          # purely for self-documentation, and so a future perf-tuning
+          # pass doesn't accidentally drop wal_level to `minimal` and
+          # silently break replication.
+          args:
+            - "-c"
+            - "wal_level=replica"
+            - "-c"
+            - "max_wal_senders=10"
+            - "-c"
+            - "max_replication_slots=10"
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          ports:
+            - containerPort: 5432
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: initdb-scripts
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "kfchess"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "kfchess"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: initdb-scripts
+          configMap:
+            name: postgres-primary-initdb
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: kfchess
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+# Stage 7: the replica's bootstrap can't go through
+# docker-entrypoint-initdb.d/ (that only ever runs initdb against a
+# genuinely empty dir - a replica's PVC needs a real pg_basebackup, not
+# a fresh independent database). Instead, an init container populates
+# $PGDATA before the main container's own unmodified entrypoint ever
+# runs - seeing a non-empty, already-PG_VERSION-stamped data dir, it
+# skips initdb entirely and execs postgres, which finds standby.signal
+# (written by pg_basebackup -R) and starts in standby/recovery mode on
+# its own.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-replica-bootstrap
+  namespace: kfchess
+data:
+  bootstrap-replica.sh: |
+    #!/bin/sh
+    set -e
+    # standby.signal is only ever written *after* a full pg_basebackup
+    # completes successfully - the one reliable "this PVC already holds
+    # a complete, working standby" marker. PG_VERSION isn't reliable for
+    # this: it can exist even after a crashed/partial attempt.
+    if [ -f "$PGDATA/standby.signal" ]; then
+        echo "bootstrap-replica: $PGDATA already a working standby, skipping pg_basebackup"
+        exit 0
+    fi
+    echo "bootstrap-replica: no standby.signal found - (re)bootstrapping from primary"
+    # Safe because this PVC is single-purpose (replica data only): if we
+    # get here, whatever's in $PGDATA is either genuinely empty or
+    # partial junk from a previous crashed attempt - either way, safe to
+    # discard and retry.
+    mkdir -p "$PGDATA"
+    find "$PGDATA" -mindepth 1 -delete
+    chown -R postgres:postgres "$PGDATA"
+    chmod 0700 "$PGDATA"
+    su-exec postgres:postgres env PGPASSWORD="$POSTGRES_REPLICATION_PASSWORD" \
+        pg_basebackup \
+            --pgdata="$PGDATA" \
+            --format=plain \
+            --write-recovery-conf \
+            --checkpoint=fast \
+            --wal-method=stream \
+            --slot=kfchess_replica_slot \
+            --host=postgres \
+            --port=5432 \
+            --username="$POSTGRES_REPLICATION_USER" \
+            --no-password \
+            --progress --verbose
+    echo "bootstrap-replica: base backup complete, standby.signal written"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-replica-data
+  namespace: kfchess
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-replica
+  namespace: kfchess
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: postgres-replica
+  template:
+    metadata:
+      labels:
+        app: postgres-replica
+    spec:
+      initContainers:
+        - name: bootstrap
+          image: postgres:16-alpine
+          command: ["/bin/sh", "/scripts/bootstrap-replica.sh"]
+          envFrom:
+            - secretRef:
+                name: postgres-credentials
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: bootstrap-script
+              mountPath: /scripts
+      containers:
+        - name: postgres-replica
           image: postgres:16-alpine
           envFrom:
             - secretRef:
@@ -52,16 +236,20 @@ spec:
       volumes:
         - name: data
           persistentVolumeClaim:
-            claimName: postgres-data
+            claimName: postgres-replica-data
+        - name: bootstrap-script
+          configMap:
+            name: postgres-replica-bootstrap
+            defaultMode: 0755
 ---
 apiVersion: v1
 kind: Service
 metadata:
-  name: postgres
+  name: postgres-replica
   namespace: kfchess
 spec:
   selector:
-    app: postgres
+    app: postgres-replica
   ports:
     - port: 5432
       targetPort: 5432

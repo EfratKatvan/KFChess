@@ -57,3 +57,16 @@ MATCHMAKING_TIMEOUT_SECONDS = 60
 MATCHMAKING_ELO_RANGE = 100  # a seeker is only matched against another seeker within this many rating points
 DISCONNECT_GRACE_SECONDS = 20
 MAX_ROOM_ID_LENGTH = 24  # a validation cap on the player-typed room name, not a fixed format
+
+# Server_Design.md section 7 (Stage 7): region-aware matchmaking - bias
+# toward same-region pairing, falling back to cross-region only when
+# the local pool is too thin (see matchmaker.py's own _sweep_matches).
+# Only two simulated regions on this project's one physical cluster
+# (game-shard/game-shard-eu Fleets in k8s/game-shard-fleet.yaml) -
+# enough to prove the mechanism for real without presenting a
+# single-node dev cluster as genuine multi-region infrastructure.
+# DEFAULT_REGION is what every client that doesn't yet send its own
+# region gets treated as, so existing/older clients keep matching
+# exactly as before.
+DEFAULT_REGION = "default"
+SUPPORTED_REGIONS = ("il", "eu")

@@ -13,6 +13,7 @@ from websockets.asyncio.server import ServerConnection, serve
 from kungfu_chess.logging_config import configure_logging
 from kungfu_chess.model.piece import BLACK, WHITE
 from kungfu_chess.server import shard_protocol
+from kungfu_chess.server.agones_sdk_client import AgonesSdkClient
 from kungfu_chess.server.accounts_client import ACCOUNTS_SERVICE_URL, AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
 from kungfu_chess.server.game_allocator import GameAllocator, RoomAllocationError
@@ -55,6 +56,15 @@ SHARD_PORT = int(os.environ.get("SHARD_PORT", "8767"))
 SHARD_ADVERTISED_ADDRESS = os.environ.get("SHARD_ADVERTISED_ADDRESS", f"{SHARD_HOST}:{SHARD_PORT}")
 LOG_FILE = "game_shard.log"
 PENDING_ROOM_TIMEOUT_SECONDS = 10  # bounds how long the first seat of a brand-new room waits for the second
+
+# Server_Design.md section 3 (Stage 7): opt-in, off by default - every
+# environment that doesn't run this process as an Agones GameServer
+# (docker-compose, the whole test suite) has no sidecar listening on
+# localhost:9358 at all, so calling ready()/health() there would just
+# be a doomed connection attempt on every single run. Only
+# k8s/game-shard-fleet.yaml's own Fleet template sets this to "true".
+AGONES_SDK_ENABLED = os.environ.get("AGONES_SDK_ENABLED", "false").lower() == "true"
+AGONES_HEALTH_PING_SECONDS = 3.0  # comfortably under the Fleet's own health.periodSeconds: 5
 
 logger = logging.getLogger(__name__)
 
@@ -326,6 +336,21 @@ class GameShard:
         self._rooms.pop(room_id, None)
 
 
+async def _agones_health_loop(sdk_client: AgonesSdkClient) -> None:
+    """Periodic Health() heartbeat (Server_Design.md section 3, Stage
+    7) - the SDK-driven counterpart to _renew_lease's own Redis
+    heartbeat in game_allocator.py, same shape: while this process
+    keeps calling it, Agones' own Fleet controller considers this
+    GameServer's health check passing; stopping (a crash, a wedged
+    event loop) is what lets its own failureThreshold notice."""
+    while True:
+        await asyncio.sleep(AGONES_HEALTH_PING_SECONDS)
+        try:
+            await sdk_client.health()
+        except Exception as error:
+            logger.warning("Agones health() ping failed: %s", error)
+
+
 async def run(host: str = SHARD_HOST, port: int = SHARD_PORT, accounts_service_url: str = ACCOUNTS_SERVICE_URL) -> None:
     accounts_client = get_accounts_client(accounts_service_url)
     # Server_Design.md section 3: one NATS connection, reused for every
@@ -339,6 +364,13 @@ async def run(host: str = SHARD_HOST, port: int = SHARD_PORT, accounts_service_u
     )
     async with serve(shard.handle_connection, host, port):
         logger.info("Kung Fu Chess Game Shard listening on ws://%s:%s", host, port)
+        if AGONES_SDK_ENABLED:
+            # Only once serve() has actually bound the listening socket -
+            # never before this process can genuinely accept a
+            # HostSeatMessage (see agones_sdk_client.py's own docstring).
+            sdk_client = AgonesSdkClient()
+            await sdk_client.ready()
+            asyncio.create_task(_agones_health_loop(sdk_client))
         await asyncio.Future()  # runs until the process is killed
 
 

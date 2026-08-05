@@ -229,25 +229,87 @@ mid-game, not by reasoning about the design or by unit tests:
   20 retries × 1.5 seconds (30 seconds total, still bounded) after watching the first
   number fail against the real timing and picking one wide enough to actually cover it.
 
-**What is still out of scope, precisely**: *placement* of a brand-new room
-(`HostSeatMessage`) is unchanged - still dials the fixed `SHARD_HOST`. This was tried
-directly against a real cluster too (`game-shard.yaml` at `replicas: 2`) specifically
-while building the above, and reproduced a different, genuine bug: a new room's two
-`HostSeatMessage` relay connections (white's and black's) are two *independent* TCP
-connections, each dialing the same Service name separately - Kubernetes' own
-per-connection load-balancing (no session affinity) can and does send them to *different*
-replicas, and since neither ever sees both seats, `_handle_host_seat`'s own pairing wait
-reliably timed out for roughly half of all matches. This is a different shape of problem
-than everything else this stage fixed: those were all *one* connection needing to reach
-*whichever* replica already holds some existing state (reconnect, spectate, a Matchmaking
-Service request) - solved by making that state Redis-shared, reachable from any replica.
-This is *two* independent connections that must reach the *same* replica *before* either
-one has any state to be shared - Redis-backed state doesn't help decide that; it needs
-the two connections routed together, e.g. a consistent hash of `room_id` over the actual
-set of live replica pod IPs (a headless Service, so DNS resolves every pod, not a single
-load-balanced VIP). `game-shard.yaml` is back to `replicas: 1` - crash recovery for
-whichever single instance is currently running is real and verified; concurrent
-multi-replica placement is a separate, still-undone piece of work.
+**Multi-replica placement via Agones: since done.** This section used to end with
+placement of a brand-new room named as explicitly out of scope - a real, reproduced bug
+(`game-shard.yaml` at `replicas: 2`): a new room's two `HostSeatMessage` relay
+connections (white's and black's) are two *independent* TCP connections, each dialing
+the same Service name separately, and Kubernetes' own per-connection load-balancing (no
+session affinity) can and does send them to *different* replicas, leaving
+`_handle_host_seat`'s own pairing wait to time out for roughly half of all matches. This
+is a genuinely different shape of problem than everything else this section fixed:
+those were all *one* connection needing to reach *whichever* replica already holds some
+existing state (solved by making that state Redis-shared); this is *two* independent
+connections that must reach the *same* replica *before* either has any state to share -
+Redis-backed state alone can't decide that.
+
+The fix: [Agones](https://agones.dev/) (`k8s/game-shard-fleet.yaml`, replacing the old
+`game-shard.yaml` Deployment - deleted, see git history), a Kubernetes-native
+game-server fleet manager built for exactly this "allocate me one instance, atomically,
+from a pool" problem. `matchmaker.py`'s `_pair`/`_join_room` now call a new
+`agones_allocation_client.py` (a plain HTTP POST to the in-cluster
+`GameServerAllocation` aggregated API, authenticated with this pod's own ServiceAccount
+bearer token - not the official `agones` PyPI package, which pulls in `grpcio`/
+`protobuf` for four calls `aiohttp` already covers, and not Agones' separate Allocator
+Service, built for callers *outside* the cluster) at the exact point both
+`HostSeatMessage`s are about to be constructed - the one choke point that already holds
+both usernames/connection IDs at once, so there is no second caller to coordinate with
+and no new race to invent. The resolved address is written into
+`room_shard_registry`'s existing lease key *before* either seat's relay connection is
+opened; `ws_gateway.py`'s `_resolve_shard_address` lost its `HostSeatMessage` special
+case entirely (a deletion, not an addition) and now resolves every routing message
+dynamically via the registry, exactly like Reconnect/Spectate already did.
+`game_allocator.py`'s `allocate()` changed from a fresh `acquire(nx=True)` to
+`room_shard_registry.confirm_or_acquire()` - since the lease key may already exist
+(written moments earlier by `matchmaker.py`, naming this exact replica), a plain
+`acquire(nx=True)` would see "key exists" and fail every room; `confirm_or_acquire`
+recognizes "the existing value is already my own address" as success, while still
+refusing a *different* worker's address (the same conflict case `acquire()` always
+guarded against). `game_shard.py` gained an `agones_sdk_client.py` integration - calling
+the Agones SDK sidecar's `Ready()` once serving actually starts, and a periodic
+`Health()` heartbeat, the same shape `game_allocator.py`'s own lease-renewal heartbeat
+already used, just talking to Agones' state machine instead of Redis.
+
+Verified against the real cluster, not just reasoned about: Agones installed via its
+raw YAML manifest (Helm wasn't available in this environment; the docs call this fine
+for a single evaluation cluster like this one) into `agones-system`, `game-shard`/
+`game-shard-eu` Fleets (2+1 replicas - kept deliberately small, see this stage's own
+resource note below) reaching `Ready` end to end. A real two-client match against the
+Fleet confirmed exactly one replica's `GameServerAllocation` transitions to `Allocated`
+per room (the actual regression test for the bug this exists to fix - not two half-built
+rooms stuck on two replicas), and the exact same pod-kill crash-recovery test from
+earlier in this section was re-run against the Agones-managed Fleet and still succeeds -
+Agones' own pod-replacement timing turned out comparable enough to a bare Deployment's
+that the existing 30-second/20-retry reconnect budget didn't need adjusting.
+
+Three real bugs found only by testing against the live cluster, not by reasoning:
+`agones_allocation_client.py`'s first attempt passed the ServiceAccount CA cert path as
+a bare string to `aiohttp`'s `ssl=` parameter, which requires an actual `SSLContext`
+(fixed with `ssl.create_default_context(cafile=...)`); the `GameServerAllocation`
+response's `status.addresses` is a *mixed* list (`InternalIP`/`Hostname`/`PodIP`
+entries together) and naively taking the first entry silently picks the *Node's*
+address, not the allocated Pod's own - useless under `portPolicy: None`, where nothing
+maps that Node address back to this specific replica; fixed by filtering for the
+`PodIP`-typed entry specifically. And, unrelated to Agones itself but caught in the
+course of this verification: a long-lived `game_shard.py` replica's `MoveLogStream`
+(NATS) connection does not recover if the underlying NATS server itself restarts
+(observed against this real cluster's own NATS pod, which had already restarted several
+times from cumulative resource pressure) - the room-hosting connection silently goes
+stale and the next `_build_room` crashes reaching for it. **Deliberately not fixed as
+part of this stage** - it's a pre-existing gap in `move_log_stream.py`'s connection
+handling, orthogonal to Agones/placement, and deserves its own focused fix (likely
+detecting a closed connection and reconnecting/re-subscribing) rather than being
+bundled in here. Worked around for this stage's own verification by recycling the
+affected GameServer (Agones replaces it cleanly, the same graceful-degradation path a
+genuine crash already exercises) - a real, load-bearing example of why `save_meta`'s
+durable pairing plus JetStream replay (both earlier in this section) matter even for
+"an ordinary process is misbehaving," not only a hard pod-kill.
+
+**A resource note, given this project's own single-node dev cluster**: Fleet replica
+counts (`game-shard`: 2, `game-shard-eu`: 1) are kept deliberately small - the placement
+mechanism is what's being proven, not a capacity target, and this cluster has already
+hit real resource pressure once before (Docker Desktop itself crashing under cumulative
+load - section 19's own Stage 6 entry). Bigger replica counts would demonstrate nothing
+this smaller set doesn't already prove.
 
 **Matchmaking Service: multi-replica pairing race, since fixed.** Section 19's Stage 6
 verification caught `matchmaking.yaml`'s 2-replica config intermittently failing to
@@ -430,6 +492,48 @@ hash and MySQL-as-an-alternative remain unimplemented, left as explicitly future
 per this section's own scaling trigger (~83,000 writes/sec) - not yet reached by
 anything this codebase actually drives.
 
+**Read replica: since done** (not sharding - this project's real data volume, per
+this section's own opening line, was never the actual problem sharding solves).
+`k8s/postgres.yaml` now runs a genuine streaming replica alongside the primary: a
+dedicated `replicator` role (`REPLICATION LOGIN` only, not the `kfchess` superuser -
+least-privilege for a new network-facing connection) plus a permanent physical
+replication slot, both created via the primary's own
+`docker-entrypoint-initdb.d/` scripts - including the one line the vanilla
+`postgres:16-alpine` image's own default `pg_hba.conf` does *not* write
+(`host replication replicator all scram-sha-256` - the image's default
+`host all all all` line explicitly does not authorize a replication connection,
+the single most likely silent-failure point here). The replica's own PVC starts
+empty, so its bootstrap can't go through `docker-entrypoint-initdb.d/` (that only
+ever runs `initdb` against a genuinely empty dir, not a real base backup) - an init
+container runs `pg_basebackup --write-recovery-conf` first, idempotent via checking
+for `standby.signal`'s presence (written only after a base backup fully completes)
+before deciding whether to (re)run; the main container's own entrypoint is
+completely unmodified vanilla behavior, which - seeing a non-empty, already
+version-stamped data directory - skips `initdb` and just execs `postgres`, which
+finds `standby.signal` and starts in standby/recovery mode on its own (PG16's own
+mechanism, replacing the `recovery.conf` file removed in PG12).
+
+`accounts_db.py` gained a `POSTGRES_REPLICA_DSN` (defaults back to the primary DSN
+when unset - a safe no-op for docker-compose/the test suite, neither of which runs a
+replica) and a `_connect(schema, read_only=False)` parameter; only `fetch_rating`
+(a high-frequency, standalone read, never part of a read-then-write transaction)
+passes `read_only=True`. `fetch_user` (login/register) and `fetch_ratings` (always
+paired with `write_ratings` in the same logical update) deliberately stay on the
+primary - a replica's own replication lag could otherwise hand back a rating older
+than what the immediately-following write is about to overwrite. No manifest change
+was needed for `k8s/api.yaml` - it already pulls every key from the shared
+`postgres-credentials` Secret, so the new `POSTGRES_REPLICA_DSN` key reaches the
+`api` pods automatically.
+
+Verified against the real cluster: `pg_stat_replication` on the primary shows
+`state = streaming` for the replica; a rating updated on the primary is readable
+from the replica moments later. One genuine migration wrinkle worth naming since it
+surprised nothing but is easy to get wrong: `docker-entrypoint-initdb.d/` scripts
+only ever run once, against a truly empty data directory - the existing primary's
+PVC (already holding real rows from this project's own accumulated testing) had to
+be deleted and recreated for the new init scripts to actually take effect, since
+mounting them changes nothing retroactively for an already-initialized database.
+
 ## 7. Question 2 - 10M concurrent players: routing, "everyone plays everyone", any room from anywhere
 
 **One server is nowhere close to enough**, for two independent reasons: no single
@@ -496,6 +600,39 @@ with no replay at all) was also considered and rejected here specifically for co
 it would roughly double the Game-hosting fleet's footprint, forever, to shave a
 brief, bounded replay gap down to near-zero - a poor trade for a 30-90 second casual
 match.
+
+**Region-aware matchmaking: since done**, answering this section's own open question
+above ("Matchmaking could bias toward same-region pairing, falling back to
+cross-region only when the local ELO pool is too thin"). `SeekGameMessage` gained a
+`region` field (defaults to `protocol.DEFAULT_REGION`, so every existing client/test
+that constructs one bare keeps matching exactly as before); `matchmaker.py`'s
+`_sweep_matches` now partitions the rating-sorted seekers queue by each seeker's own
+region (order-preserving, so each group stays rating-sorted on its own) and runs the
+existing adjacent-pairing scan once per region group first - same-region bias -
+before combining every group's leftovers, re-sorting by rating, and running the
+*same* pairing scan once more as the cross-region fallback pass. No new pairing
+algorithm - the existing linear scan (extracted into `_pair_within`), just called
+twice on different subsets. The matched room's region (white's own - the same
+"creator/first seat is white" convention this codebase already uses elsewhere, for
+a cross-region match where the two sides disagree) feeds directly into the Agones
+allocation call above as the Fleet selector, tying the two features together: which
+*region* a room belongs to and which *Fleet* Agones allocates it from are the same
+decision, made once, at match time.
+
+Genuinely simulated, not claimed as real: this project has exactly one physical
+cluster/node, so `game-shard`/`game-shard-eu` are two Fleets on the same machine, not
+two actual locations. The code path itself - region grouping, fallback, and the Fleet
+selector it drives - is real and would work unchanged against genuinely separate
+regional clusters later; only the Fleets' physical placement would need to change.
+Two simulated regions, not more, deliberately: enough to prove the same-region-first/
+cross-region-fallback mechanism for real without adding replica counts this
+single-node cluster can't comfortably carry (see section 3's own resource note).
+Verified against the real cluster: three seekers, two sharing a region and mutually
+in ELO range with the third - the two same-region seekers matched each other, landing
+on the correct Fleet (confirmed via each `GameServerAllocation`'s own
+`agones.dev/fleet` label), leaving the third still waiting rather than being paired
+cross-region prematurely; a separate two-seeker, same-region-on-the-other-side check
+confirmed the second Fleet is reachable the same way.
 
 ## 8. Question 3 - network traffic for one active player (~1 move every 2 seconds)
 
@@ -601,6 +738,34 @@ Ten thousand worker processes sounds large in isolation, but it is the expected,
 direct consequence of the scale being asked for - the point of this design is that no
 single component needs to be huge; it needs to be replicated a lot.
 
+**Real measured numbers, since done** - replacing pure estimation with an actual data
+point, though a narrowly-scoped one (see the honesty note below). `tools/load_test.py`
+is a real, checked-in, reusable tool (not a scratch script - same asyncio/`websockets`
+style as this session's own verification scripts, generalized): it drives N simulated
+player pairs concurrently through register → seek → match → a few moves → disconnect
+against a real running Gateway, and reports p50/p95/p99 latency for time-to-match and
+move round-trip. Run against this project's own single-node dev cluster at increasing
+concurrency:
+
+| Concurrent pairs | Login p50 | Time-to-match p50 (p99) | Move round-trip p50 (p99) |
+|---|---|---|---|
+| 3 | 328ms | 531ms (547ms) | 16ms (16ms) |
+| 20 | 187ms | 391ms (703ms) | 16ms (234ms) |
+| 50 | 406ms | 2,140ms (3,860ms) | 32ms (734ms) |
+| 100 | 1,156ms | 5,016ms (6,813ms) | 125ms (1,172ms) |
+
+**Read honestly, not as a production capacity claim**: these numbers come from one
+resource-constrained single-node Docker Desktop dev machine, running every role of
+this stack (including the Agones control plane) at once, sharing the same CPU the
+tool itself runs on to generate load - the visible latency growth from 3→100 pairs is
+at least as much this shared node saturating as it is anything about the
+architecture's own scalability. What it *does* genuinely replace is pure guesswork:
+section 9's ~83,000 matches/sec and ~10,000-worker estimates remain unmeasured
+planning numbers (this tool measures latency under a given concurrency, not
+throughput ceiling or per-worker capacity), but "does the whole pipeline actually
+work under real concurrent load, and by how much does latency degrade as it grows" is
+now an answered, reproducible question instead of an assumed one.
+
 ## 11. Why this meets the requirements
 
 1. **100M registered users** - a replicated Postgres/MySQL cluster behind a single
@@ -622,10 +787,13 @@ single component needs to be huge; it needs to be replicated a lot.
 
 ## 12. Open questions
 
-- **Cross-region latency**: when two players from distant regions are matched, which
-  region's Game-hosting pool hosts the room, and what does that cost the losing
-  side's latency? Matchmaking could bias toward same-region pairing, falling back to
-  cross-region only when the local ELO pool is too thin.
+- **Cross-region latency and matchmaking bias: since answered for the matching/
+  placement mechanism** (section 7/section 3) - same-region pairing is biased for,
+  falling back to cross-region only when the local pool is thin, and the decided
+  region drives Agones Fleet placement directly. What remains genuinely open: this
+  is verified against two *simulated* regions on one physical cluster, not real
+  inter-region network latency - the actual "what does the losing side's latency
+  cost" question needs a real multi-region deployment to answer for real.
 - **Reconnect routing across regions**: a disconnected client must be able to find its
   room again through *any* Gateway, not just the one that held the original socket -
   works by construction here (the room registry is globally reachable), but needs
@@ -634,13 +802,23 @@ single component needs to be huge; it needs to be replicated a lot.
   match-found/game-finished/sec plus presence churn) need sizing, and separately -
   at a very different scale - so does the JetStream move-log stream (~6-10 Gbps,
   section 8). Both are estimates, not measurements; worth a real load test on each.
+  (`tools/load_test.py`, section 10, measures match/move latency under load, not
+  NATS throughput specifically - this remains a distinct, unmeasured question.)
 - **JetStream replay correctness under real load**: the replay math (section 3)
   assumes `RealTimeArbiter`'s position/cooldown logic can be run forward from
   recorded timestamps with no drift - reasonable given how it's built today, but not
   yet verified against a real crash-and-replay test.
 - **Games-per-worker (~500-1,000) and connections-per-Gateway (~20,000)** are planning
-  numbers, not measurements - the next real step is benchmarking actual tick cost and
-  socket overhead on real hardware to replace them with data.
+  numbers, not measurements - `tools/load_test.py` (section 10) is a first real step
+  (measured match/move latency under concurrency, on this project's own dev
+  hardware), but benchmarking actual tick cost and socket overhead per worker at the
+  numbers this section names is still real future work, not yet done.
+- **`move_log_stream.py`'s NATS connection resilience** (found verifying section 3's
+  Agones work, not yet fixed): a long-lived Game Shard replica's NATS connection does
+  not recover if the underlying NATS server itself restarts - the connection goes
+  silently stale and the next room build crashes reaching for it. A real, observed
+  gap, deliberately left for its own focused fix rather than bundled into unrelated
+  work.
 
 ## 13. From six logical components to four deployable units
 
@@ -1059,6 +1237,21 @@ Status reflects the actual code/git history as of this writing, not just the pla
    worked around. **Since fixed** - see section 3's own "Matchmaking Service:
    multi-replica pairing race, since fixed" for the redesign and
    `matchmaking.yaml`'s current `replicas: 2`.
+
+8. **Stage 7 - Done**: the four items this design still named as open/deferred,
+   closed in one pass - Agones-based Game Shard placement (section 3), region-aware
+   matchmaking (section 7), a genuine Postgres streaming read replica (section 6),
+   and a real load-testing tool with measured numbers (section 10). Each verified
+   against the real cluster, not just reasoned about or unit-tested, in the same
+   style every prior stage above used - including three more real bugs found only by
+   that live testing (an `aiohttp` SSL-context type error, a mixed-address-list
+   parsing bug, and a pre-existing NATS-reconnection gap in `move_log_stream.py`,
+   the last one deliberately left unfixed as its own separate concern - all detailed
+   in section 3). Session-level resource care worth naming plainly: this stage's own
+   Fleet replica counts were kept intentionally small (2+1, not larger) given this
+   project's one physical dev machine had already hit real resource limits once
+   before (Stage 6's own Docker Desktop crash, above) - proving the mechanism, not
+   maximizing replica count, was always the actual goal.
 
 Verification at each stage: `python -m pytest` should keep passing, and two client
 processes (`python app.py` run twice) should still be able to connect, get matched,

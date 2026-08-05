@@ -1,0 +1,217 @@
+# Server_Design.md section 3 (Stage 7): replaces the plain Deployment
+# game-shard.yaml used to define. That approach was pinned to
+# replicas: 1 for a real reason (see game-shard.yaml's own git history):
+# a brand-new room's two HostSeatMessage connections (white's and
+# black's) are two *independent* TCP connections, and Kubernetes' own
+# per-connection load-balancing (no session affinity) could - and did,
+# reproduced against a real cluster - send them to *different*
+# replicas, leaving both stuck waiting for a seat that never arrives.
+# Agones fixes this at the root: matchmaker.py now allocates *one*
+# GameServer for a room *before* either seat's connection is ever
+# opened (see agones_allocation_client.py), and both seats dial that
+# exact resolved address via room_shard_registry - the same mechanism
+# Reconnect/Spectate already used, just populated earlier now.
+apiVersion: "agones.dev/v1"
+kind: Fleet
+metadata:
+  name: game-shard
+  namespace: kfchess
+spec:
+  # 2, not 3 - the mechanism (one allocation call landing both seats on
+  # the same replica) is already proven against a real cluster; this
+  # session's own single dev machine is resource-constrained (Docker
+  # Desktop crashed once already from cumulative load), so keep the
+  # running footprint to the minimum that still demonstrates the fix
+  # for real (2 replicas is enough to prove "not always replica 1").
+  replicas: 2
+  scheduling: Packed  # irrelevant with one node in this cluster; harmless default
+  template:
+    spec:
+      ports:
+        - name: ws
+          # None, not the tutorial-default Dynamic: nothing outside the
+          # cluster ever dials a Game Shard directly (matches the
+          # ClusterIP-only isolation the old game-shard.yaml Service
+          # already established) - only the WS Gateway, itself always
+          # in-cluster, does. None keeps the fixed containerPort:8767
+          # game_shard.py already binds unchanged, and sidesteps the
+          # hostPort/Docker-Desktop-networking gotchas Dynamic's
+          # tutorial-default setup runs into (moot here regardless,
+          # since nothing external needs to reach this port).
+          portPolicy: None
+          containerPort: 8767
+          protocol: TCP  # this is a websockets/TCP server, not Agones' UDP-oriented default
+      health:
+        periodSeconds: 5
+        failureThreshold: 3
+        initialDelaySeconds: 5
+      template:
+        metadata:
+          labels:
+            app: game-shard-fleet
+        spec:
+          enableServiceLinks: false
+          containers:
+            - name: game-shard
+              image: kfchess:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: SERVICE_ROLE
+                  value: game-shard
+                - name: AGONES_SDK_ENABLED
+                  value: "true"
+                - name: SHARD_HOST
+                  value: "0.0.0.0"
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: SHARD_ADVERTISED_ADDRESS
+                  # Per-Pod, not a fixed Service DNS name: a Fleet's
+                  # replicas are individually addressed by Agones
+                  # allocation (matchmaker.py resolves *one* specific
+                  # replica per room, not "whichever one a Service
+                  # happens to load-balance to" - see
+                  # agones_allocation_client.py), so each one must
+                  # advertise its own real address. $(POD_IP) is
+                  # Kubernetes' own env-var interpolation syntax,
+                  # referencing the POD_IP var defined just above in
+                  # this same container. Labeled app: game-shard-fleet
+                  # (not app: game-shard) deliberately - keeps the old
+                  # Deployment's Service selector from picking up these
+                  # pods while both exist side by side during rollout.
+                  value: "$(POD_IP):8767"
+                - name: ACCOUNTS_SERVICE_URL
+                  value: http://api:8766
+                - name: REDIS_HOST
+                  value: redis
+                - name: NATS_URL
+                  value: nats://nats:4222
+              ports:
+                - containerPort: 8767
+                - containerPort: 9100
+              readinessProbe:
+                httpGet:
+                  path: /metrics
+                  port: 9100
+                initialDelaySeconds: 5
+                periodSeconds: 10
+                timeoutSeconds: 5
+              livenessProbe:
+                httpGet:
+                  path: /metrics
+                  port: 9100
+                initialDelaySeconds: 10
+                periodSeconds: 15
+                timeoutSeconds: 5
+                failureThreshold: 5
+---
+# A plain ClusterIP Service, same name/ports the old Deployment-based
+# game-shard.yaml exposed - restores two things that broke the moment
+# that Service was deleted (Agones itself never creates one; a Fleet's
+# GameServers are addressed individually, by design):
+# observability.yaml's own Prometheus scrape target ("game-shard:9100"),
+# and ws-gateway.yaml's SHARD_HOST/SHARD_PORT fallback - the address
+# _resolve_shard_address dials only if room_shard_registry somehow has
+# no entry for a routing message at all (shouldn't happen in normal
+# operation now that matchmaker.py's Agones allocation call always
+# writes it first, but still the honest last-resort fallback, same
+# role it always played). Selecting on app: game-shard-fleet only
+# (this Fleet, not game-shard-eu) keeps that fallback's semantics
+# identical to before Agones existed - one arbitrary same-region
+# replica, no session affinity across two seats, exactly as
+# undocumented-but-true as the original single-Deployment Service was.
+apiVersion: v1
+kind: Service
+metadata:
+  name: game-shard
+  namespace: kfchess
+spec:
+  selector:
+    app: game-shard-fleet
+  ports:
+    - name: ws
+      port: 8767
+      targetPort: 8767
+    - name: metrics
+      port: 9100
+      targetPort: 9100
+---
+# Server_Design.md section 3 (Stage 7): a second Fleet, same image,
+# same everything, standing in for a second simulated "region" (see
+# matchmaker.py's own region-aware matching - protocol.SUPPORTED_REGIONS).
+# Genuinely two Fleets so a same-region allocation call
+# (matchLabels: agones.dev/fleet: game-shard-<region>) actually lands on
+# a distinct pool of GameServers, not just a label on paper - while
+# still being an explicit simulation: this project has exactly one
+# physical cluster/node, so "eu" is not actually anywhere else. Only two
+# regions, not three, deliberately - enough to prove the same-region-
+# first/cross-region-fallback mechanism for real without adding a third
+# Fleet's worth of replicas on the one available node (this session
+# already saw Docker Desktop crash once from cumulative resource load).
+apiVersion: "agones.dev/v1"
+kind: Fleet
+metadata:
+  name: game-shard-eu
+  namespace: kfchess
+spec:
+  replicas: 1  # same reasoning as the game-shard Fleet above - minimum to prove the mechanism, not a capacity target
+  scheduling: Packed
+  template:
+    spec:
+      ports:
+        - name: ws
+          portPolicy: None
+          containerPort: 8767
+          protocol: TCP
+      health:
+        periodSeconds: 5
+        failureThreshold: 3
+        initialDelaySeconds: 5
+      template:
+        metadata:
+          labels:
+            app: game-shard-fleet-eu
+        spec:
+          enableServiceLinks: false
+          containers:
+            - name: game-shard
+              image: kfchess:latest
+              imagePullPolicy: IfNotPresent
+              env:
+                - name: SERVICE_ROLE
+                  value: game-shard
+                - name: AGONES_SDK_ENABLED
+                  value: "true"
+                - name: SHARD_HOST
+                  value: "0.0.0.0"
+                - name: POD_IP
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: status.podIP
+                - name: SHARD_ADVERTISED_ADDRESS
+                  value: "$(POD_IP):8767"
+                - name: ACCOUNTS_SERVICE_URL
+                  value: http://api:8766
+                - name: REDIS_HOST
+                  value: redis
+                - name: NATS_URL
+                  value: nats://nats:4222
+              ports:
+                - containerPort: 8767
+                - containerPort: 9100
+              readinessProbe:
+                httpGet:
+                  path: /metrics
+                  port: 9100
+                initialDelaySeconds: 5
+                periodSeconds: 10
+                timeoutSeconds: 5
+              livenessProbe:
+                httpGet:
+                  path: /metrics
+                  port: 9100
+                initialDelaySeconds: 10
+                periodSeconds: 15
+                timeoutSeconds: 5
+                failureThreshold: 5

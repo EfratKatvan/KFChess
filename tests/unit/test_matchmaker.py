@@ -84,13 +84,13 @@ async def _connect(matchmaker: Matchmaker, db_path: str, ws: FakeConnection, use
     return await matchmaker.on_connect(ws, username)
 
 
-async def _seek(matchmaker: Matchmaker, ws: FakeConnection) -> None:
+async def _seek(matchmaker: Matchmaker, ws: FakeConnection, region: str = protocol.DEFAULT_REGION) -> None:
     """Enqueue-only now (see matchmaker.py's own _start_seeking) - the
     tick right after reproduces the old inline-matching behavior every
     existing test here was written against, since with only ever a
     single Matchmaker instance under test, nothing else would ever run
     the sweep between two sequential _seek() calls."""
-    await matchmaker.on_message(ws, serialize_message(SeekGameMessage()))
+    await matchmaker.on_message(ws, serialize_message(SeekGameMessage(region=region)))
     await matchmaker.run_matching_tick()
 
 
@@ -189,6 +189,77 @@ async def _out_of_range_seeker_not_paired(db_path, accounts_base_url):
 
     assert _last_type(alice) == protocol.WAITING_FOR_OPPONENT
     assert _last_type(bob) == protocol.WAITING_FOR_OPPONENT
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+
+
+def test_same_region_seekers_are_paired_before_cross_region_fallback(db_path, accounts_base_url):
+    """Server_Design.md section 7 (Stage 7): three seekers, all mutually
+    within ELO range - without region-awareness, a single rating-sorted
+    scan would pair alice(1200) with bob(1210) first (adjacent), since
+    that's the plain old adjacent-pairing algorithm's own behavior.
+    Region-aware grouping must instead pair alice with carol (both
+    "il") first, leaving bob ("eu", alone in his own region group)
+    still waiting for the cross-region fallback pass to have anyone
+    else to pair with."""
+    asyncio.run(_same_region_bias_scenario(db_path, accounts_base_url))
+
+
+async def _same_region_bias_scenario(db_path, accounts_base_url):
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+    carol = FakeConnection("carol")
+
+    await _connect(matchmaker, db_path, alice, "alice", 1200)
+    await _connect(matchmaker, db_path, bob, "bob", 1210)
+    await _connect(matchmaker, db_path, carol, "carol", 1220)
+    # All three enqueued *before* the one tick that decides pairing -
+    # unlike _seek's own enqueue-then-tick-immediately shape, so all
+    # three are genuinely present in the same sweep together.
+    await matchmaker.on_message(alice, serialize_message(SeekGameMessage(region="il")))
+    await matchmaker.on_message(bob, serialize_message(SeekGameMessage(region="eu")))
+    await matchmaker.on_message(carol, serialize_message(SeekGameMessage(region="il")))
+    await matchmaker.run_matching_tick()
+
+    alice_routing = relay_opener.last_for(alice)
+    carol_routing = relay_opener.last_for(carol)
+    assert isinstance(alice_routing, shard_protocol.HostSeatMessage)
+    assert isinstance(carol_routing, shard_protocol.HostSeatMessage)
+    assert alice_routing.room_id == carol_routing.room_id
+    assert _last_type(bob) == protocol.WAITING_FOR_OPPONENT  # eu's own pool was too thin (alone) to pair yet
+
+    await matchmaker.on_disconnect(alice)
+    await matchmaker.on_disconnect(bob)
+    await matchmaker.on_disconnect(carol)
+
+
+def test_cross_region_fallback_pairs_when_no_same_region_partner_exists(db_path, accounts_base_url):
+    """The other half of the same feature: two in-range seekers in
+    *different* regions, each alone in their own region's group, must
+    still end up paired via the cross-region fallback pass - region
+    bias must never turn into an outright refusal to match."""
+    asyncio.run(_cross_region_fallback_scenario(db_path, accounts_base_url))
+
+
+async def _cross_region_fallback_scenario(db_path, accounts_base_url):
+    relay_opener = FakeRelayOpener()
+    matchmaker = _make_matchmaker(accounts_base_url, relay_opener)
+    alice = FakeConnection("alice")
+    bob = FakeConnection("bob")
+
+    await _connect(matchmaker, db_path, alice, "alice", 1200)
+    await _connect(matchmaker, db_path, bob, "bob", 1210)
+    await _seek(matchmaker, alice, region="il")
+    await _seek(matchmaker, bob, region="eu")
+
+    alice_routing = relay_opener.last_for(alice)
+    bob_routing = relay_opener.last_for(bob)
+    assert isinstance(alice_routing, shard_protocol.HostSeatMessage)
+    assert isinstance(bob_routing, shard_protocol.HostSeatMessage)
+    assert alice_routing.room_id == bob_routing.room_id
 
     await matchmaker.on_disconnect(alice)
     await matchmaker.on_disconnect(bob)

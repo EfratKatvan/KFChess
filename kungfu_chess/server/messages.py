@@ -90,9 +90,15 @@ class LoggedOutMessage:
 @dataclass(frozen=True)
 class SeekGameMessage:
     """Sent when the player clicks "Play" in the lobby - the trigger
-    that actually enters matchmaking (login by itself no longer does)."""
+    that actually enters matchmaking (login by itself no longer does).
+
+    region (Server_Design.md section 7, Stage 7) defaults to
+    protocol.DEFAULT_REGION so every existing client/test that
+    constructs this bare keeps matching exactly as before - only a
+    client that actually knows its own region needs to set this."""
 
     type: str = protocol.SEEK_GAME
+    region: str = protocol.DEFAULT_REGION
 
 
 @dataclass(frozen=True)

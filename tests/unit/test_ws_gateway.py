@@ -214,17 +214,37 @@ async def _revoked_token_login_scenario(db_path, accounts_base_url):
     assert _last_type(ws) == protocol.LOGIN_FAILED
 
 
-def test_host_seat_always_uses_the_fixed_address_never_the_registry():
-    """A brand-new room has no registry entry yet by definition (see
-    room_shard_registry.py's own docstring on placement vs. routing) -
-    HostSeatMessage must never even consult it, regardless of what -
-    if anything - happens to be sitting there under the same room_id."""
-    asyncio.run(_host_seat_ignores_registry_scenario())
+def test_host_seat_uses_the_registry_address_when_agones_already_wrote_one():
+    """Server_Design.md section 3, Stage 7: matchmaker.py's own Agones
+    allocation call now writes a brand-new room's resolved address into
+    the registry *before* either seat's HostSeatMessage is ever sent -
+    so this must resolve dynamically, exactly like Reconnect/Spectate
+    already did, not ignore the registry the way it used to when
+    placement and routing were still the same trivial "there is only
+    one Game Shard" fact."""
+    asyncio.run(_host_seat_uses_registry_scenario())
 
 
-async def _host_seat_ignores_registry_scenario():
+async def _host_seat_uses_registry_scenario():
     registry = RoomShardRegistry(get_redis_client(), namespace=uuid.uuid4().hex)
-    await registry.acquire("room-1", "decoy-shard:9999")
+    await registry.acquire("room-1", "agones-picked-shard:9999")
+    routing = shard_protocol.HostSeatMessage(room_id="room-1", color="white", username="a", opponent_username="b")
+
+    host, port = await _resolve_shard_address(routing, "fixed-host", 1234, registry)
+
+    assert (host, port) == ("agones-picked-shard", 9999)
+
+
+def test_host_seat_falls_back_to_the_fixed_address_with_no_registry_entry():
+    """No Agones integration configured at all (docker-compose, most
+    tests) never populates this key ahead of time - HostSeatMessage
+    must still fall back to the fixed shard_host/shard_port exactly as
+    it always did in that world."""
+    asyncio.run(_host_seat_falls_back_scenario())
+
+
+async def _host_seat_falls_back_scenario():
+    registry = RoomShardRegistry(get_redis_client(), namespace=uuid.uuid4().hex)
     routing = shard_protocol.HostSeatMessage(room_id="room-1", color="white", username="a", opponent_username="b")
 
     host, port = await _resolve_shard_address(routing, "fixed-host", 1234, registry)

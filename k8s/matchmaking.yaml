@@ -1,3 +1,39 @@
+# Server_Design.md section 3 (Stage 7): a dedicated ServiceAccount (the
+# Deployment below used to run as the namespace's implicit "default" one)
+# so the RBAC grant just below - create on gameserverallocations, the one
+# call matchmaker.py's own Agones allocation client makes - is scoped to
+# exactly this role, not silently inherited by anything else that
+# happened to run as "default" in this namespace.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: matchmaking-service
+  namespace: kfchess
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agones-gameserverallocation-creator
+  namespace: kfchess
+rules:
+  - apiGroups: ["allocation.agones.dev"]
+    resources: ["gameserverallocations"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: matchmaking-service-agones-allocation
+  namespace: kfchess
+subjects:
+  - kind: ServiceAccount
+    name: matchmaking-service
+    namespace: kfchess
+roleRef:
+  kind: Role
+  name: agones-gameserverallocation-creator
+  apiGroup: rbac.authorization.k8s.io
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,6 +70,7 @@ spec:
       # expect a bare port number, not a URL. Disabling this legacy
       # feature is the standard fix, not a workaround specific to this
       # project.
+      serviceAccountName: matchmaking-service
       enableServiceLinks: false
       containers:
         - name: matchmaking
@@ -44,6 +81,10 @@ spec:
               value: matchmaking
             - name: HOST
               value: "0.0.0.0"
+            - name: AGONES_ALLOCATION_ENABLED
+              value: "true"
+            - name: AGONES_K8S_NAMESPACE
+              value: kfchess
             - name: ACCOUNTS_SERVICE_URL
               value: http://api:8766
             - name: REDIS_HOST

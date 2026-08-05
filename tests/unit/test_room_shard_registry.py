@@ -92,6 +92,55 @@ async def _release_scenario():
     assert await registry.get("room-1") is None
 
 
+def test_confirm_or_acquire_with_no_entry_behaves_like_acquire():
+    asyncio.run(_confirm_or_acquire_fresh_scenario())
+
+
+async def _confirm_or_acquire_fresh_scenario():
+    registry = _make_registry()
+
+    confirmed = await registry.confirm_or_acquire("room-1", "game-shard-1:8767")
+
+    assert confirmed is True
+    assert await registry.get("room-1") == "game-shard-1:8767"
+
+
+def test_confirm_or_acquire_by_the_address_already_stored_succeeds():
+    """Server_Design.md section 3, Stage 7: matchmaker.py's own Agones
+    allocation call writes this room's address first; the replica
+    Agones actually picked then confirms that same address via
+    GameAllocator.allocate() - this must succeed, not collide with the
+    pre-write the way a plain acquire(nx=True) would."""
+    asyncio.run(_confirm_or_acquire_matching_scenario())
+
+
+async def _confirm_or_acquire_matching_scenario():
+    registry = _make_registry()
+    await registry.confirm_or_acquire("room-1", "game-shard-1:8767")
+
+    confirmed_again = await registry.confirm_or_acquire("room-1", "game-shard-1:8767")
+
+    assert confirmed_again is True
+    assert await registry.get("room-1") == "game-shard-1:8767"
+
+
+def test_confirm_or_acquire_by_a_different_address_is_rejected():
+    """The genuine conflict case - a *different* worker's address is
+    already there - must still fail, same as the old acquire()'s own
+    mutual-exclusion guarantee."""
+    asyncio.run(_confirm_or_acquire_conflict_scenario())
+
+
+async def _confirm_or_acquire_conflict_scenario():
+    registry = _make_registry()
+    await registry.confirm_or_acquire("room-1", "game-shard-1:8767")
+
+    confirmed = await registry.confirm_or_acquire("room-1", "game-shard-2:8767")
+
+    assert confirmed is False
+    assert await registry.get("room-1") == "game-shard-1:8767"  # unchanged
+
+
 def test_lease_expires_on_its_own_without_renewal():
     """No clean shutdown required for correctness (Server_Design.md
     section 3) - a crashed worker simply stops renewing, and the lease

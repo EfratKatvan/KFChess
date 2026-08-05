@@ -20,6 +20,33 @@ else
 end
 """
 
+# Server_Design.md section 3 (Stage 7): "acquire if nobody holds it yet,
+# confirm-and-renew if *I* already do, refuse if somebody else does" -
+# one atomic script covering both of this key's two writers now.
+# Before Agones, only game_allocator.py ever wrote this key (a fresh
+# acquire, first-writer-wins). Now matchmaker.py writes it *first*, at
+# allocation time (the Agones-selected replica's own address), before
+# either seat's HostSeatMessage is even sent - so by the time that same
+# replica's own GameAllocator.allocate() runs, the key already exists,
+# naming *this* replica. A plain acquire(nx=True) would see "key
+# exists" and fail every room; this lets the rightful owner recognize
+# its own address and take over heartbeat renewal instead. The
+# never-Agones-configured path (docker-compose, most tests) still works
+# unchanged, since nothing else writes this key first in that world -
+# the "key doesn't exist yet" branch is exactly today's old behavior.
+_CONFIRM_OR_ACQUIRE_SCRIPT = """
+local current = redis.call("GET", KEYS[1])
+if current == false then
+    redis.call("SET", KEYS[1], ARGV[1], "PX", ARGV[2])
+    return 1
+elseif current == ARGV[1] then
+    redis.call("PEXPIRE", KEYS[1], ARGV[2])
+    return 1
+else
+    return 0
+end
+"""
+
 """Redis-backed `room_id -> shard_address` lease (Server_Design.md
 section 3) - the literal `SET room:<id>:owner <worker-id> NX PX 5000`
 the design doc itself specifies, made real: not just mutual exclusion
@@ -59,6 +86,13 @@ class RoomShardRegistry:
 
     async def renew(self, room_id: str, shard_address: str, ttl_ms: int = LEASE_TTL_MS) -> bool:
         result = await self._redis.eval(_RENEW_SCRIPT, 1, self.key(room_id), shard_address, ttl_ms)
+        return bool(result)
+
+    async def confirm_or_acquire(self, room_id: str, shard_address: str, ttl_ms: int = LEASE_TTL_MS) -> bool:
+        """See _CONFIRM_OR_ACQUIRE_SCRIPT's own comment - True unless a
+        *different* address already holds this lease (a genuine
+        conflict, same as the old acquire()'s False)."""
+        result = await self._redis.eval(_CONFIRM_OR_ACQUIRE_SCRIPT, 1, self.key(room_id), shard_address, ttl_ms)
         return bool(result)
 
     async def get(self, room_id: str) -> Optional[str]:

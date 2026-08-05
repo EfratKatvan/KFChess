@@ -15,6 +15,7 @@ from kungfu_chess.model.piece import BLACK, WHITE
 from kungfu_chess.server import protocol, shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
+from kungfu_chess.server.agones_allocation_client import AgonesAllocationClient
 from kungfu_chess.server.auth_token import TokenClaims
 from kungfu_chess.server.matchmaker_leader import MatchmakerLeaderElection
 from kungfu_chess.server.messages import (
@@ -36,6 +37,7 @@ from kungfu_chess.server.messages import (
     WaitingForOpponentMessage,
 )
 from kungfu_chess.server.redis_client import get_client as get_redis_client
+from kungfu_chess.server.room_shard_registry import RoomShardRegistry
 from kungfu_chess.server.rooms import RoomError, RoomRegistry
 from kungfu_chess.server.serialization import deserialize_message, serialize_message
 
@@ -86,9 +88,20 @@ class Matchmaker:
         namespace: Optional[str] = None,
         leader_election: Optional[MatchmakerLeaderElection] = None,
         remote_connection_resolver: Optional[Callable[[str], Any]] = None,
+        agones_allocator: Optional[AgonesAllocationClient] = None,
     ) -> None:
         self._accounts_client = accounts_client or get_accounts_client()
         self._redis = redis_client or get_redis_client()
+        # Server_Design.md section 3 (Stage 7): None by default, so
+        # every existing test/docker-compose keeps constructing a
+        # Matchmaker exactly as before, with brand-new rooms placed
+        # exactly as they always were (whichever replica Kubernetes'
+        # own Service load-balancing sends a HostSeatMessage to -
+        # ws_gateway.py's _resolve_shard_address falls back to the
+        # fixed shard_host/shard_port whenever this key was never
+        # written). Only matchmaking_service.py's production wiring
+        # passes a real one.
+        self._agones_allocator = agones_allocator
         # Fired, never awaited - Matchmaker doesn't know or care who's
         # listening (the Matchmaking Service's Redis-publish adapter, in
         # production), the same publisher-doesn't-know-the-subscriber
@@ -108,6 +121,13 @@ class Matchmaker:
         # every existing test that omits it gets the old per-instance
         # random isolation unchanged.
         self._namespace = namespace if namespace is not None else uuid.uuid4().hex
+        # Same namespace/Redis as game_shard.py's own RoomShardRegistry -
+        # written here, at allocation time (see _allocate_shard_for),
+        # before either seat's HostSeatMessage is sent; read by
+        # ws_gateway.py's _resolve_shard_address for every routing
+        # message, HostSeatMessage included now (Server_Design.md
+        # section 3, Stage 7).
+        self._room_shard_registry = RoomShardRegistry(self._redis, self._namespace)
         self._seekers_queue_key = f"seekers:queue:{self._namespace}"
         # Every waiting seeker's (connection_id, enqueued_at) - a Redis
         # Hash, not a local dict (Server_Design.md section 1: this is
@@ -284,7 +304,7 @@ class Matchmaker:
         # either player's real current rating.
         rating = await self._accounts_client.get_rating(username)
 
-        meta = json.dumps({"connection_id": ws.connection_id, "enqueued_at": time.time()})
+        meta = json.dumps({"connection_id": ws.connection_id, "enqueued_at": time.time(), "region": message.region})
         await self._redis.hset(self._seekers_meta_key, username, meta)
         await self._redis.zadd(self._seekers_queue_key, {username: rating})
         SEEKERS_WAITING.inc()
@@ -363,20 +383,19 @@ class Matchmaker:
             if ws is not None:
                 await ws.send(serialize_message(NoOpponentFoundMessage()))
 
-    async def _sweep_matches(self) -> None:
-        """Ratings sort the same seekers queue ZSET already keys by
-        (section 16.1) - so two seekers within
-        protocol.MATCHMAKING_ELO_RANGE of each other are always
-        *adjacent* once sorted, and a single linear scan over the whole
-        queue finds every pairable pair in one pass, no per-seeker
-        range query needed. ZREM'ing both sides of a pair atomically
-        (one round trip, both-or-neither in effect since a partial
-        removal is treated as "someone else already touched this pair"
-        and simply retried next tick) is what keeps two ticks (only
-        possible if leader_election is None and something is calling
-        this concurrently with itself, which nothing in this codebase
-        does) from both believing they matched the same person."""
-        entries = await self._redis.zrange(self._seekers_queue_key, 0, -1, withscores=True)
+    async def _pair_within(self, entries: list) -> list:
+        """The linear-scan-adjacent-pairing algorithm itself, unchanged
+        from before region-awareness (Server_Design.md section 7) - now
+        called on a subset (one region group, or the cross-region
+        leftovers) instead of always the whole queue. `entries` must
+        already be rating-sorted. ZREM'ing both sides of a pair
+        atomically (one round trip, both-or-neither in effect since a
+        partial removal is treated as "someone else already touched
+        this pair" and simply retried next tick) is what keeps two
+        ticks (only possible if leader_election is None and something
+        is calling this concurrently with itself, which nothing in this
+        codebase does) from both believing they matched the same
+        person. Returns whatever this pass couldn't pair."""
         i = 0
         while i < len(entries) - 1:
             username_a, rating_a = entries[i]
@@ -391,6 +410,81 @@ class Matchmaker:
             await self._pair(username_a, username_b)
             entries = entries[i + 2:]
             i = 0
+        return entries
+
+    async def _sweep_matches(self) -> None:
+        """Ratings sort the same seekers queue ZSET already keys by
+        (section 16.1) - so two seekers within
+        protocol.MATCHMAKING_ELO_RANGE of each other are always
+        *adjacent* once sorted, and _pair_within's linear scan finds
+        every pairable pair in one pass, no per-seeker range query
+        needed.
+
+        Region-aware (Server_Design.md section 7, Stage 7): the
+        rating-sorted queue is first partitioned by each seeker's own
+        region (order-preserving, so every group stays rating-sorted on
+        its own) and _pair_within runs once per group - same-region
+        bias. Whatever's left unpaired across every group is combined,
+        re-sorted by rating (a per-group leftover list isn't globally
+        rating-ordered relative to a *different* group's leftovers),
+        and _pair_within runs once more on that combined list - the
+        cross-region fallback pass, using the exact same pairing
+        algorithm, just on a different subset. A seeker whose region
+        was never recorded (shouldn't happen - _start_seeking always
+        writes one) falls back to protocol.DEFAULT_REGION's group
+        rather than crashing this whole tick."""
+        entries = await self._redis.zrange(self._seekers_queue_key, 0, -1, withscores=True)
+        if not entries:
+            return
+        raw_meta_by_username = await self._redis.hgetall(self._seekers_meta_key)
+
+        def _region_of(username: str) -> str:
+            raw = raw_meta_by_username.get(username)
+            if raw is None:
+                return protocol.DEFAULT_REGION
+            return json.loads(raw).get("region", protocol.DEFAULT_REGION)
+
+        groups: Dict[str, list] = {}
+        for entry in entries:
+            groups.setdefault(_region_of(entry[0]), []).append(entry)
+
+        leftovers = []
+        for group_entries in groups.values():
+            leftovers.extend(await self._pair_within(group_entries))
+        leftovers.sort(key=lambda entry: entry[1])
+        await self._pair_within(leftovers)
+
+    _REGION_FLEET_NAMES = {"il": "game-shard", protocol.DEFAULT_REGION: "game-shard", "eu": "game-shard-eu"}
+
+    def _fleet_name_for_region(self, region: str) -> str:
+        """Maps a matched room's decided region onto the Agones Fleet
+        that simulates it (k8s/game-shard-fleet.yaml) - an unrecognized
+        region (a future client sending something outside
+        protocol.SUPPORTED_REGIONS) safely falls back to the default
+        Fleet rather than failing allocation outright."""
+        return self._REGION_FLEET_NAMES.get(region, "game-shard")
+
+    async def _allocate_shard_for(self, room_id: str, fleet_name: str = "game-shard") -> bool:
+        """Server_Design.md section 3 (Stage 7): the one choke point
+        that decides which Game Shard replica hosts a brand-new room -
+        called once per room, here, *before* either seat's
+        HostSeatMessage is ever sent, so both seats' independent
+        Gateway connections resolve the *same* replica afterward via
+        room_shard_registry (see ws_gateway.py's own
+        _resolve_shard_address, which now looks this up for every
+        routing message, HostSeatMessage included). A no-op returning
+        True when no agones_allocator is configured at all (every
+        existing test/docker-compose) - placement then stays exactly
+        what it always was: whichever replica Kubernetes' own Service
+        happens to route each connection to."""
+        if self._agones_allocator is None:
+            return True
+        shard_address = await self._agones_allocator.allocate(fleet_name)
+        if shard_address is None:
+            logger.warning("room %s: Agones allocation against fleet %s failed", room_id, fleet_name)
+            return False
+        await self._room_shard_registry.confirm_or_acquire(room_id, shard_address)
+        return True
 
     async def _pair(self, white_username: str, black_username: str) -> None:
         raw_white_meta = await self._redis.hget(self._seekers_meta_key, white_username)
@@ -398,10 +492,31 @@ class Matchmaker:
         await self._redis.hdel(self._seekers_meta_key, white_username, black_username)
         SEEKERS_WAITING.dec()
         SEEKERS_WAITING.dec()
-        white_connection_id = json.loads(raw_white_meta)["connection_id"]
-        black_connection_id = json.loads(raw_black_meta)["connection_id"]
+        white_meta = json.loads(raw_white_meta)
+        black_meta = json.loads(raw_black_meta)
+        white_connection_id = white_meta["connection_id"]
+        black_connection_id = black_meta["connection_id"]
+        # Server_Design.md section 7: the room's region for Fleet
+        # placement is white's own region - correct as-is for a
+        # same-region match (both seekers share it by construction, see
+        # _sweep_matches's own per-region grouping), and an arbitrary
+        # but consistent choice for a cross-region fallback match,
+        # mirroring this codebase's existing "creator/first seat is
+        # always white" convention elsewhere.
+        region = white_meta.get("region", protocol.DEFAULT_REGION)
 
         room_id = uuid.uuid4().hex
+        if not await self._allocate_shard_for(room_id, fleet_name=self._fleet_name_for_region(region)):
+            # Fleet at capacity, RBAC misconfigured, API unreachable -
+            # tell both players plainly rather than silently vanishing
+            # them mid-match, reusing the exact same message
+            # _sweep_timed_out_seekers already sends on its own "we
+            # tried, no luck" path (no new message type needed).
+            for connection_id in (white_connection_id, black_connection_id):
+                ws = await self._resolve(connection_id)
+                if ws is not None:
+                    await ws.send(serialize_message(NoOpponentFoundMessage()))
+            return
         # Written by connection_id, unconditionally - not gated on
         # _resolve() finding a local ws (see __init__'s own note on why
         # this is now Redis-shared): the *other* replica actually
@@ -448,6 +563,16 @@ class Matchmaker:
         if room.opponent_username == username:
             # This join just filled the opponent seat - per the spec, the
             # second person to join is Black; the creator is always White.
+            if not await self._allocate_shard_for(room.room_id):
+                # Known, deliberately simple limitation for this stage
+                # (Server_Design.md section 3): the room is already
+                # marked full in RoomRegistry at this point, so a failed
+                # allocation here leaves it unusable rather than
+                # retryable - the same category of simple-not-silent
+                # limitation _handle_host_seat's own pending-room timeout
+                # already accepts elsewhere in this codebase.
+                await ws.send(serialize_message(JoinRoomFailedMessage(reason="placement failed - try again")))
+                return
             # Looked up by connection_id straight from Redis, not through
             # a local ws - the creator's own connection may belong to a
             # different replica than the one handling this join (see

@@ -64,6 +64,35 @@ async def _double_allocate_scenario(db_path, accounts_base_url):
     room.stop()
 
 
+def test_allocate_confirms_a_lease_matchmaker_already_pre_wrote(db_path, accounts_base_url):
+    """Server_Design.md section 3, Stage 7: with Agones, matchmaker.py
+    writes this room's lease *before* _build_room/allocate() ever runs
+    on the winning replica - naming that replica's own address. allocate()
+    must recognize and confirm its own pre-written address rather than
+    failing the way a plain acquire(nx=True) against an already-existing
+    key would."""
+    asyncio.run(_confirm_pre_written_lease_scenario(db_path, accounts_base_url))
+
+
+async def _confirm_pre_written_lease_scenario(db_path, accounts_base_url):
+    allocator = _make_allocator(accounts_base_url)
+    white, black = FakeConnection("alice"), FakeConnection("bob")
+    # Simulates matchmaker.py's own Agones allocation call, which writes
+    # this exact worker's advertised address directly via the registry -
+    # never through GameAllocator.allocate() itself.
+    await allocator._registry.confirm_or_acquire("efrat-room", allocator._worker_id)
+
+    room = await allocator.allocate(
+        white_ws=white, white_username="alice", black_ws=black, black_username="bob", room_id="efrat-room"
+    )
+
+    key = allocator._lease_key("efrat-room")
+    assert await allocator._redis.get(key) == allocator._worker_id
+
+    await allocator._release_lease("efrat-room")
+    room.stop()
+
+
 def test_ending_the_game_releases_the_lease(db_path, accounts_base_url):
     asyncio.run(_release_on_game_over_scenario(db_path, accounts_base_url))
 

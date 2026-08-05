@@ -35,8 +35,15 @@ which cluster this is applied to:
 kubectl apply -f k8s/namespace.yaml
 kubectl apply -f k8s/secrets.yaml
 kubectl apply -f k8s/redis.yaml -f k8s/postgres.yaml -f k8s/nats.yaml
-kubectl apply -f k8s/api.yaml -f k8s/matchmaking.yaml -f k8s/game-shard.yaml -f k8s/ws-gateway.yaml
+kubectl apply -f k8s/api.yaml -f k8s/matchmaking.yaml -f k8s/ws-gateway.yaml
 kubectl apply -f k8s/observability.yaml
+```
+
+Agones (Stage 7) is a separate, one-time cluster-wide install, not part of this
+namespace's own manifests - see "Agones" below. Once it's installed:
+
+```
+kubectl apply -f k8s/game-shard-fleet.yaml
 ```
 
 (Applying `namespace.yaml`/`secrets.yaml` first isn't strictly required -
@@ -58,18 +65,39 @@ Gateway" rule, plus an operator's Grafana dashboard). K3s's built-in ServiceLB
 (Klipper) satisfies `LoadBalancer` out of the box, even on a single node - no
 cloud load-balancer integration required.
 
+## Agones (Stage 7)
+
+`game-shard-fleet.yaml` replaces what used to be a plain Deployment
+(`game-shard.yaml`, deleted - see git history) once shard lifecycle
+management - ready/allocated/draining, and genuinely picking *which*
+replica hosts a brand-new room - outgrew plain Deployment/Service
+load-balancing (see `matchmaker.py`'s own Agones allocation call and
+`agones_allocation_client.py`). Agones itself is a cluster-wide install,
+not scoped to this namespace:
+
+```
+curl -L https://raw.githubusercontent.com/googleforgames/agones/release-1.59.0/install/yaml/install.yaml -o /tmp/agones.yaml
+kubectl create namespace agones-system
+kubectl apply --server-side --force-conflicts -f /tmp/agones.yaml
+# The raw install manifest only wires up its RBAC for the "default" namespace
+# (Helm's own gameservers.namespaces value, defaulted) - this project's own
+# GameServers run in "kfchess", so that one extra grant needs adding by hand:
+kubectl create serviceaccount agones-sdk -n kfchess
+kubectl create rolebinding agones-sdk-access -n kfchess --clusterrole=agones-sdk --serviceaccount=kfchess:agones-sdk
+```
+
+Two Fleets, not one - `game-shard` and `game-shard-eu`, simulating the two
+regions `protocol.SUPPORTED_REGIONS` matches against (see `matchmaker.py`'s
+own region-aware pairing) - genuinely separate GameServer pools on the one
+available physical node, not real geographic separation.
+
 ## What's deliberately not here yet
 
-- **Agones** for the Game Shard fleet (section 18's own recommendation, once
-  shard lifecycle management - ready/allocated/draining - outgrows plain
-  Deployment/ReplicaSet semantics). `game-shard.yaml` stays at `replicas: 1`
-  specifically because scaling it today, with plain Deployment/Service
-  load-balancing, would be a correctness bug, not just a missed optimization -
-  see that file's own comment for why (no room-to-worker discovery/routing
-  layer exists yet for `ws_gateway.py` to route a reconnect to the *right*
-  replica).
-- **Multi-region** anything (section 7's own open question) - one namespace,
-  one cluster.
+- **Real multi-region infrastructure** - `game-shard`/`game-shard-eu` simulate
+  two regions on one physical cluster/node (section 7); the matching and
+  Agones-allocation code paths are real and would work unchanged against
+  genuinely separate clusters later, only the Fleets' physical placement
+  would need to change.
 - **HorizontalPodAutoscaler** manifests for the roles that genuinely could
   use one (`api`, `ws-gateway`, `matchmaking`) - the replica counts here are
   static, picked to demonstrate multi-replica statelessness, not a real

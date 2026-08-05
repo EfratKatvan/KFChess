@@ -14,6 +14,7 @@ from kungfu_chess.logging_config import configure_logging
 from kungfu_chess.server import shard_protocol
 from kungfu_chess.server.accounts_client import AccountsClient
 from kungfu_chess.server.accounts_client import get_client as get_accounts_client
+from kungfu_chess.server.agones_allocation_client import AgonesAllocationClient
 from kungfu_chess.server.auth_token import TokenClaims
 from kungfu_chess.server.matchmaker import Matchmaker
 from kungfu_chess.server.matchmaker_leader import LEADER_RENEWAL_SECONDS, MatchmakerLeaderElection
@@ -24,6 +25,23 @@ from kungfu_chess.server.redis_client import get_client as get_redis_client
 HOST = os.environ.get("HOST", "localhost")
 PORT = int(os.environ.get("PORT", "8768"))
 LOG_FILE = "matchmaking_service.log"
+
+# Server_Design.md section 3 (Stage 7): opt-in, off by default - every
+# environment without an Agones-managed Fleet to allocate from
+# (docker-compose, the whole test suite) must keep placing brand-new
+# rooms exactly as it always did (whichever replica Kubernetes' own
+# Service happens to route a HostSeatMessage to). Only
+# k8s/matchmaking.yaml's own Deployment sets this to "true", alongside
+# the ServiceAccount/RBAC that makes the underlying K8s API call
+# actually authorized. AGONES_K8S_NAMESPACE is the Kubernetes
+# namespace the GameServerAllocation call targets - a different concept
+# from create_app's own `namespace` parameter (that one isolates this
+# app's own Redis keys; this one is Kubernetes' own resource
+# namespace) - deliberately not read from the pod's own
+# serviceaccount/namespace file, to keep this explicit and match how
+# every other role already names "kfchess" directly in its own manifest.
+AGONES_ALLOCATION_ENABLED = os.environ.get("AGONES_ALLOCATION_ENABLED", "false").lower() == "true"
+AGONES_K8S_NAMESPACE = os.environ.get("AGONES_K8S_NAMESPACE", "default")
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +153,7 @@ def create_app(
 
     async def _on_startup(app: web.Application) -> None:
         state["leader_election"] = MatchmakerLeaderElection(redis_client, namespace=namespace)
+        agones_allocator = AgonesAllocationClient(namespace=AGONES_K8S_NAMESPACE) if AGONES_ALLOCATION_ENABLED else None
         state["matchmaker"] = Matchmaker(
             accounts_client=accounts_client or get_accounts_client(),
             redis_client=redis_client,
@@ -142,6 +161,7 @@ def create_app(
             namespace=namespace,
             leader_election=state["leader_election"],
             remote_connection_resolver=_connection_for,
+            agones_allocator=agones_allocator,
         )
         state["tick_task"] = asyncio.create_task(_run_matching_tick_loop())
 

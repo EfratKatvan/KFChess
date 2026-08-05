@@ -99,8 +99,28 @@ class GameAllocator:
         unique while pending by RoomRegistry), or a fresh uuid for an
         ELO-matched room, which has no player-chosen name at all."""
         lease_id = room_id or uuid.uuid4().hex
-        acquired = await self._registry.acquire(lease_id, self._worker_id, ttl_ms=LEASE_TTL_MS)
-        if not acquired:
+        if lease_id in self._lease_renewal_tasks:
+            # This exact instance already has a live renewal loop for
+            # this room - a genuine second allocate() call for it (a
+            # bug, a race) must still fail regardless of what
+            # confirm_or_acquire below would say (its own address would
+            # trivially "match itself"). Checked first, before ever
+            # touching Redis, so this stays true independent of the
+            # Agones-flow change just below.
+            raise RoomAllocationError(f"room lease {lease_id!r} is already held by another worker")
+        # confirm_or_acquire, not a fresh acquire(nx=True) (Server_Design.md
+        # section 3, Stage 7): matchmaker.py's own Agones allocation call
+        # may already have written this exact lease - naming *this*
+        # worker's own address - before this method ever runs, once a
+        # room's placement decision moves upstream of _build_room. A
+        # plain acquire(nx=True) would see "key exists" and fail every
+        # room in that world; this recognizes "the existing value is
+        # already my own address" as success and takes over heartbeat
+        # renewal, while still refusing (RoomAllocationError) if a
+        # *different* worker's address is already there - the same
+        # conflict case acquire() used to guard against.
+        confirmed = await self._registry.confirm_or_acquire(lease_id, self._worker_id, ttl_ms=LEASE_TTL_MS)
+        if not confirmed:
             raise RoomAllocationError(f"room lease {lease_id!r} is already held by another worker")
 
         async def release() -> None:

@@ -14,6 +14,16 @@ from psycopg2 import sql
 # adjacent processes/machines this design otherwise assumes).
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN", "postgresql://kfchess:kfchess@localhost:5432/kfchess")
 
+# Server_Design.md section 6 (Stage 7): a streaming read replica, not
+# sharding - defaults back to POSTGRES_DSN (the primary) when unset, so
+# every environment that hasn't deployed a replica (docker-compose, the
+# test suite) keeps reading from the same connection it always has, with
+# zero behavior change. Only fetch_rating (the one high-frequency,
+# standalone read - never part of a read-then-write transaction) is
+# routed here; see fetch_rating/fetch_ratings below for why the others
+# aren't.
+POSTGRES_REPLICA_DSN = os.environ.get("POSTGRES_REPLICA_DSN", POSTGRES_DSN)
+
 # Every table lives inside a schema, not always "public" - production
 # always uses DEFAULT_SCHEMA; tests get their own throwaway schema
 # (see tests/unit/conftest.py's db_path fixture) for the same reason a
@@ -33,8 +43,8 @@ had; connection pooling is a real optimization but a separate concern
 from *which* database this talks to, not part of this migration."""
 
 
-def _connect(schema: str):
-    connection = psycopg2.connect(POSTGRES_DSN)
+def _connect(schema: str, read_only: bool = False):
+    connection = psycopg2.connect(POSTGRES_REPLICA_DSN if read_only else POSTGRES_DSN)
     connection.cursor().execute(
         sql.SQL("SET search_path TO {}").format(sql.Identifier(schema))
     )
@@ -85,7 +95,7 @@ def insert_user(schema: str, username: str, salt: str, password_hash: str, ratin
 
 
 def fetch_rating(schema: str, username: str) -> Optional[int]:
-    with _connect(schema) as connection:
+    with _connect(schema, read_only=True) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT rating FROM users WHERE username = %s", (username,))
             row = cursor.fetchone()
@@ -95,7 +105,10 @@ def fetch_rating(schema: str, username: str) -> Optional[int]:
 def fetch_ratings(schema: str, first_username: str, second_username: str) -> Tuple[int, int]:
     """Both ratings in one connection - a complex-query convenience for
     callers (e.g. an ELO update) that need a consistent pair of reads,
-    not a place for business logic."""
+    not a place for business logic. Stays on the primary (no
+    read_only=True) - always paired with a write_ratings call on the
+    same logical update, and a replica's own replication lag could hand
+    back a rating older than what write_ratings is about to overwrite."""
     with _connect(schema) as connection:
         with connection.cursor() as cursor:
             cursor.execute("SELECT rating FROM users WHERE username = %s", (first_username,))
