@@ -12,6 +12,30 @@ for accounts. That design is correct for a demo and completely wrong for this sc
 everything below is about *what has to become distributed, and how the pieces talk to
 each other*.
 
+### Assumptions
+
+Every number below that isn't taken directly from the brief (100M/10M/30-90s) is an
+*educated* guess, not an invented one - each is derived from a stated number, a
+comparable real system, or a named platform limit. Collected in one place, not
+scattered through the sections that use them, so a reader can find and argue with any
+one of them without re-deriving the whole document:
+
+| Assumption | Basis | What breaks if wrong | How we'd find out |
+|---|---|---|---|
+| Avg. game lasts ~60s | Midpoint of the brief's own 30-90s range | The churn estimate (§9) and room-manager/worker-count sizing (§10) | Measure real game duration once live |
+| ~500-1,000 concurrent rooms per Game-hosting worker | Within §5's low-hundreds-to-low-thousands range for the stated 4GB/process constraint | The ~10,000-worker fleet estimate (§10) scales inversely with this number | Benchmark real tick cost per room on target hardware - not yet done, see §12 |
+| ~20,000 connections per WS Gateway pod | A typical per-process socket/OS-limit planning figure, not measured on this project's own hardware | The ~500-Gateway-pod estimate (§10) | Real connection-count load test per pod - not yet done |
+| Players perceive ~150ms move latency as "instant" | Typical figure for real-time browser games (not measured against this project's own players) | If the true threshold is meaningfully lower, the broker-hop-on-the-hot-path decision (§2) stops being affordable | Playtest, then instrument real p95/p99 against this number in production |
+| Postgres write throughput stays under one primary's ceiling until ~83,000 writes/sec | Little's Law churn estimate at 10M concurrent (§9) | Sharding (§6) becomes necessary earlier than planned | Monitor real primary write QPS in production, alert well before the trigger |
+| Two simulated regions (`il`/`eu` Fleets, one physical cluster) are a sufficient stand-in to prove region-aware matching for real | This project has exactly one physical cluster/node available | The matching/placement *code path* is real and verified; actual cross-region network latency and fairness behavior remain unverified | Deploy against genuinely separate regional clusters |
+| `tools/load_test.py`'s measured numbers (§10) are directionally informative, not a production capacity claim | Measured on one resource-constrained dev machine also running Agones' own control plane, Postgres, NATS, and Redis simultaneously | Production capacity per pod may differ meaningfully from the measured curve | Repeat the same tool against isolated, production-shaped hardware |
+
+The risk direction is worth naming per row, not just the row itself: an
+under-provisioned assumption (e.g. rooms-per-worker turning out lower than guessed)
+fails loudly and early: performance visibly degrades. An over-provisioned one just
+means paying for headroom that isn't needed yet - a safer failure mode, and one every
+row above was picked to lean toward where the underlying uncertainty allowed it.
+
 ## 0. The pattern the code already follows
 
 It's worth naming this before scaling anything: `kungfu_chess/events/bus.py`'s `Bus`
@@ -510,6 +534,20 @@ hash and MySQL-as-an-alternative remain unimplemented, left as explicitly future
 per this section's own scaling trigger (~83,000 writes/sec) - not yet reached by
 anything this codebase actually drives.
 
+**Read/write ratio for the one entity that matters here - a player's rating**: a
+rating is *read* at login, at every match-found screen (both seats' ratings shown to
+each other), and every spectate join (again both seats) - several read touchpoints
+per player-session. It's *written* exactly once per completed game, for exactly the
+two players in that specific game. An honest order-of-magnitude estimate, not a
+measured figure (see the Assumptions table above): comfortably read-heavy, likely
+10:1 or higher. That ratio is exactly why a read replica (below) is the right tool
+here and why it targets `fetch_rating` specifically - caching and replicas both work
+well precisely because reads dominate this lopsidedly. Contrast the *other* kind of
+state this design handles, live board state (section 8): written and read by the two
+participants at roughly 1:1, where neither a cache nor a replica would help at all -
+which is exactly why that state lives in Redis/in-process memory instead of here,
+not a database at any ratio.
+
 **Read replica: since done** (not sharding - this project's real data volume, per
 this section's own opening line, was never the actual problem sharding solves).
 `k8s/postgres.yaml` now runs a genuine streaming replica alongside the primary: a
@@ -652,7 +690,39 @@ on the correct Fleet (confirmed via each `GameServerAllocation`'s own
 cross-region prematurely; a separate two-seeker, same-region-on-the-other-side check
 confirmed the second Fleet is reachable the same way.
 
+**What region-aware matching does *not* address: fairness within a cross-region
+match.** Same-region bias reduces *how often* two geographically distant players get
+matched at all - it does nothing for the ones who still are, via the fallback pass.
+Worth being explicit about this rather than letting the region work above read as a
+complete answer to the fairness question: two players on opposite sides of a real
+future multi-region deployment, paired by the fallback pass, would each get a
+different one-way latency to whichever Fleet Agones allocates the room from (today,
+moot - both simulated regions are the same physical node) - the closer one reacts
+first, purely from geography, regardless of skill. The fix this document names but
+doesn't build is **lag equalization**: deliberately holding the closer player's
+inputs by the latency gap between the two, so both see the same effective delay -
+a genuinely counter-intuitive move (adding latency on purpose to improve the system),
+and one that only makes sense once "minimize latency" is replaced with "keep it
+bounded *and* symmetric" as the actual objective for a competitive, player-vs-player
+system. Not implemented here: it has no effect to measure against one physical
+cluster, and doing it honestly needs the real per-region round-trip numbers a genuine
+multi-region deployment would provide - exactly the kind of assumption this
+document's own Assumptions table (above) exists to flag rather than quietly build
+against a placeholder number.
+
 ## 8. Question 3 - network traffic for one active player (~1 move every 2 seconds)
+
+**Latency budget: ~150ms**, not "as fast as possible" - the figure above which a
+player actually notices a move feels delayed, per the Assumptions table above (a
+typical real-time-browser-game figure, not yet measured against this project's own
+players). Every hop below is worth judging as a *percentage of that budget*, not
+against zero: a single in-datacenter broker hop (the Redis Pub/Sub match-found signal,
+§2) is on the order of low single-digit milliseconds - a few percent of the budget,
+not a cost that changes any decision in this document. What the number actually
+disqualifies is a *chain* of several such hops on the same hot path, or anything that
+adds tens of milliseconds per player - which is exactly why the move-relay path itself
+(this section) stays a direct socket, not a broker hop, while the low-volume
+match-found/timeout signaling (§2) can afford one.
 
 Client -> server per move is tiny: a click message is about 40-60 bytes of JSON
 (`{"type": "select_or_move", "row": r, "col": c}`) - negligible even at one every
@@ -1518,3 +1588,38 @@ sequenceDiagram
 
 The ordinary case (20.3) - one player still present, might reconnect or start a
 new game - is untouched by this fix; only the double-disconnect path changes.
+
+### 20.7 A deliberately malformed or malicious message
+
+The flow every other scenario above assumes away: a client (a broken build, or someone
+poking the WebSocket directly, not just the real UI) sends something the server never
+would - an unknown `type`, a payload missing a required field, or a wire format that
+doesn't parse as JSON at all. Never trusted just because a UI would have blocked it
+(the UI is not a boundary the server controls) - so this is the flow that actually
+proves the gatekeeper, not just declares one. The same pattern repeats at every
+message-boundary in this design (`matchmaker.py`, `game_shard.py`, `ws_gateway.py`),
+so one diagram stands for all three:
+
+```mermaid
+sequenceDiagram
+    participant C as Client (malformed input, by accident or on purpose)
+    participant S as Server (Matchmaker / Game Shard / WS Gateway - same pattern at each)
+
+    C->>S: raw bytes - unknown type, missing field, or unparseable JSON
+    S->>S: deserialize_message(raw) raises ValueError/KeyError/TypeError
+    Note over S: caught narrowly - exactly these three exception types,<br/>never a bare except: that would also hide a real bug
+    S->>S: logger.warning("dropping malformed message from %s: %s", ...)
+    Note over S: no reply sent for this specific message - not a protocol<br/>violation, since none of these fields were ever optional to begin with
+    S-->>C: connection stays open - the next, well-formed message<br/>from the same client is handled normally
+```
+
+The gatekeeper is the same three-line pattern at all three boundaries, on purpose -
+not because copy-paste was easier, but because it's genuinely the same problem
+(untrusted bytes crossing a process boundary) with the same correct answer, and having
+it duplicated three times where each server role receives client-originated bytes
+independently is more honest than routing all inbound traffic through one shared
+choke point it doesn't otherwise need. What this flow deliberately does **not** do is
+disconnect the client for sending one bad message - a genuinely malicious client gets
+no signal that it succeeded or failed differently from a client that just hit a
+transient bug, and a real bug on the client side gets a chance to self-correct on its
+very next message rather than being kicked out for one bad frame.

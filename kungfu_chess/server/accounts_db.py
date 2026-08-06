@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from typing import Optional, Tuple
 
 import psycopg2
@@ -43,12 +44,30 @@ had; connection pooling is a real optimization but a separate concern
 from *which* database this talks to, not part of this migration."""
 
 
+@contextmanager
 def _connect(schema: str, read_only: bool = False):
+    """Every call site below still just writes `with _connect(schema)
+    as connection:` - unchanged - but psycopg2's own connection
+    __exit__ only commits/rolls back the transaction, it does *not*
+    close the underlying socket (a real, easy-to-miss gotcha, distinct
+    from how most other Python context managers behave). Wrapping it
+    in our own @contextmanager gets both: the same commit-on-success/
+    rollback-on-exception semantics `with connection:` already gave
+    every caller, plus a guaranteed close() in `finally` - so a fresh
+    connection per call (this module's own deliberate simplicity,
+    see the docstring above) doesn't also mean a leaked one per call."""
     connection = psycopg2.connect(POSTGRES_REPLICA_DSN if read_only else POSTGRES_DSN)
-    connection.cursor().execute(
-        sql.SQL("SET search_path TO {}").format(sql.Identifier(schema))
-    )
-    return connection
+    try:
+        connection.cursor().execute(
+            sql.SQL("SET search_path TO {}").format(sql.Identifier(schema))
+        )
+        yield connection
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
 
 
 def init_db(schema: str = DEFAULT_SCHEMA) -> None:

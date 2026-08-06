@@ -5,20 +5,9 @@ from typing import Optional, Tuple
 
 from redis.asyncio import Redis
 
-LEASE_TTL_MS = 5000  # Server_Design.md section 3's own example: SET room:<id>:owner <worker> NX PX 5000
+from kungfu_chess.server.redis_lease import renew_if_owner
 
-# Atomic "renew, but only if I'm still the one holding it" - a plain
-# GET-then-PEXPIRE isn't atomic, so a lease that expired a moment before
-# this call could already have been legitimately re-acquired by a
-# different worker by the time a non-atomic check would notice,
-# silently extending a lease this caller no longer actually holds.
-_RENEW_SCRIPT = """
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
-else
-    return 0
-end
-"""
+LEASE_TTL_MS = 5000  # Server_Design.md section 3's own example: SET room:<id>:owner <worker> NX PX 5000
 
 # Server_Design.md section 3 (Stage 7): "acquire if nobody holds it yet,
 # confirm-and-renew if *I* already do, refuse if somebody else does" -
@@ -85,8 +74,7 @@ class RoomShardRegistry:
         return bool(await self._redis.set(self.key(room_id), shard_address, nx=True, px=ttl_ms))
 
     async def renew(self, room_id: str, shard_address: str, ttl_ms: int = LEASE_TTL_MS) -> bool:
-        result = await self._redis.eval(_RENEW_SCRIPT, 1, self.key(room_id), shard_address, ttl_ms)
-        return bool(result)
+        return await renew_if_owner(self._redis, self.key(room_id), shard_address, ttl_ms)
 
     async def confirm_or_acquire(self, room_id: str, shard_address: str, ttl_ms: int = LEASE_TTL_MS) -> bool:
         """See _CONFIRM_OR_ACQUIRE_SCRIPT's own comment - True unless a

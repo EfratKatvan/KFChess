@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from kungfu_chess.model.board import BoardRepresentation
+from kungfu_chess.model.piece import Color, PieceKind
 from kungfu_chess.model.position import Position
 
 
@@ -26,10 +27,10 @@ class MoveLoggedEvent:
     listening; it doesn't store move history itself, and doesn't know
     or care what a listener does with it."""
 
-    color: str
+    color: Color
     from_pos: Position
     to_pos: Position
-    kind: str
+    kind: PieceKind
     is_capture: bool
     elapsed_ms: int
     duration_ms: int = 0  # the motion's own travel time - see RealTimeArbiter.start_motion
@@ -44,8 +45,8 @@ class PieceCapturedEvent:
     score itself once this fires - see events/observers.py's
     ScoreObserver, the mirror of MoveLogObserver but for captures."""
 
-    color: str
-    kind: str
+    color: Color
+    kind: PieceKind
     points: int
 
 

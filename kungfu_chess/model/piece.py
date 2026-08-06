@@ -1,22 +1,57 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol
 
 from kungfu_chess.model.position import Position
 
-WHITE = "white"
-BLACK = "black"
 
-KING = "king"
-QUEEN = "queen"
-ROOK = "rook"
-BISHOP = "bishop"
-KNIGHT = "knight"
-PAWN = "pawn"
+class Color(str, Enum):
+    """(str, Enum), same pattern client/phases.py's Phase/RoomAction
+    already use - a member IS its own string value (Color.WHITE ==
+    "white" is True), so this serializes over the wire and compares
+    against a plain string exactly like the raw str constants this
+    replaces did, while closing the gap those left open: nothing
+    stops piece.color = "purple" from type-checking with a bare str
+    field, but it does with this."""
 
-IDLE = "idle"
-MOVING = "moving"
-CAPTURED = "captured"
+    WHITE = "white"
+    BLACK = "black"
+
+
+class PieceKind(str, Enum):
+    KING = "king"
+    QUEEN = "queen"
+    ROOK = "rook"
+    BISHOP = "bishop"
+    KNIGHT = "knight"
+    PAWN = "pawn"
+
+
+class PieceState(str, Enum):
+    IDLE = "idle"
+    MOVING = "moving"
+    CAPTURED = "captured"
+
+
+# Every existing `from kungfu_chess.model.piece import WHITE, KING, ...`
+# keeps working unchanged - these are now enum members, not raw
+# strings, but every comparison in rules/engine/server (piece.color ==
+# WHITE, occupant.kind == KING, ...) is unaffected either way, since a
+# (str, Enum) member equals its own string value in both directions.
+WHITE = Color.WHITE
+BLACK = Color.BLACK
+
+KING = PieceKind.KING
+QUEEN = PieceKind.QUEEN
+ROOK = PieceKind.ROOK
+BISHOP = PieceKind.BISHOP
+KNIGHT = PieceKind.KNIGHT
+PAWN = PieceKind.PAWN
+
+IDLE = PieceState.IDLE
+MOVING = PieceState.MOVING
+CAPTURED = PieceState.CAPTURED
 
 
 class PieceRepresentation(Protocol):
@@ -29,10 +64,10 @@ class PieceRepresentation(Protocol):
     would any other class with the same attributes."""
 
     id: str
-    color: str
-    kind: str
+    color: Color
+    kind: PieceKind
     cell: Position
-    state: str
+    state: PieceState
 
 
 @dataclass
@@ -42,7 +77,7 @@ class Piece:
     pieces are two different objects, even if their color/kind match."""
 
     id: str
-    color: str
-    kind: str
+    color: Color
+    kind: PieceKind
     cell: Position
-    state: str = IDLE
+    state: PieceState = IDLE

@@ -4,6 +4,8 @@ import uuid
 
 from redis.asyncio import Redis
 
+from kungfu_chess.server.redis_lease import renew_if_owner
+
 LEADER_TTL_MS = 3000  # renewed well inside this - see matchmaking_service.py's own tick loop
 # Also the matching-sweep cadence, not just the lease renewal cadence -
 # matchmaking_service.py's tick loop calls try_become_leader() and the
@@ -14,19 +16,6 @@ LEADER_TTL_MS = 3000  # renewed well inside this - see matchmaking_service.py's 
 # imperceptible while still renewing the 3s lease with a wide (15x)
 # safety margin.
 LEADER_RENEWAL_SECONDS = 0.2
-
-# Same atomic "renew only if I'm still the one holding it" reasoning as
-# room_shard_registry.py's own script - a plain GET-then-PEXPIRE isn't
-# atomic, so a lease that expired a moment before this call could
-# already have been legitimately re-acquired by a different replica by
-# the time a non-atomic check would notice.
-_RENEW_SCRIPT = """
-if redis.call("GET", KEYS[1]) == ARGV[1] then
-    return redis.call("PEXPIRE", KEYS[1], ARGV[2])
-else
-    return 0
-end
-"""
 
 """Leader election for the standalone Matchmaking Service
 (matchmaking_service.py) - the fix for the race matchmaker.py's own
@@ -72,8 +61,8 @@ class MatchmakerLeaderElection:
         if acquired:
             self._is_leader = True
             return True
-        renewed = await self._redis.eval(_RENEW_SCRIPT, 1, self._key, self._instance_id, LEADER_TTL_MS)
-        self._is_leader = bool(renewed)
+        renewed = await renew_if_owner(self._redis, self._key, self._instance_id, LEADER_TTL_MS)
+        self._is_leader = renewed
         return self._is_leader
 
     async def resign(self) -> None:

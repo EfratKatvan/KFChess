@@ -5,7 +5,7 @@ from typing import Dict, Optional, Tuple
 
 from kungfu_chess.model.board import BoardRepresentation
 from kungfu_chess.model.piece import IDLE as IDLE_STATE
-from kungfu_chess.model.piece import PieceRepresentation
+from kungfu_chess.model.piece import Color, PieceKind, PieceRepresentation
 from kungfu_chess.model.position import Position
 from kungfu_chess.realtime.motion import SHORT_REST, motion_duration_ms
 from kungfu_chess.realtime.real_time_arbiter import (
@@ -30,8 +30,8 @@ class PieceView:
     what visual state."""
 
     position: Position
-    color: str
-    kind: str
+    color: Color
+    kind: PieceKind
     visual_state: str
     elapsed_ms: int
     target_position: Optional[Position] = None
@@ -52,7 +52,7 @@ class MoveLogEntry:
     elapsed_ms: int
     from_pos: Position
     to_pos: Position
-    kind: str
+    kind: PieceKind
     is_capture: bool
 
 
